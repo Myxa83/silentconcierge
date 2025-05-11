@@ -20,7 +20,7 @@ async def on_ready():
 
 async def main():
     async with bot:
-        await bot.load_extension("raid_cog")  # Назва файлу Cog без .py
+        await bot.load_extension("raid_cog")
         await bot.start(os.getenv("DISCORD_TOKEN"))
 
 import asyncio
