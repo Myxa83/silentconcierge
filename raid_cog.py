@@ -127,9 +127,7 @@ class RaidBot(commands.Cog):
                     raid_data['is_closed'] = True
                     embed.color = 0xff3333
                     embed.title = "🔒 **НАЙМ ЗАВЕРШЕНО**"
-                    embed.description += "
-
-🔴 **НАЙМ ЗАКРИТО — ЧАС ЗАВЕРШЕННЯ**"
+                    embed.description += "\n\n🔴 **НАЙМ ЗАКРИТО — ЧАС ЗАВЕРШЕННЯ**"
                     await msg.edit(embed=embed)
                     break
 
