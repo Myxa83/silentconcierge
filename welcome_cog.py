@@ -11,7 +11,7 @@ import os
 class WelcomeCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.background_path = "welcome.png"  # локальний файл
+        self.background_path = "welcome.png"
         self.templates = [
             "🐉 ДРАКОН ПРОБУДИВСЯ! {mention} розгортає крила над сервером! Готуйтеся до вогню та хаосу!🔥",
             "🌌 Тінь пройшла крізь портал. {mention}, ласкаво просимо до Silent Cove!",
@@ -29,21 +29,27 @@ class WelcomeCog(commands.Cog):
             return None
 
         try:
+            # Завантаження аватарки
             async with aiohttp.ClientSession() as session:
                 async with session.get(member.display_avatar.url) as resp:
                     avatar_data = await resp.read()
 
             avatar = Image.open(io.BytesIO(avatar_data)).convert("RGBA")
-            avatar = avatar.resize((128, 128))
 
-            mask = Image.new("L", (128, 128), 0)
+            avatar_size = 96
+            avatar = avatar.resize((avatar_size, avatar_size))
+
+            mask = Image.new("L", (avatar_size, avatar_size), 0)
             draw = ImageDraw.Draw(mask)
-            draw.ellipse((0, 0, 128, 128), fill=255)
+            draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
             avatar.putalpha(mask)
 
             background = Image.open(self.background_path).convert("RGBA")
-            x = background.width - avatar.width - 20
-            y = background.height - avatar.height - 20
+            bg_width, bg_height = background.size
+
+            # Безпечні координати вставки
+            x = max(0, bg_width - avatar_size - 20)
+            y = max(0, bg_height - avatar_size - 20)
 
             background.paste(avatar, (x, y), avatar)
 
@@ -53,7 +59,7 @@ class WelcomeCog(commands.Cog):
             return discord.File(buffer, filename="welcome_final.png")
 
         except Exception as e:
-            print(f"⚠️ Помилка генерації аватарки: {e}")
+            print(f"⚠️ Помилка генерації зображення: {e}")
             return None
 
     def build_caption(self, member: discord.Member):
@@ -63,21 +69,17 @@ class WelcomeCog(commands.Cog):
     async def on_member_join(self, member):
         channel_id = 1324854638276509828
         channel = self.bot.get_channel(channel_id)
-        if not channel:
-            return
+        if channel:
+            caption = self.build_caption(member)
+            file = await self.generate_welcome_image(member)
+            if file:
+                await channel.send(content=caption, file=file)
 
-        caption = self.build_caption(member)
-        file = await self.generate_welcome_image(member)
-
-        if file:
-            await channel.send(content=caption, file=file)
-
-    @app_commands.command(name="привіт", description="Накладає аватарку внизу і надсилає привітання")
+    @app_commands.command(name="привіт", description="Надсилає вітання з аватаркою внизу")
     async def test_welcome(self, interaction: Interaction):
         caption = self.build_caption(interaction.user)
         file = await self.generate_welcome_image(interaction.user)
-
         if file:
             await interaction.response.send_message(content=caption, file=file)
         else:
-            await interaction.response.send_message("❌ Помилка: не вдалося згенерувати зображення.")
+            await interaction.response.send_message("❌ Не вдалося створити вітальне зображення.")
