@@ -32,7 +32,7 @@ async def main():
         await bot.load_extension("cogs.vell_cog")       # для Вела (якщо є)
         await bot.load_extension("cogs.timezone_cog")   # збереження таймзони
         await bot.load_extension("cogs.welcome_cog")    # привітання нових
-        await bot.start(TOKEN)
+        await bot.start(DISCORD_TOKEN)
 
 # Запуск
 if __name__ == "__main__":
