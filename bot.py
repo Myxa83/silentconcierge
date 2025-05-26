@@ -1,34 +1,27 @@
 import discord
 from discord.ext import commands
-import asyncio
 import os
+import asyncio
 from dotenv import load_dotenv
 
-# Завантажуємо токен з .env файлу
 load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Нам потрібні слеш-команди, тому обираємо "default" + дозволяємо повідомлення
 intents = discord.Intents.default()
-intents.message_content = True  # якщо будете додавати текстові команди — залиште
+intents.members = True
+intents.message_content = True
+intents.guilds = True
 
-# Створюємо бота
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Подія, коли бот повністю увімкнено
-@bot.event
-async def on_ready():
-    print(f"✅ Увійшли як {bot.user} (ID: {bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        print(f"📡 Синхронізовано {len(synced)} слеш-команд.")
-    except Exception as e:
-        print(f"❌ Помилка синхронізації: {e}")
-
-# Основна асинхронна функція, яка підключає Cog і запускає бота
 async def main():
     async with bot:
-        await bot.load_extension("raid_cog")  # Без .py
-        await bot.start(os.getenv("TOKEN"))
+        await bot.load_extension("cogs.welcome_cog")
+        await bot.load_extension("cogs.vell_cog")
+        await bot.load_extension("cogs.post_cog")
+        await bot.load_extension("cogs.raid_cog")
+        await bot.load_extension("cogs.timezone_cog")
+        await bot.start(TOKEN)
 
-# Запуск
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
