@@ -187,5 +187,4 @@ class RaidCog(commands.Cog):
         print("[DEBUG] ✅ RaidView зареєстровано")
 
 async def setup(bot):
-    cog = raid_cog(bot)
-    await bot.add_cog(cog)
+    await bot.add_cog(RaidCog(bot))
