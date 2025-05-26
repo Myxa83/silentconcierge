@@ -3,3 +3,4 @@ pytz
 python-dotenv
 requests
 Pillow
+beautifulsoup4
