@@ -1,0 +1,7 @@
+services:
+  - type: worker
+    name: silentconcierge
+    env: python
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "bash start.sh"
