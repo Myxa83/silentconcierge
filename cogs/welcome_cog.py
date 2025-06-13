@@ -96,12 +96,6 @@ class WelcomeCog(commands.Cog):
         await channel.send(embed=embed, file=discord.File(output_path, filename=output_path))
         os.remove(output_path)
 
-    @commands.command(name="привіт")
-    @commands.has_permissions(administrator=True)
-    async def test_welcome(self, ctx):
-        """Тестова команда для надсилання привітального повідомлення"""
-        await self.on_member_join(ctx.author)
-
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         print(f"📤 Користувач вийшов: {member}")
@@ -165,9 +159,13 @@ class WelcomeCog(commands.Cog):
             await channel.send(embed=embed)
             print("📨 [DEBUG] Надіслано повідомлення про бан до каналу")
 
+    @commands.command(name="привіт")
+    @commands.has_permissions(administrator=True)
+    async def test_welcome(self, ctx):
+        await self.on_member_join(ctx.author)
+
     async def cog_load(self):
         print("🔃 [DEBUG] WelcomeCog завантажено")
-        pass
 
 async def setup(bot):
     await bot.add_cog(WelcomeCog(bot))
