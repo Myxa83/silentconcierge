@@ -1,10 +1,23 @@
 import os
 import discord
 from discord.ext import commands
+from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 import random
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 class WelcomeCog(commands.Cog):
     def __init__(self, bot):
@@ -120,7 +133,7 @@ class WelcomeCog(commands.Cog):
         reason = "Не вказано"
 
         joined_at = self.joined_cache.get(user.id, "невідомо")
-        if isinstance(joined_at, discord.utils.snowflake_time):
+        if hasattr(discord.utils, "snowflake_time") and isinstance(joined_at, discord.utils.snowflake_time):
             joined_at = joined_at.strftime("%Y-%m-%d %H:%M:%S")
         elif joined_at is None:
             joined_at = "невідомо"
@@ -159,13 +172,36 @@ class WelcomeCog(commands.Cog):
             await channel.send(embed=embed)
             print("📨 [DEBUG] Надіслано повідомлення про бан до каналу")
 
-    @commands.command(name="привіт")
-    @commands.has_permissions(administrator=True)
-    async def test_welcome(self, ctx):
-        await self.on_member_join(ctx.author)
+    @app_commands.command(name="привіт", description="Тестове привітання")
+    async def slash_test(self, interaction: discord.Interaction):
+        await interaction.response.send_message("Працюю! 🐝")
 
     async def cog_load(self):
+        self.bot.tree.add_command(self.slash_test)
         print("🔃 [DEBUG] WelcomeCog завантажено")
 
 async def setup(bot):
     await bot.add_cog(WelcomeCog(bot))
+
+@bot.event
+async def on_ready():
+    print(f"[DEBUG] ✅ WelcomeBot увійшов як {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"[DEBUG] 🔄 Slash-команди синхронізовано: {len(synced)}")
+    except Exception as e:
+        print(f"[DEBUG] ❌ Помилка синхронізації команд: {e}")
+
+async def main():
+    print("[DEBUG] 🚀 Старт WelcomeBot...")
+    async with bot:
+        try:
+            print("[DEBUG] 📥 Завантажуємо welcome_cog...")
+            await bot.load_extension("cogs.welcome_cog")
+            print("[DEBUG] ✅ WelcomeCog завантажено")
+        except Exception as e:
+            print(f"[DEBUG] ❌ Не вдалося завантажити WelcomeCog: {e}")
+        await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
