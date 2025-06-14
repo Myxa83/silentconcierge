@@ -173,7 +173,7 @@ class WelcomeCog(commands.Cog):
             await channel.send(embed=embed)
             print("📨 [DEBUG] Надіслано повідомлення про бан до каналу")
 
-    @app_commands.command(name="привіт", description="Тестове привітання")
+    @app_commands.command(name="test", description="Тестове привітання")
     async def slash_test(self, interaction: discord.Interaction):
         await interaction.response.send_message("Працюю! 🐝")
 
