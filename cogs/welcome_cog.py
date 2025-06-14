@@ -187,8 +187,9 @@ async def setup(bot):
 async def on_ready():
     print(f"[DEBUG] ✅ WelcomeBot увійшов як {bot.user}")
     try:
-        synced = await bot.tree.sync()
-        print(f"[DEBUG] 🔄 Slash-команди синхронізовано: {len(synced)}")
+        guild_id = discord.Object(id=1323454227816906802)
+        synced = await bot.tree.sync(guild=guild_id)
+        print(f"[DEBUG] 🔄 Slash-команди синхронізовано на сервері {guild_id.id}: {len(synced)}")
     except Exception as e:
         print(f"[DEBUG] ❌ Помилка синхронізації команд: {e}")
 
@@ -204,4 +205,5 @@ async def main():
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
