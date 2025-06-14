@@ -6,7 +6,11 @@ import asyncio
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-OWNER_ID = int(os.getenv("BOT_OWNER_ID"))
+
+owner_raw = os.getenv("BOT_OWNER_ID")
+if not owner_raw:
+    raise ValueError("BOT_OWNER_ID is not set in the .env file!")
+OWNER_ID = int(owner_raw)
 
 intents = discord.Intents.default()
 intents.members = True
