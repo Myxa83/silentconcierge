@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID"))
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -177,7 +178,7 @@ class WelcomeCog(commands.Cog):
         await interaction.response.send_message("Працюю! 🐝")
 
     async def cog_load(self):
-        self.bot.tree.add_command(self.slash_test)
+        self.bot.tree.add_command(self.slash_test, guild=discord.Object(id=GUILD_ID))
         print("🔃 [DEBUG] WelcomeCog завантажено")
 
 async def setup(bot):
@@ -187,9 +188,9 @@ async def setup(bot):
 async def on_ready():
     print(f"[DEBUG] ✅ WelcomeBot увійшов як {bot.user}")
     try:
-        guild_id = discord.Object(id=1323454227816906802)
-        synced = await bot.tree.sync(guild=guild_id)
-        print(f"[DEBUG] 🔄 Slash-команди синхронізовано на сервері {guild_id.id}: {len(synced)}")
+        guild = discord.Object(id=GUILD_ID)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"[DEBUG] 🔄 Slash-команди синхронізовано на сервері {guild.id}: {len(synced)}")
     except Exception as e:
         print(f"[DEBUG] ❌ Помилка синхронізації команд: {e}")
 
