@@ -2,16 +2,20 @@ import os
 import discord
 from discord.ext import commands
 from discord import app_commands
+from discord.ui import Modal, TextInput, Select, View, ChannelSelect
 from PIL import Image, ImageDraw, ImageFont
-import requests
+import aiohttp
 from io import BytesIO
 import random
 from dotenv import load_dotenv
+import asyncio
 
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID"))
+GUILD_ID = int(os.getenv("GUILD_ID", 1324854638276509828))
+WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", 1324854638276509828))
+FAREWELL_CHANNEL_ID = 1350571574557675520
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -24,96 +28,137 @@ class WelcomeCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.joined_cache = {}
+        self.dm_cache = set()
         self.templates = [
-            "{{mention}} залетів на нашу базу Silent Cove [BDO EU] з двох ніг!",
-            "ДРАКОН ПРОБУДИВСЯ! {{mention}} розгортає крила над сервером!",
-            "В нашій секті… ой, тобто на сервері, новий учасник – {{mention}}!",
-            "{{mention}} сходить із зірок прямо до нас. Магія тільки починається!",
-            "Тиша порушена. {{mention}} з’явився у лісі Silent Cove!",
-            "КРИТИЧНИЙ ВИБУХ КРУТОСТІ! {{mention}} активував(ла) ульту!",
-            "Пані та панове, зустрічайте! Найочікуваніший гість – {{mention}}!"
+            "@{mention} залетів на нашу базу Silent Cove [BDO EU] з двох ніг!",
+            "ДРАКОН ПРОБУДИВСЯ! @{mention} розгортає крила над сервером!",
+            "В нашій секті… ой, тобто на сервері, новий учасник – @{mention}!",
+            "@{mention} сходить із зірок прямо до нас. Магія тільки починається!",
+            "Тиша порушена. @{mention} з’явився у лісі Silent Cove!",
+            "КРИТИЧНИЙ ВИБУХ КРУТОСТІ! @{mention} активував(ла) ульту!",
+            "Пані та панове, зустрічайте! Найочікуваніший гість – @{mention}!",
         ]
-
-    @commands.Cog.listener()
-    async def on_member_join(self, member):
-        print(f"📥 [DEBUG] Користувач приєднався: {member}")
-        self.joined_cache[member.id] = member.joined_at
-
-        channel = self.bot.get_channel(1324854638276509828)
-        if not channel:
-            print("❌ [DEBUG] Канал для привітання не знайдено")
-            return
-
-        bg_urls = [
-            "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/corsair_scroll_dark.png",
-            "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/scroll_2.png"
+        self.titles = [
+            "📥 Прибуття нового духу!",
+            "📥 Прибуття нової солодкої булочки!",
+            "📥 Прибуття нового котятка!",
+            "📥 Прибуття нової жертви!"
         ]
-        background_url = random.choice(bg_urls)
-        print(f"🖼️ [DEBUG] Обрано фон: {background_url}")
-        response = requests.get(background_url)
-        bg = Image.open(BytesIO(response.content)).convert("RGBA")
-
-        draw = ImageDraw.Draw(bg)
-        name_font = ImageFont.truetype("FixelDisplay-Bold.otf", 54)
-        text_font = ImageFont.truetype("FixelDisplay-SemiBold.otf", 52)
-
-        name = member.display_name
-        lines = [
-            "Пані та панове,",
-            "Зустрічайте!",
-            "Найочікуваніший",
-            f"гість – {name}"
+        self.backgrounds = [
+            "assets/corsair_scroll_dark.png",
+            "assets/welcome.png"
         ]
+        self.avatar_frame_path = "assets/5646541.png"
+        self.ban_image_url = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/BAN.png"
+        self.leave_emoji = "📤"
+        self.join_emoji = "📥"
 
-        text_color = (51, 29, 16)
-        x_text = 100
-        y_text = 360
-
-        print("📝 [DEBUG] Рендеримо текст на сувої")
-        for i, line in enumerate(lines):
-            font = name_font if name in line else text_font
-            draw.text((x_text, y_text + i * 64), line, font=font, fill=text_color)
-
-        avatar_asset = member.display_avatar.replace(size=512)
+    async def __cog_load__(self):
+        await asyncio.sleep(2)
         try:
-            avatar_bytes = await avatar_asset.read()
-            pfp = Image.open(BytesIO(avatar_bytes)).convert("RGBA").resize((160, 160))
-
-            frame_url = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/5646541.png"
-            frame_response = requests.get(frame_url)
-            frame = Image.open(BytesIO(frame_response.content)).convert("RGBA").resize((160, 160))
-
-            x_offset, y_offset = 1040, 540
-            print(f"🧷 [DEBUG] Вставляємо аватар на позицію ({x_offset}, {y_offset})")
-            bg.paste(pfp, (x_offset, y_offset), mask=pfp)
-            bg.paste(frame, (x_offset, y_offset), mask=frame)
+            self.bot.tree.add_command(self.greet_simple)
+            await self.bot.tree.sync()
+            print("🧷 [DEBUG] Слеш-команду /тест_привітання додано і синхронізовано глобально")
         except Exception as e:
-            print(f"⚠️ [DEBUG] Не вдалося завантажити аватар: {e}")
+            print(f"[DEBUG] ❌ Помилка sync в __cog_load__: {e}")
 
-        output_path = f"welcome_{member.id}.png"
-        bg.save(output_path)
-        print(f"✅ [DEBUG] Збережено зображення: {output_path}")
+    async def generate_welcome_image(self, member: discord.Member, welcome_text: str):
+        try:
+            background_path = random.choice(self.backgrounds)
+            bg = Image.open(background_path).convert("RGBA")
+
+            draw = ImageDraw.Draw(bg)
+            font_path_bold = "assets/FixelDisplay-Bold.otf"
+            font_path_regular = "assets/FixelDisplay-Regular.otf"
+            name_font = ImageFont.truetype(font_path_bold, 52)
+            text_font = ImageFont.truetype(font_path_regular, 48)
+
+            name = member.display_name
+            import textwrap
+            wrapped_lines = textwrap.wrap(welcome_text.replace("{mention}", name), width=26)
+
+            text_color = (51, 29, 16)
+            x_text = 100
+            y_text = 360
+            line_spacing = 72
+
+            for i, line in enumerate(wrapped_lines):
+                font = name_font if name in line else text_font
+                draw.text((x_text, y_text + i * line_spacing), line, font=font, fill=text_color)
+
+            avatar_url = member.display_avatar.url if member.display_avatar else member.default_avatar.url
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(avatar_url) as resp:
+                    if resp.status != 200:
+                        print(f"[DEBUG] ❌ Не вдалося отримати аватар ({resp.status})")
+                        return None
+                    avatar_bytes = await resp.read()
+
+            avatar = Image.open(BytesIO(avatar_bytes)).convert("RGBA").resize((495, 495))
+            mask = Image.new("L", (495, 495), 0)
+            draw_mask = ImageDraw.Draw(mask)
+            draw_mask.rounded_rectangle([0, 0, 495, 495], radius=90, fill=255)
+            frame = Image.open(self.avatar_frame_path).convert("RGBA").resize((495, 495))
+
+            avatar_pos = (1180, 690)
+            bg.paste(avatar, avatar_pos, mask)
+            bg.paste(frame, avatar_pos, frame)
+
+            output_buffer = BytesIO()
+            bg.save(output_buffer, format="PNG")
+            output_buffer.seek(0)
+            return discord.File(fp=output_buffer, filename="welcome.png")
+        except Exception as e:
+            print(f"[DEBUG] ❌ Помилка генерації картинки: {e.__class__.__name__}: {e}")
+            return None
+
+    @app_commands.command(name="тест_привітання", description="Надіслати тестовий welcome ембед")
+    @app_commands.describe(канал="Канал, куди буде надіслано ембед")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def greet_simple(self, interaction: discord.Interaction, канал: discord.TextChannel):
+        print(f"[DEBUG] ✅ Отримано команду /тест_привітання від {interaction.user} (ID: {interaction.user.id})")
+        print(f"[DEBUG] 📥 Канал для надсилання: {канал.name} ({канал.id})")
+
+        class Dummy:
+            def __init__(self, user):
+                self.display_name = user.display_name
+                self.display_avatar = user.display_avatar
+                self.default_avatar = user.default_avatar
+                self.mention = user.mention
+
+        fake_member = Dummy(interaction.user)
+        template = random.choice(self.templates)
+        welcome_text = template.replace("{mention}", interaction.user.display_name)
+        image_file = await self.generate_welcome_image(fake_member, welcome_text)
 
         embed = discord.Embed(
-            title=random.choice([
-                "📥 Прибуття нового духу!",
-                "📥 Прибуття нової солодкої булочки!",
-                "📥 Прибуття нового котятка!",
-                "📥 Прибуття нової жертви!"
-            ]),
-            description=f"{member.mention}",
-            color=discord.Color.dark_teal()
+            title=random.choice(self.titles),
+            description=f"{interaction.user.mention}",
+            color=discord.Color.teal()
         )
-        embed.set_image(url=f"attachment://{output_path}")
-        embed.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+        if image_file:
+            embed.set_image(url="attachment://welcome.png")
+        embed.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.avatar.url)
 
-        await channel.send(embed=embed, file=discord.File(output_path, filename=output_path))
-        os.remove(output_path)
+        try:
+            if image_file:
+                await канал.send(file=image_file, embed=embed)
+            else:
+                await канал.send(embed=embed)
+            print(f"[DEBUG] ✅ Ембед успішно надіслано в канал {канал.name}")
+        except Exception as e:
+            print(f"[DEBUG] ❌ Помилка при надсиланні ембеду в канал: {e}")
+            await interaction.response.send_message("❌ Помилка при надсиланні ембеду. Перевір журнал.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(f"✅ Ембед надіслано в {канал.mention}", ephemeral=True)
+        print("[DEBUG] ✅ Відповідь користувачу надіслано")
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         print(f"📤 Користувач вийшов: {member}")
-        channel = self.bot.get_channel(1350571574557675520)
+        channel = self.bot.get_channel(FAREWELL_CHANNEL_ID)
         if channel:
             embed = discord.Embed(
                 title="🚪 Учасник покинув сервер",
@@ -130,26 +175,8 @@ class WelcomeCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_ban(self, guild, user):
         print(f"⛔ [DEBUG] BAN: {user}")
-        channel = self.bot.get_channel(1350571574557675520)
+        channel = self.bot.get_channel(FAREWELL_CHANNEL_ID)
         reason = "Не вказано"
-
-        joined_at = self.joined_cache.get(user.id, "невідомо")
-        if hasattr(discord.utils, "snowflake_time") and isinstance(joined_at, discord.utils.snowflake_time):
-            joined_at = joined_at.strftime("%Y-%m-%d %H:%M:%S")
-        elif joined_at is None:
-            joined_at = "невідомо"
-
-        try:
-            dm_embed = discord.Embed(
-                title="⛔ Ви будете заблоковані на сервері Silent Cove",
-                description=f"Нажаль ви ({user.name}) не виправдали наданої довіри і ми вимушені з вами попрощатись. Myxa",
-                color=discord.Color.red()
-            )
-            dm_embed.set_image(url="https://github.com/Myxa83/silentconcierge/blob/main/BAN.png?raw=true")
-            await user.send(embed=dm_embed)
-            print("📩 [DEBUG] Надіслано попередження в особисті повідомлення")
-        except Exception as e:
-            print(f"⚠️ [DEBUG] Не вдалося надіслати попередження користувачу {user}: {e}")
 
         try:
             async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.ban):
@@ -159,6 +186,18 @@ class WelcomeCog(commands.Cog):
         except Exception as e:
             print(f"⚠️ [DEBUG] Помилка при отриманні причини бану: {e}")
 
+        try:
+            dm_embed = discord.Embed(
+                title="⛔ Ви будете заблоковані на сервері Silent Cove",
+                description=f"Нажаль ви ({user.name}) не виправдали наданої довіри і ми вимушені з вами попрощатись. Myxa",
+                color=discord.Color.red()
+            )
+            dm_embed.set_image(url=self.ban_image_url)
+            await user.send(embed=dm_embed)
+            print("📩 [DEBUG] Надіслано попередження в особисті повідомлення")
+        except Exception as e:
+            print(f"⚠️ [DEBUG] Не вдалося надіслати попередження користувачу {user}: {e}")
+
         if channel:
             embed = discord.Embed(
                 title="⛔ Користувача забанено!",
@@ -166,20 +205,12 @@ class WelcomeCog(commands.Cog):
                 color=discord.Color.from_rgb(252, 3, 3)
             )
             embed.add_field(name="📌 Причина:", value=reason, inline=False)
-            embed.add_field(name="📅 Долучився:", value=joined_at, inline=True)
+            embed.add_field(name="📅 Долучився:", value=self.joined_cache.get(user.id, "невідомо"), inline=True)
             embed.add_field(name="📅 Покинув:", value=discord.utils.utcnow().strftime("%Y-%m-%d %H:%M:%S"), inline=True)
             if hasattr(user, 'avatar') and user.avatar:
                 embed.set_thumbnail(url=user.avatar.url)
             await channel.send(embed=embed)
             print("📨 [DEBUG] Надіслано повідомлення про бан до каналу")
-
-    @app_commands.command(name="test", description="Тестове привітання")
-    async def slash_test(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Працюю! 🐝")
-
-    async def cog_load(self):
-        self.bot.tree.add_command(self.slash_test, guild=discord.Object(id=GUILD_ID))
-        print("🔃 [DEBUG] WelcomeCog завантажено")
 
 async def setup(bot):
     await bot.add_cog(WelcomeCog(bot))
@@ -188,11 +219,11 @@ async def setup(bot):
 async def on_ready():
     print(f"[DEBUG] ✅ WelcomeBot увійшов як {bot.user}")
     try:
-        guild = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"[DEBUG] 🔄 Slash-команди синхронізовано на сервері {guild.id}: {len(synced)}")
+        await asyncio.sleep(2)
+        synced = await bot.tree.sync()
+        print(f"[DEBUG] 🔄 Slash-команди синхронізовано глобально: {len(synced)}")
     except Exception as e:
-        print(f"[DEBUG] ❌ Помилка синхронізації команд: {e}")
+        print(f"[DEBUG] ❌ Помилка синхронізації команд у on_ready: {e}")
 
 async def main():
     print("[DEBUG] 🚀 Старт WelcomeBot...")
@@ -206,5 +237,4 @@ async def main():
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
