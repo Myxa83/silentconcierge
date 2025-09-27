@@ -1,0 +1,87 @@
+{
+  "1056623056350617600": {
+    "count": 7,
+    "dates": [
+      "2025-09-26T07:28:01.374969",
+      "2025-09-26T08:33:49.693423",
+      "2025-09-26T09:23:35.322672",
+      "2025-09-26T10:47:19.112185",
+      "2025-09-26T10:53:58.829289",
+      "2025-09-26T10:59:19.254082",
+      "2025-09-26T11:16:53.950568"
+    ],
+    "family": "BoneSnap",
+    "nickname": "Галя",
+    "guild": "Silent Cove"
+  },
+  "416286037677965314": {
+    "count": 1,
+    "dates": [
+      "2025-09-26T08:35:07.179512"
+    ]
+  },
+  "226050466864300032": {
+    "family": "KrizI",
+    "nickname": "Игорь",
+    "guild": "Silent Cove"
+  },
+  "346733425903927298": {
+    "family": "Cesarro",
+    "nickname": "Максим",
+    "guild": "Silent Cove"
+  },
+  "last_ticket": 6,
+  "tickets": {
+    "1056623056350617600": {
+      "number": 1,
+      "family": "Ланос",
+      "type": "guild",
+      "created": "2025-09-26 12:20:02"
+    },
+    "1421123139701575752": {
+      "number": 2,
+      "member_id": 279395551198445568,
+      "family": "BoneSnap",
+      "contact": "Галя",
+      "type": "guild",
+      "input_guild": null,
+      "created": "2025-09-26 13:15:58"
+    },
+    "1421123869183311946": {
+      "number": 3,
+      "member_id": 1056623056350617600,
+      "family": "Infidom",
+      "contact": "cxbvcb",
+      "type": "guild",
+      "input_guild": null,
+      "created": "2025-09-26 13:18:52"
+    },
+    "1421143170611281941": {
+      "number": 4,
+      "member_id": 1056623056350617600,
+      "family": "Infidom",
+      "contact": "Бука",
+      "type": "guild",
+      "input_guild": null,
+      "created": "2025-09-26 14:35:34"
+    },
+    "1421247547879587963": {
+      "number": 5,
+      "member_id": 1056623056350617600,
+      "family": "BoneSnap",
+      "contact": "dsfgsdfasd",
+      "type": "guild",
+      "input_guild": null,
+      "created": "2025-09-26 21:30:19"
+    },
+    "1421281974194143285": {
+      "number": 6,
+      "member_id": 279395551198445568,
+      "family": "sdfgsdfg",
+      "contact": "gsdfgsdfg",
+      "type": "friend",
+      "input_guild": "fdsg",
+      "created": "2025-09-26 23:47:07"
+    }
+  }
+}
