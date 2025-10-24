@@ -1,43 +1,65 @@
 # -*- coding: utf-8 -*-
 import random
-import time
-from io import BytesIO
+import io
+import unicodedata
 from pathlib import Path
-
 import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# --------- Канали ---------------------------------------------------------------
-WELCOME_CHANNEL_ID = 1324854638276509828          # вітання
-FAREWELL_CHANNEL_ID = 1350571574557675520         # прощання/бан/розбан
-TEST_WELCOME_CHANNEL_ID = 1370522199873814528     # тест модераторів
+WELCOME_CHANNEL_ID = 1324854638276509828
+TEST_WELCOME_CHANNEL_ID = 1370522199873814528
+WELCOME_COLOR = 0x05B2B4
 
-# --------- Кольори --------------------------------------------------------------
-WELCOME_COLOR = 0x05B2B4   # бірюзовий (вітання / розбан)
-FAREWELL_COLOR = 0xFF0000  # червоний (вихід / бан)
 
-def dbg(msg: str) -> None:
-    print(f"[DEBUG] {msg}")
+def dbg(msg: str):
+    print(f"[WELCOME] {msg}")
 
-# =================================================================================
-#                                      COG
-# =================================================================================
+
 class WelcomeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        dbg("✅ WelcomeCog ініціалізовано")
 
-        # Тексти
+        base_dir = Path(__file__).resolve().parent.parent
+        fonts_dir = base_dir / "assets" / "fonts"
+        self.font_main = fonts_dir / "Montserrat-Regular.ttf"  # основний текст
+        self.font_name = self.font_main                       # той самий для ніку
+
+        # фони
+        self.backgrounds = [
+            "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/bg1.png",
+            "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/bg2.png",
+            "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/bg3.png",
+        ]
+        self.avatar_frame = (
+            "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/ramka1.png"
+        )
+
+        # позиції та стилі
+        self.avatar_size = 355
+        self.frame_size_increase = 375
+        self.avatar_absolute = (960, 515)
+        self.text_color = (45, 26, 15, 255)
+
+        # координати сувою
+        self.scroll_boxes = {
+            "bg1.png": (130, 220, 575, 510),
+            "bg2.png": (130, 220, 575, 510),
+            "bg3.png": (130, 220, 575, 510),
+        }
+
+        # тексти
         self.templates = [
-            "@{mention} залетів на нашу базу Silent Cove [BDO EU] з двох ніг!",
-            "ДРАКОН ПРОБУДИВСЯ! @{mention} розгортає крила над сервером!",
-            "В нашій секті… ой, тобто на сервері, новий учасник – @{mention}!",
-            "@{mention} сходить із зірок прямо до нас. Магія тільки починається!",
-            "Тиша порушена. @{mention} з’явився у лісі Silent Cove!",
-            "КРИТИЧНИЙ ВИБУХ КРУТОСТІ! @{mention} активував(ла) ульту!",
-            "Пані та панове, зустрічайте! Найочікуваніший гість – @{mention}!",
+            "{name} залетів на нашу базу Silent Cove [BDO EU] з двох ніг!",
+            "ДРАКОН ПРОБУДИВСЯ! {name} розгортає крила над сервером!",
+            "В нашій секті… ой, тобто на сервері, новий учасник – {name}!",
+            "{name} сходить із зірок прямо до нас. Магія тільки починається!",
+            "Тиша порушена. {name} з’явився у лісі Silent Cove!",
+            "КРИТИЧНИЙ ВИБУХ КРУТОСТІ! {name} активував(ла) ульту!",
+            "Пані та панове, зустрічайте! Найочікуваніший гість – {name}!",
         ]
         self.titles = [
             "Прибуття нового духу!",
@@ -46,288 +68,186 @@ class WelcomeCog(commands.Cog):
             "Прибуття нової жертви!",
         ]
 
-        # Фони
-        self.backgrounds = [
-            "assets/backgrounds/bg1.png",
-            "assets/backgrounds/bg2.png",
-            "assets/backgrounds/bg3.png",
-            "assets/backgrounds/bg4.png",
-            "assets/backgrounds/bg5.png",
-        ]
-        # координати сувою (усі однакові)
-        self.scroll_boxes = {
-            "bg1.png": (100, 180, 520, 620),
-            "bg2.png": (100, 180, 520, 620),
-            "bg3.png": (100, 180, 520, 620),
-            "bg4.png": (100, 180, 520, 620),
-            "bg5.png": (100, 180, 520, 620),
-        }
+    # -------------------------------------------------------------------
+    def normalize_name(self, name: str) -> str:
+        normalized = unicodedata.normalize("NFKD", name)
+        return ''.join(c for c in normalized if ord(c) < 65536)
 
-        # Шрифт
-        self.font_regular_path = "assets/FixelDisplay-Regular.otf"
-        self.max_font_size = 44
-        self.min_font_size = 20
-        self.line_spacing = 1.25
+    def wrap_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int):
+        words = text.split()
+        lines = []
+        line = words[0]
+        for w in words[1:]:
+            if font.getlength(line + " " + w) <= max_width:
+                line += " " + w
+            else:
+                lines.append(line)
+                line = w
+        lines.append(line)
+        return lines
 
-        # Аватар + рамка
-        self.avatar_size = 250
-        self.avatar_shadow = 16
-        self.avatar_absolute = (1150, 730)
-        self.frame_path = "assets/backgrounds/ramka1.png"
-        self.frame_alpha_threshold = 10
+    def get_scaled_font(self, text: str, max_width: int, font_path: Path, start_size=80, min_size=50):
+        size = start_size
+        while size > min_size:
+            font = ImageFont.truetype(str(font_path), size)
+            bbox = font.getbbox(text)
+            if bbox[2] - bbox[0] <= max_width or size == min_size:
+                dbg(f"📐 Обраний розмір шрифту: {size}px")
+                return font
+            size -= 2
+        return ImageFont.truetype(str(font_path), min_size)
 
-    # --------------------------- Генерація картинки ---------------------------
-    async def generate_welcome_image(self, member: discord.Member, welcome_text: str) -> discord.File | None:
-        start_time = time.perf_counter()
+    def draw_multiline_text_centered(self, draw, lines, font, box, fill, username, font_name):
+        x1, y1, x2, y2 = box
+        max_width = x2 - x1
+        max_height = y2 - y1
+        line_height = font.getbbox("Ay")[3] - font.getbbox("Ay")[1]
+        spacing = int(line_height * 0.3)
+        total_height = len(lines) * line_height + (len(lines) - 1) * spacing
+        y = y1 + (max_height - total_height) / 2
+
+        for line in lines:
+            w = font.getlength(line)
+            x = x1 + (max_width - w) / 2
+            draw.text((x, y), line, font=font, fill=fill)
+            y += line_height + spacing
+
+    # -------------------------------------------------------------------
+    async def generate_welcome_image(self, member: discord.Member, text: str):
+        dbg(f"▶ Створюється картинка для {member.display_name}")
         try:
-            bg_path = random.choice(self.backgrounds)
-            bg_name = Path(bg_path).name
-            bg = Image.open(bg_path).convert("RGBA")
-            W, H = bg.size
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                bg_url = random.choice(self.backgrounds)
+                bg_name = Path(bg_url).name
+                async with session.get(bg_url) as r:
+                    bg = Image.open(io.BytesIO(await r.read())).convert("RGBA")
+
+                async with session.get(str(member.display_avatar.url)) as r:
+                    avatar = Image.open(io.BytesIO(await r.read())).convert("RGBA").resize(
+                        (self.avatar_size, self.avatar_size)
+                    )
+
+                async with session.get(self.avatar_frame) as r:
+                    frame = Image.open(io.BytesIO(await r.read())).convert("RGBA")
+                    frame_size = self.avatar_size + self.frame_size_increase
+                    frame = frame.resize((frame_size, frame_size))
+
+            mask = Image.new("L", (self.avatar_size, self.avatar_size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, self.avatar_size, self.avatar_size), fill=255)
+            avatar.putalpha(mask)
+
+            combined = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+            combined.alpha_composite(avatar, self.avatar_absolute)
+            frame_pos = (
+                self.avatar_absolute[0] - (frame_size - self.avatar_size) // 2,
+                self.avatar_absolute[1] - (frame_size - self.avatar_size) // 2 + 50
+            )
+            combined.alpha_composite(frame, frame_pos)
+
+            offset_x, offset_y = 35, 20
+            shadow = combined.copy().convert("L")
+            shadow = shadow.filter(ImageFilter.GaussianBlur(50))
+            shadow = Image.eval(shadow, lambda p: int(p * 0.5))
+            shadow_rgba = Image.new("RGBA", shadow.size, (0, 0, 0, 0))
+            shadow_rgba.putalpha(shadow)
+            bg.alpha_composite(shadow_rgba, (offset_x, offset_y))
+            bg.alpha_composite(combined)
+
+            username = self.normalize_name(member.display_name)
+            text = text.replace("{name}", username)
+            x1, y1, x2, y2 = self.scroll_boxes.get(bg_name, (100, 180, 520, 620))
+            max_width = x2 - x1
+            font = self.get_scaled_font(text, max_width, self.font_main)
             draw = ImageDraw.Draw(bg)
+            lines = self.wrap_text(text, font, max_width)
+            self.draw_multiline_text_centered(draw, lines, font, (x1, y1, x2, y2), self.text_color, username, font)
 
-            nick = str(member.display_name).replace(" ", "\u00A0")
-            base_text = welcome_text.replace("{mention}", nick)
-
-            L, T, R, B = self.scroll_boxes[bg_name]
-            box_w, box_h = (R - L, B - T)
-
-            def try_load_font(size: int):
-                try:
-                    return ImageFont.truetype(self.font_regular_path, size)
-                except:
-                    return ImageFont.load_default()
-
-            def wrap_for_width(text: str, fnt, max_w: int) -> list[str]:
-                words, lines, cur = text.split(), [], []
-                for w in words:
-                    test = (" ".join(cur + [w])) if cur else w
-                    if draw.textlength(test, font=fnt) <= max_w:
-                        cur.append(w)
-                    else:
-                        if cur:
-                            lines.append(" ".join(cur))
-                        cur = [w]
-                if cur:
-                    lines.append(" ".join(cur))
-                return lines
-
-            chosen_lines, font = [], None
-            size = self.max_font_size
-            while size >= self.min_font_size:
-                f = try_load_font(size)
-                lines = wrap_for_width(base_text, f, box_w)
-                ascent, descent = f.getmetrics()
-                line_h = ascent + descent
-                total_h = int(len(lines) * line_h * self.line_spacing)
-                if total_h <= box_h:
-                    chosen_lines, font = lines, f
-                    break
-                size -= 2
-            if not chosen_lines:
-                font = try_load_font(self.min_font_size)
-                chosen_lines = wrap_for_width(base_text, font, box_w)
-
-            ascent, descent = font.getmetrics()
-            line_h = ascent + descent
-            total_h = int(len(chosen_lines) * line_h * self.line_spacing)
-
-            # Центрування по вертикалі
-            y = T + (box_h - total_h) // 2
-
-            for line in chosen_lines:
-                line_w = int(draw.textlength(line, font=font))
-                x = L + (box_w - line_w) // 2
-                draw.text((x, int(y)), line, font=font, fill=(51, 29, 16, 255))
-                y += int(line_h * self.line_spacing)
-
-            # Аватар
-            avatar_url = str(member.display_avatar.url or member.default_avatar.url)
-            async with aiohttp.ClientSession() as session:
-                async with session.get(avatar_url) as resp:
-                    if resp.status == 200:
-                        avatar_bytes = await resp.read()
-                        av = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
-                        av = av.resize((self.avatar_size, self.avatar_size), Image.LANCZOS)
-                        mask = Image.new("L", (self.avatar_size, self.avatar_size), 0)
-                        ImageDraw.Draw(mask).ellipse([0, 0, self.avatar_size, self.avatar_size], fill=255)
-                        av.putalpha(mask)
-
-                        ax, ay = self.avatar_absolute
-
-                        # тінь
-                        shadow_size = self.avatar_size + 2 * self.avatar_shadow
-                        shadow = Image.new("RGBA", (shadow_size, shadow_size), (0, 0, 0, 0))
-                        sh_mask = Image.new("L", (self.avatar_size, self.avatar_size), 0)
-                        ImageDraw.Draw(sh_mask).ellipse([0, 0, self.avatar_size, self.avatar_size], fill=180)
-                        sh_mask = ImageOps.expand(sh_mask, border=self.avatar_shadow, fill=0)
-                        shadow.putalpha(sh_mask.filter(ImageFilter.GaussianBlur(radius=12)))
-                        bg.alpha_composite(shadow, dest=(ax - self.avatar_shadow, ay - self.avatar_shadow))
-
-                        bg.paste(av, (ax, ay), av)
-
-                        if Path(self.frame_path).exists():
-                            frame = Image.open(self.frame_path).convert("RGBA")
-                            alpha = frame.split()[3]
-                            thr = self.frame_alpha_threshold
-                            transp = alpha.point(lambda a: 255 if a < thr else 0, mode="L")
-                            bbox = transp.getbbox()
-                            if bbox:
-                                inner_w = bbox[2] - bbox[0]
-                                inner_h = bbox[3] - bbox[1]
-                                inner_d = min(inner_w, inner_h)
-                                scale = self.avatar_size / float(inner_d)
-                                new_w = int(frame.width * scale * (450/self.avatar_size))
-                                new_h = int(frame.height * scale * (450/self.avatar_size))
-                                frame_resized = frame.resize((new_w, new_h), Image.LANCZOS)
-                                off_x = int(bbox[0] * scale)
-                                off_y = int(bbox[1] * scale)
-                                fx = ax - off_x
-                                fy = ay - off_y
-                                bg.alpha_composite(frame_resized, dest=(fx, fy))
-                            else:
-                                fx = ax - (frame.width - self.avatar_size)//2
-                                fy = ay - (frame.height - self.avatar_size)//2
-                                bg.alpha_composite(frame, dest=(fx, fy))
-
-            buf = BytesIO()
+            buf = io.BytesIO()
             bg.save(buf, format="PNG")
             buf.seek(0)
+            dbg("✅ Зображення створено")
             return discord.File(fp=buf, filename="welcome.png")
+
         except Exception as e:
-            dbg(f"❌ Помилка генерації: {e}")
+            dbg(f"❌ Помилка при генерації картинки: {type(e).__name__}: {e}")
             return None
 
-    # --------------------------- Події ---------------------------
+    # -------------------------------------------------------------------
+    def make_embed(self, member: discord.Member) -> discord.Embed:
+        embed = discord.Embed(
+            title=random.choice(self.titles),
+            description=f"{member.mention}",
+            color=WELCOME_COLOR,
+        )
+        embed.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.display_avatar.url)
+        embed.set_image(url="attachment://welcome.png")
+        return embed
+
+    # -------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         if member.bot:
             return
+        dbg(f"🟢 Новий учасник: {member.display_name}")
         channel = self.bot.get_channel(WELCOME_CHANNEL_ID)
-        text = random.choice(self.templates).replace("{mention}", member.display_name)
+        if not channel:
+            dbg("❌ Канал не знайдено!")
+            return
+
+        name = self.normalize_name(member.display_name)
+        text = random.choice(self.templates).replace("{name}", name)
         file = await self.generate_welcome_image(member, text)
         if file:
-            embed = discord.Embed(
-                title=random.choice(self.titles),
-                description=f"{member.display_name}",
-                color=WELCOME_COLOR
-            )
-            embed.set_image(url="attachment://welcome.png")
-            embed.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.display_avatar.url)
+            embed = self.make_embed(member)
             await channel.send(file=file, embed=embed)
+            dbg("✅ Відправлено публічне привітання")
 
-    @commands.Cog.listener()
-    async def on_member_remove(self, member: discord.Member):
-        channel = self.bot.get_channel(FAREWELL_CHANNEL_ID)
-        embed = discord.Embed(
-            title="🚪 Учасник покинув сервер",
-            description=f"{member.display_name} більше з нами нема...",
-            color=FAREWELL_COLOR
-        )
-        await channel.send(embed=embed)
+        try:
+            dm = await member.create_dm()
+            await dm.send(
+                "Привіт, шукачу пригод!\n"
+                "Ти віриш, що сьогодні чудовий день?\n"
+                "Я ось вірю, адже ти завітав сьогодні!"
+            )
+            dbg("✅ Привітання у DM відправлено")
+        except discord.Forbidden:
+            dbg(f"⚠️ Не вдалося надіслати DM {member.display_name} — повідомлення закриті.")
+        except Exception as e:
+            dbg(f"❌ Помилка при відправці DM: {type(e).__name__}: {e}")
 
-    @commands.Cog.listener()
-    async def on_member_ban(self, guild: discord.Guild, user: discord.User):
-        channel = self.bot.get_channel(FAREWELL_CHANNEL_ID)
-        embed = discord.Embed(
-            title="⛔ Користувача забанено!",
-            description=f"{user.mention} порушив правила Silent Cove.",
-            color=FAREWELL_COLOR
-        )
-        embed.set_thumbnail(url=user.display_avatar.url)
-        embed.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.display_avatar.url)
-        await channel.send(embed=embed)
-
-    # --------------------------- Команди ---------------------------
-    @app_commands.command(name="testwelcome", description="Тест привітання у мод-каналі")
+    # -------------------------------------------------------------------
+    @app_commands.command(name="mockwelcome", description="Тест привітання (канал + DM)")
     @app_commands.checks.has_permissions(administrator=True)
-    async def test_welcome(self, interaction: discord.Interaction):
+    async def mock_welcome(self, interaction: discord.Interaction):
         member = interaction.user
+        dbg(f"/mockwelcome викликано від {member.display_name}")
         channel = self.bot.get_channel(TEST_WELCOME_CHANNEL_ID)
         if not channel:
             await interaction.response.send_message("❌ Тестовий канал не знайдено.", ephemeral=True)
             return
-
         await interaction.response.defer(ephemeral=True)
-        file = await self.generate_welcome_image(member, random.choice(self.templates))
+
+        name = self.normalize_name(member.display_name)
+        text = random.choice(self.templates).replace("{name}", name)
+        file = await self.generate_welcome_image(member, text)
         if file:
-            embed = discord.Embed(
-                title=random.choice(self.titles),
-                description=f"{member.display_name}",
-                color=WELCOME_COLOR
-            )
-            embed.set_image(url="attachment://welcome.png")
-            embed.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.display_avatar.url)
+            embed = self.make_embed(member)
             msg = await channel.send(file=file, embed=embed)
-            await interaction.followup.send(f"✅ Тестове привітання: [jump]({msg.jump_url})", ephemeral=True)
+            try:
+                dm = await member.create_dm()
+                await dm.send(
+                    "Привіт, шукачу пригод!\n"
+                    "Ти віриш, що сьогодні чудовий день?\n"
+                    "Я ось вірю, адже ти завітав сьогодні!"
+                )
+                await interaction.followup.send(f"✅ Тест у канал + DM надіслано!\n[jump]({msg.jump_url})", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"⚠️ Тест у канал пройшов, але DM не відправлено: {e}", ephemeral=True)
         else:
             await interaction.followup.send("❌ Не вдалося створити картинку.", ephemeral=True)
 
-    @app_commands.command(name="ban", description="Забанити користувача на сервері")
-    @app_commands.checks.has_permissions(ban_members=True)
-    async def ban_user(self, interaction: discord.Interaction, member: discord.Member, reason: str = "Не вказано"):
-        guild = interaction.guild
-        channel = self.bot.get_channel(FAREWELL_CHANNEL_ID)
 
-        await interaction.response.defer(ephemeral=True)
-        try:
-            await guild.ban(member, reason=reason, delete_message_days=0)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Не вдалося забанити {member.mention}: {e}", ephemeral=True)
-            return
-
-        if channel:
-            embed = discord.Embed(
-                title="⛔ Користувача забанено!",
-                description=f"{member.mention} порушив(ла) правила Silent Cove.",
-                color=FAREWELL_COLOR
-            )
-            embed.set_thumbnail(url=member.display_avatar.url)
-            if member.joined_at:
-                embed.add_field(name="Дата приєднання", value=discord.utils.format_dt(member.joined_at, style="f"), inline=True)
-            embed.add_field(name="Дата виходу", value=discord.utils.format_dt(discord.utils.utcnow(), style="f"), inline=True)
-            embed.add_field(name="Причина", value=reason, inline=False)
-            embed.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.display_avatar.url)
-            await channel.send(embed=embed)
-
-        await interaction.followup.send(f"✅ {member.mention} був забанений. Причина: {reason}", ephemeral=True)
-
-    @app_commands.command(name="unban", description="Розбанити користувача (за user або ID)")
-    @app_commands.checks.has_permissions(ban_members=True)
-    async def unban_user(self, interaction: discord.Interaction, user: discord.User, reason: str = "Не вказано"):
-        guild = interaction.guild
-        channel = self.bot.get_channel(FAREWELL_CHANNEL_ID)
-
-        await interaction.response.defer(ephemeral=True)
-        try:
-            await guild.unban(user, reason=reason)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Не вдалося розбанити {user.mention}: {e}", ephemeral=True)
-            return
-
-        if channel:
-            embed = discord.Embed(
-                title="🟢 Користувача розбанено",
-                description=f"{user.mention} знову може приєднатись до Silent Cove.",
-                color=WELCOME_COLOR
-            )
-            embed.set_thumbnail(url=user.display_avatar.url)
-            embed.add_field(name="Причина", value=reason, inline=False)
-            embed.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.display_avatar.url)
-            await channel.send(embed=embed)
-
-        await interaction.followup.send(f"✅ {user.mention} розбанений. Причина: {reason}", ephemeral=True)
-
-    @app_commands.command(name="syncall", description="Форсована синхронізація всіх слеш-команд")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def sync_all(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            synced = await self.bot.tree.sync()
-            await interaction.followup.send(f"✅ Синхронізовано {len(synced)} слеш-команд.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Помилка при синхронізації: {e}", ephemeral=True)
-
-# ============================= SETUP ============================================
 async def setup(bot: commands.Bot):
     await bot.add_cog(WelcomeCog(bot))
+    dbg("✅ WelcomeCog (Montserrat без static, фінальний) підвантажено")

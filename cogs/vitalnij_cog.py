@@ -1,367 +1,283 @@
-# cogs/vitalnij_cog.py
-import re
-import json
+# -*- coding: utf-8 -*-
+# cogs/vitalnij_cog.py — FINAL SAFE VERSION 🌊
+import json, aiohttp, asyncio, re
+from pathlib import Path
+from datetime import datetime
 import discord
 from discord.ext import commands
 from discord import app_commands
-from pathlib import Path
-from datetime import datetime
 
-import aiohttp
-from aiohttp import ClientTimeout
-from bs4 import BeautifulSoup
-
-from config.env_loader import GUILD_ID
-
-# ==== ID каналів і ролей ====
+# ============================ IDs / CONFIG ============================
 WELCOME_CHAN = 1420430254375178280
 CATEGORY_TICKETS = 1323454227816906803
 ROLE_LEADER = 1323454517664157736
 ROLE_MODERATOR = 1375070910138028044
 ROLE_RECRUIT = 1323455304708522046
 ROLE_FRIEND = 1325124628330446951
-ROLE_NEWBIE = 1420436236987924572  # Новобранець
+ROLE_GUEST = 1325118787019866253
+ROLE_NEWBIE = 1420436236987924572
+GUILD_ID = 1323454227816906802
+TOKEN_PATH = Path("config/credentials.json")
 
-# ==== Файли даних ====
-DATA_FILE = Path("data/tickets.json")
-PROFILE_FILE = Path("data/profiles.json")
-GUILD_TAGS_FILE = Path("data/guild_tags.json")
+# ============================ HELPERS ============================
+def load_json(p: Path):
+    if not p.exists(): return {}
+    try: return json.loads(p.read_text(encoding="utf-8"))
+    except: return {}
 
-# ---------- утиліти ----------
-def load_json(file: Path) -> dict:
-    if file.exists():
-        return json.loads(file.read_text(encoding="utf-8"))
-    return {}
+# ============================ TOSHI LOOKUP ============================
+class ToshiLookup:
+    def __init__(self):
+        self.base_user_url = "https://toshi.kikkia.dev/api/lookup/user"
+        self.base_profile_url = "https://toshi.kikkia.dev/api/lookup/profile"
 
-def save_json(file: Path, data: dict):
-    file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    def load_token(self):
+        if not TOKEN_PATH.exists(): return None
+        try:
+            return json.loads(TOKEN_PATH.read_text(encoding="utf-8")).get("toshi_token")
+        except: return None
 
-def load_guild_tags() -> dict:
-    return load_json(GUILD_TAGS_FILE)
+    async def fetch_json(self, url, params=None):
+        token = self.load_token()
+        if not token: return {"error": "Missing token"}
+        headers = {"User-Agent": "SilentConcierge/1.0", "Cookie": f"token={token}"}
+        try:
+            async with aiohttp.ClientSession(headers=headers) as s:
+                async with s.get(url, params=params) as r:
+                    if r.status != 200: return {"error": f"HTTP {r.status}"}
+                    return await r.json()
+        except Exception as e: return {"error": str(e)}
 
-def next_ticket_number() -> int:
-    data = load_json(DATA_FILE)
-    num = int(data.get("last_ticket", 0)) + 1
-    data["last_ticket"] = num
-    save_json(DATA_FILE, data)
-    return num
+    async def get_profile(self, family: str):
+        u = await self.fetch_json(self.base_user_url, {"familyName": family, "region": "EU"})
+        if not u or "error" in u: return u
+        m = u.get("memberships") or []
+        if not m: return {"error": "Family not found"}
+        pid = next((i.get("id") or i.get("profileTarget") for i in m if i.get("active")), None) or \
+              m[-1].get("id") or m[-1].get("profileTarget")
+        if not pid: return {"error": "Profile ID not found"}
+        p = await self.fetch_json(self.base_profile_url, {"profileTarget": pid})
+        if "error" in p: return p
+        return {"memberships": m, "profile": p}
 
-def sanitize_channel_name(name: str) -> str:
-    base = re.sub(r"\s+", "-", name.strip())
-    base = re.sub(r"[^a-zA-Z0-9\-\_]", "", base)
-    base = base.lower() or "user"
-    return f"ticket-{base}"[:95]
-
-# ---------- парсер профілю ----------
-async def fetch_profile(family_name: str) -> dict:
-    result = {
-        "family": family_name,
-        "created": None,
-        "guild": None,
-        "guild_history": [],
-        "characters": [],
-        "max_level": None,
-    }
-
-    url = f"https://www.naeu.playblackdesert.com/en-us/Adventure/Profile?profileTarget={family_name}"
-    try:
-        timeout = ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    return result
-                html = await resp.text()
-    except Exception:
-        return result
-
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        created_el = soup.select_one(".adventure__summary .text")
-        if created_el:
-            result["created"] = created_el.text.strip()
-
-        guild_el = soup.select_one(".adventure__summary .guild")
-        if guild_el:
-            result["guild"] = guild_el.text.strip()
-
-        chars = soup.select(".character__item")
-        max_level = 0
-        for ch in chars:
-            name_el = ch.select_one(".character__name")
-            level_el = ch.select_one(".character__level")
-            if not name_el or not level_el:
-                continue
-            try:
-                lvl = int(level_el.text.replace("Lv.", "").strip())
-            except ValueError:
-                continue
-            result["characters"].append({"name": name_el.text.strip(), "level": lvl})
-            max_level = max(max_level, lvl)
-        if max_level:
-            result["max_level"] = max_level
-    except Exception:
-        pass
-
-    # кеш історії гільдій
-    data = load_json(PROFILE_FILE)
-    fam = data.get(
-        family_name,
-        {"family": family_name, "created": result["created"], "guild_history": []},
-    )
-    now = datetime.utcnow().strftime("%Y-%m-%d")
-
-    if result["guild"]:
-        last = fam["guild_history"][-1] if fam["guild_history"] else None
-        if not last or last.get("guild") != result["guild"]:
-            if last and last.get("to") is None:
-                last["to"] = now
-            fam["guild_history"].append({"guild": result["guild"], "from": now, "to": None})
-
-    if result["created"]:
-        fam["created"] = result["created"]
-    if result["characters"]:
-        fam["characters"] = result["characters"]
-    if result["max_level"]:
-        fam["max_level"] = result["max_level"]
-
-    data[family_name] = fam
-    save_json(PROFILE_FILE, data)
-
-    result["guild_history"] = fam.get("guild_history", [])
-    return result
-
-# ---------- модалки ----------
+# ============================== MODALS ================================
 class RecruitModal(discord.ui.Modal, title="Заявка в гільдію"):
-    family_name = discord.ui.TextInput(label="Family Name", required=True)
-    contact = discord.ui.TextInput(label="Як звертатися (необов'язково)", required=False, max_length=64)
-
-    def __init__(self, cog: "VitalnijCog"):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.create_ticket(interaction, "guild", self.family_name.value.strip(),
-                                     self.contact.value.strip() if self.contact.value else None, None)
-
-class FriendModal(discord.ui.Modal, title="Заявка друга"):
-    family_name = discord.ui.TextInput(label="Family Name", required=True)
-    guild_name = discord.ui.TextInput(label="Гільдія", required=True)
-    contact = discord.ui.TextInput(label="Як звертатися (необов'язково)", required=False, max_length=64)
-
-    def __init__(self, cog: "VitalnijCog"):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.create_ticket(interaction, "friend", self.family_name.value.strip(),
-                                     self.contact.value.strip() if self.contact.value else None,
-                                     self.guild_name.value.strip())
-
-# ---------- кнопки в тікет-каналі ----------
-class TicketModeratorView(discord.ui.View):
-    def __init__(self, member: discord.Member, ticket_type: str, family_name: str | None, input_guild: str | None):
+    def __init__(self, cog):
         super().__init__(timeout=None)
-        self.member = member
-        self.ticket_type = ticket_type
-        self.family_name = family_name
-        self.input_guild = input_guild
+        self.cog = cog
+        self.family = discord.ui.TextInput(label="Family Name", required=True)
+        self.display = discord.ui.TextInput(label="Як до тебе звертатися?", required=True)
+        for i in (self.family, self.display): self.add_item(i)
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if any(r.id in [ROLE_LEADER, ROLE_MODERATOR] for r in interaction.user.roles):
-            return True
-        await interaction.response.send_message("⛔ Лише модератори/лідер можуть користуватись цими кнопками.", ephemeral=True)
-        return False
+    async def on_submit(self, itx: discord.Interaction):
+        await self.cog.create_ticket(itx, "guild", self.family.value, self.display.value)
 
-    @discord.ui.button(label="Закрити тікет", style=discord.ButtonStyle.secondary)
-    async def close_ticket(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.channel.delete(reason="Ticket closed")
+class FriendModal(discord.ui.Modal, title="Дружня анкета"):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.family = discord.ui.TextInput(label="Family Name", required=True)
+        self.display = discord.ui.TextInput(label="Як до тебе звертатися?", required=True)
+        for i in (self.family, self.display): self.add_item(i)
 
-    @discord.ui.button(label="Прийняти в гільдію", style=discord.ButtonStyle.success)
-    async def accept_guild(self, interaction: discord.Interaction, _: discord.ui.Button):
-        role = interaction.guild.get_role(ROLE_RECRUIT)
-        if role:
-            await self.member.add_roles(role, reason="Прийнято як Рекрута")
-        if self.family_name:
-            try:
-                await self.member.edit(nick=f"[SC] {self.family_name}")
-            except discord.Forbidden:
-                pass
-        await interaction.response.send_message("✅ Прийнято в гільдію.", ephemeral=True)
+    async def on_submit(self, itx: discord.Interaction):
+        await self.cog.create_ticket(itx, "friend", self.family.value, self.display.value)
 
-    @discord.ui.button(label="Прийняти як Друг", style=discord.ButtonStyle.primary)
-    async def accept_friend(self, interaction: discord.Interaction, _: discord.ui.Button):
-        role = interaction.guild.get_role(ROLE_FRIEND)
-        if role:
-            await self.member.add_roles(role, reason="Підтверджено як Друг")
-        await interaction.response.send_message("✅ Прийнято як Друг.", ephemeral=True)
-
-    @discord.ui.button(label="Бан", style=discord.ButtonStyle.danger)
-    async def ban_user(self, interaction: discord.Interaction, _: discord.ui.Button):
-        try:
-            await self.member.ban(reason="Відмова в заявці")
-            await interaction.channel.delete(reason="Бан користувача")
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ Не вдалося забанити користувача.", ephemeral=True)
-
-# ---------- welcome-кнопки ----------
+# ========================== PUBLIC WELCOME VIEW =======================
 class WelcomeView(discord.ui.View):
-    def __init__(self, cog: "VitalnijCog"):
+    def __init__(self, cog): 
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Я хочу в гільдію", style=discord.ButtonStyle.success)
-    async def btn_guild(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(RecruitModal(self.cog))
+    @discord.ui.button(label="Хочу в гільдію", style=discord.ButtonStyle.success, custom_id="welcome_guild")
+    async def g(self, itx: discord.Interaction, _):
+        await itx.response.send_modal(RecruitModal(self.cog))
 
-    @discord.ui.button(label="Друг", style=discord.ButtonStyle.primary)
-    async def btn_friend(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(FriendModal(self.cog))
+    @discord.ui.button(label="Друг", style=discord.ButtonStyle.primary, custom_id="welcome_friend")
+    async def f(self, itx: discord.Interaction, _):
+        await itx.response.send_modal(FriendModal(self.cog))
 
-    @discord.ui.button(label="Не визначився", style=discord.ButtonStyle.secondary)
-    async def btn_guest(self, interaction: discord.Interaction, _: discord.ui.Button):
-        # НЕ ховаємо канал welcome і НЕ знімаємо роль Новобранець
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except discord.InteractionResponded:
-            pass
-        await self.cog.create_ticket(interaction, "guest", interaction.user.display_name, None, None)
+    @discord.ui.button(label="Ще не визначився", style=discord.ButtonStyle.secondary, custom_id="welcome_guest")
+    async def s(self, itx: discord.Interaction, _):
+        await self.cog.create_ticket(itx, "guest", itx.user.display_name, itx.user.display_name)
 
-# ---------- основний ког ----------
+# ======================= MODERATOR VIEW ==============================
+class GuildSelect(discord.ui.Select):
+    def __init__(self, cog, ch_id: int):
+        self.cog, self.ch_id = cog, ch_id
+        opts = [discord.SelectOption(label="Silent Cove", value="SC"),
+                discord.SelectOption(label="Rumbling Cove", value="RC")]
+        super().__init__(placeholder="Обери гільдію…", options=opts, custom_id=f"guild_sel:{ch_id}")
+
+    async def callback(self, itx: discord.Interaction):
+        if not await self.cog.is_moderator(itx.user):
+            return await itx.response.send_message("🚫 У тебе немає прав.", ephemeral=True)
+        await itx.response.defer(ephemeral=True)
+        await self.cog.accept_ticket(itx, self.ch_id, "guild", self.values[0])
+
+class TicketModeratorView(discord.ui.View):
+    def __init__(self, cog, ch_id: int):
+        super().__init__(timeout=None)
+        self.cog, self.ch_id = cog, ch_id
+        self.add_item(GuildSelect(cog, ch_id))
+
+    @discord.ui.button(label="💬 Додати друга", style=discord.ButtonStyle.primary, custom_id="mod_friend")
+    async def f(self, itx, _):
+        if not await self.cog.is_moderator(itx.user): 
+            return await itx.response.send_message("🚫 Немає прав.", ephemeral=True)
+        await itx.response.defer(ephemeral=True)
+        await self.cog.accept_ticket(itx, self.ch_id, "friend")
+
+    @discord.ui.button(label="🌫️ Додати гостя", style=discord.ButtonStyle.secondary, custom_id="mod_guest")
+    async def g(self, itx, _):
+        if not await self.cog.is_moderator(itx.user): 
+            return await itx.response.send_message("🚫 Немає прав.", ephemeral=True)
+        await itx.response.defer(ephemeral=True)
+        await self.cog.accept_ticket(itx, self.ch_id, "guest")
+
+# ============================== MAIN COG ===============================
 class VitalnijCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
+    def __init__(self, bot): 
+        self.bot, self.toshi = bot, ToshiLookup()
+
+    async def is_moderator(self, user: discord.Member):
+        return any(r.id in {ROLE_MODERATOR, ROLE_LEADER} for r in user.roles)
 
     @commands.Cog.listener()
     async def on_ready(self):
+        self.bot.add_view(WelcomeView(self))
+        self.bot.add_view(TicketModeratorView(self, 0))
+        print("[VitalnijCog] Persistent views reloaded")
+
+    @app_commands.command(name="send_welcome", description="Надіслати вітальний ембед Silent Cove")
+    async def send_welcome(self, itx: discord.Interaction):
+        ch = itx.guild.get_channel(WELCOME_CHAN)
+        if not ch:
+            return await itx.response.send_message("❌ Канал не знайдено.", ephemeral=True)
+
+        e = discord.Embed(
+            title="<a:SilentCove:1425637670197133444> · Ласкаво просимо до **Silent Cove!**",
+            description=("Ми раді тебе бачити у нас на сервері!\n"
+                         "Це наша **Тиха Затока**, у якій ми будуємо\n"
+                         "**Дружнє товариство** та спільноту, яка оточує допомогою й підтримкою.\n\n"
+                         "Обери, з якої причини ти завітав до нас.\n\n"
+                         "Найкращі герої нашої гільдії змагаються,\n"
+                         "проливаючи кров за можливість поспілкуватися з тобою!"),
+            color=discord.Color.dark_teal())
+        e.set_image(url="https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/%D0%97%D0%B0%D0%BF%D0%B8%D1%81%D1%8C_2025_09_25_02_22_16_748.gif")
+        e.set_footer(text="Silent Concierge by Myxa", icon_url=self.bot.user.display_avatar.url)
+        await ch.send(embed=e, view=WelcomeView(self))
+        await itx.response.send_message("✅ Надіслано вітальне повідомлення.", ephemeral=True)
+
+    # ----------------- створення тикета -----------------
+    async def create_ticket(self, itx, typ, family, display):
+        await itx.response.defer(ephemeral=True, thinking=True)
+        g, m = itx.guild, itx.user
+        cat = g.get_channel(CATEGORY_TICKETS)
+        ch = await g.create_text_channel(
+            name=f"ticket-{m.name}", category=cat,
+            overwrites={
+                g.default_role: discord.PermissionOverwrite(view_channel=False),
+                m: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                g.me: discord.PermissionOverwrite(view_channel=True),
+                g.get_role(ROLE_MODERATOR): discord.PermissionOverwrite(view_channel=True)
+            }, reason="Ticket created")
+
+        e = discord.Embed(title=f"🎫 Заявка від {m.display_name}", description="Тільки модератори бачать це повідомлення.", color=discord.Color.teal())
+        await ch.send(embed=e, view=TicketModeratorView(self, ch.id))
+        asyncio.create_task(self.dm_ticket_to_mods(itx, ch.id, typ, family))
+        return ch.id
+
+    # ----------------- прийняття тикету -----------------
+    async def accept_ticket(self, itx, ch_id, mode, tag=None):
+        g = itx.guild
+        ch = g.get_channel(ch_id)
+        if not ch:
+            return
+
+        data = {"guild": ROLE_RECRUIT, "friend": ROLE_FRIEND, "guest": ROLE_GUEST}
+        m = next((o for o in ch.overwrites if isinstance(o, discord.Member)), None)
+        if not m:
+            return
+
+        fam = re.sub(r"[^A-Za-z0-9]+", "", m.display_name)
+        tag = tag or "SC"
+        new_nick = f"[{tag}] {fam} | {m.display_name}" if mode == "guild" else m.display_name
+
+        # -------- зміна ніку --------
+        nick_changed = True
         try:
-            self.bot.add_view(WelcomeView(self))
+            await m.edit(nick=new_nick)
+        except discord.Forbidden:
+            nick_changed = False
         except Exception:
-            pass
+            nick_changed = False
 
-    @app_commands.command(name="send_welcome", description="Надіслати welcome-ембед із кнопками")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def send_welcome(self, interaction: discord.Interaction):
-        channel = self.bot.get_channel(WELCOME_CHAN)
-        if not channel:
-            return await interaction.response.send_message("❌ Канал із кнопками не знайдено.", ephemeral=True)
+        add_role = g.get_role(data[mode])
+        nb = g.get_role(ROLE_NEWBIE)
 
-        embed = discord.Embed(
-            title="Ласкаво просимо до 𝗦𝗶𝗹𝗲𝗻𝘁 𝗖𝗼𝘃𝗲!",
-            description=(
-                "Ми раді тебе бачити у нас на сервері.\n"
-                "Це наша Тиха Затока, в якій ми будуємо дружнє товариство і спільноту,\n"
-                "яка оточує допомогою та підтримкою!\n\n"
-                "Обери, з якої причини ти завітав до нас.\n\n"
-                "Найкращі герої нашої гільдії змагаються, проливаючи кров за можливість поспілкуватися з тобою!\n\n"
-                "Почекай ще трішки..."
-            ),
-            color=0x00FFFF,
-        )
-        embed.set_image(url="https://i.imgur.com/50jcd3X.gif")
-        embed.set_footer(text="Silent Concierge by Myxa")
-
-        await channel.send(embed=embed, view=WelcomeView(self))
-        await interaction.response.send_message("📩 Ембед надіслано.", ephemeral=True)
-
-    # створення тікета
-    async def create_ticket(self, interaction: discord.Interaction, ticket_type: str,
-                            family_name: str | None, contact: str | None, input_guild: str | None):
-        guild: discord.Guild = interaction.guild
-        member: discord.Member = interaction.user
-
-        # ❗ Для "guest" не ховаємо welcome
-        if ticket_type != "guest":
-            welcome_channel = guild.get_channel(WELCOME_CHAN)
-            if welcome_channel and not any(r.id in [ROLE_LEADER, ROLE_MODERATOR] for r in member.roles):
-                await welcome_channel.set_permissions(member, overwrite=discord.PermissionOverwrite(view_channel=False))
-
-        parsed = await fetch_profile(family_name or member.display_name)
-
-        number = next_ticket_number()
-        created_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-        channel_name = sanitize_channel_name(family_name or member.name)
-        category = guild.get_channel(CATEGORY_TICKETS)
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            member: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            guild.get_role(ROLE_LEADER): discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            guild.get_role(ROLE_MODERATOR): discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        }
-        ticket_channel = await guild.create_text_channel(
-            name=channel_name, category=category, overwrites=overwrites, reason="Новий тікет"
-        )
-
-        # збереження в JSON
-        data = load_json(DATA_FILE)
-        tickets = data.setdefault("tickets", {})
-        tickets[str(ticket_channel.id)] = {
-            "number": number,
-            "member_id": member.id,
-            "family": family_name,
-            "contact": contact,
-            "type": ticket_type,
-            "input_guild": input_guild,
-            "created": created_str,
-        }
-        data["last_ticket"] = number
-        save_json(DATA_FILE, data)
-
-        intro_text = {
-            "guild": f"{member.mention} бажає долучитись до гільдії **Silent Cove**.",
-            "friend": f"{member.mention} планує долучитись до сервера як **Друг**.",
-            "guest": f"{member.mention} ще не визначився, але хоче подивитися нашу спільноту.",
-        }[ticket_type]
-
-        user_text = (
-            f"🎫 **Номер тікета:** #{number}\n\n"
-            f"**Ваші дані:**\n"
-            f"- Family Name: **{family_name or member.display_name}**\n"
-            f"{('- Гільдія: **' + input_guild + '**\\n') if input_guild else ''}"
-            f"{('- Як звертатися: **' + contact + '**\\n') if contact else ''}\n"
-            f"🕒 **Час створення:** {created_str}\n\n"
-            f"{intro_text}\n\n"
-            f"Ця інформація вже відправлена модераторам і буде розглянута найближчим часом."
-        )
-
-        await ticket_channel.send(user_text, view=TicketModeratorView(member, ticket_type, family_name, input_guild))
-
-        # embed у DM модам
-        embed = discord.Embed(title="📩 Новий тікет", color=discord.Color.teal())
-        embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url if member.display_avatar else None)
-        embed.add_field(name="Family Name (введено)", value=family_name or "—", inline=True)
-        if input_guild:
-            embed.add_field(name="Гільдія (введено)", value=input_guild, inline=True)
-        if contact:
-            embed.add_field(name="Як звертатися", value=contact, inline=True)
-        embed.add_field(name="Час створення тікета", value=created_str, inline=False)
-        embed.add_field(name="Дата акаунту (парсинг)", value=parsed.get("created") or "невідомо", inline=True)
-        embed.add_field(name="Поточна гільдія (парсинг)", value=parsed.get("guild") or "—", inline=True)
-        embed.add_field(name="Максимальний рівень", value=parsed.get("max_level") or "—", inline=True)
-
-        if parsed.get("guild_history"):
-            hist = "\n".join([f"- {h['guild']} ({h['from']} → {h.get('to','тепер')})" for h in parsed["guild_history"]])
-            embed.add_field(name="Історія гільдій", value=hist, inline=False)
-
-        recipients = set()
-        for rid in (ROLE_LEADER, ROLE_MODERATOR):
-            role = guild.get_role(rid)
-            if role:
-                recipients.update(role.members)
-
-        for mod in recipients:
+        # -------- видача ролі --------
+        role_added = True
+        if add_role:
             try:
-                await mod.send(embed=embed)
+                await m.add_roles(add_role, reason=f"Ticket accepted as {mode}")
             except discord.Forbidden:
+                role_added = False
+            except Exception:
+                role_added = False
+
+        # -------- видалення ролі Newbie --------
+        role_removed = True
+        if nb and nb in m.roles:
+            try:
+                await m.remove_roles(nb, reason="Ticket accepted cleanup")
+            except discord.Forbidden:
+                role_removed = False
+            except Exception:
+                role_removed = False
+
+        # -------- якщо щось не вдалось — DM модеру --------
+        msg_parts = []
+        if not nick_changed:
+            msg_parts.append(f"⚠️ Не вдалося змінити нік користувача **{m.display_name}** — бракує прав або роль стоїть вище.")
+        if not role_added:
+            msg_parts.append(f"⚠️ Не вдалося видати роль для **{m.display_name}** — перевір права або ієрархію ролей.")
+        if not role_removed:
+            msg_parts.append(f"⚠️ Не вдалося прибрати роль Newbie у **{m.display_name}**.")
+
+        if msg_parts:
+            try:
+                await itx.user.send("\n".join(msg_parts))
+            except:
                 pass
 
+        # -------- закриваємо канал --------
         try:
-            await interaction.followup.send("✅ Тікет створено.", ephemeral=True)
-        except discord.InteractionResponded:
+            await ch.delete(reason=f"Ticket accepted as {mode}")
+        except:
             pass
 
-# ---------- setup ----------
+    # ----------------- DM до модів -----------------
+    async def dm_ticket_to_mods(self, itx, ticket_channel_id, typ, family):
+        g, u = itx.guild, itx.user
+        prof = await self.toshi.get_profile(family)
+        ts = int(datetime.utcnow().timestamp())
+        tmap = {"guild": "🪪 Хоче вступити в гільдію", "friend": "💬 Хоче долучитися як друг", "guest": "🌫️ Ще не визначився"}
+        e = discord.Embed(title=f"📨 Нова заявка • {u.display_name}", description=tmap.get(typ, typ), color=discord.Color.dark_teal())
+        e.add_field(name="Discord створено", value=f"<t:{int(u.created_at.timestamp())}:F>")
+        e.add_field(name="Подано", value=f"<t:{ts}:F>")
+        e.add_field(name="Посилання на тікет", value=f"[Відкрити](https://discord.com/channels/{g.id}/{ticket_channel_id})", inline=False)
+        if prof and "error" not in prof:
+            p = prof.get("profile", {})
+            if p.get("class"): e.add_field(name="Клас", value=p["class"])
+            if p.get("level"): e.add_field(name="Рівень", value=p["level"])
+            if p.get("gearscore"): e.add_field(name="GearScore", value=p["gearscore"])
+        e.set_footer(text="Silent Concierge • Автоінфа з Toshi")
+        mod_role = g.get_role(ROLE_MODERATOR)
+        for mod in mod_role.members:
+            try: await mod.send(embed=e)
+            except: pass
+
+# ============================ SETUP ==================================
 async def setup(bot: commands.Bot):
     await bot.add_cog(VitalnijCog(bot))
