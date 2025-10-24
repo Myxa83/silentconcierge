@@ -1,0 +1,58 @@
+[
+  {
+    "time": "2025-10-07 17:33:45",
+    "action": "Sync Error",
+    "user": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂 (279395551198445568)",
+    "guild": "𝓢𝓲𝓵𝓮𝓷𝓽 𝓒𝓸𝓿𝓮 [ 𝑩𝑫𝑶 𝑬𝑼 ] (1323454227816906802)",
+    "status": "Error",
+    "details": "404 Not Found (error code: 10062): Unknown interaction"
+  },
+  {
+    "time": "2025-10-07 17:34:20",
+    "action": "Sync Error",
+    "user": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂 (279395551198445568)",
+    "guild": "𝓢𝓲𝓵𝓮𝓷𝓽 𝓒𝓸𝓿𝓮 [ 𝑩𝑫𝑶 𝑬𝑼 ] (1323454227816906802)",
+    "status": "Error",
+    "details": "404 Not Found (error code: 10062): Unknown interaction"
+  },
+  {
+    "time": "2025-10-07 19:36:59",
+    "action": "Sync Error",
+    "user": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂 (279395551198445568)",
+    "guild": "𝓢𝓲𝓵𝓮𝓷𝓽 𝓒𝓸𝓿𝓮 [ 𝑩𝑫𝑶 𝑬𝑼 ] (1323454227816906802)",
+    "status": "Error",
+    "details": "400 Bad Request (error code: 40060): Interaction has already been acknowledged."
+  },
+  {
+    "time": "2025-10-08 00:33:05",
+    "action": "Full Global Sync",
+    "user": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂 (279395551198445568)",
+    "guild": "Global",
+    "status": "Success",
+    "details": "14 commands synced"
+  },
+  {
+    "time": "2025-10-08 01:10:54",
+    "action": "Sync Error",
+    "user": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂 (279395551198445568)",
+    "guild": "𝓢𝓲𝓵𝓮𝓷𝓽 𝓒𝓸𝓿𝓮 [ 𝑩𝑫𝑶 𝑬𝑼 ] (1323454227816906802)",
+    "status": "Error",
+    "details": "400 Bad Request (error code: 40060): Interaction has already been acknowledged."
+  },
+  {
+    "time": "2025-10-08 11:16:14",
+    "action": "Sync Error",
+    "user": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂 (279395551198445568)",
+    "guild": "𝓢𝓲𝓵𝓮𝓷𝓽 𝓒𝓸𝓿𝓮 [ 𝑩𝑫𝑶 𝑬𝑼 ] (1323454227816906802)",
+    "status": "Error",
+    "details": "400 Bad Request (error code: 40060): Interaction has already been acknowledged."
+  },
+  {
+    "time": "2025-10-08 12:07:37",
+    "action": "Sync Error",
+    "user": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂 (279395551198445568)",
+    "guild": "𝓢𝓲𝓵𝓮𝓷𝓽 𝓒𝓸𝓿𝓮 [ 𝑩𝑫𝑶 𝑬𝑼 ] (1323454227816906802)",
+    "status": "Error",
+    "details": "404 Not Found (error code: 10062): Unknown interaction"
+  }
+]
