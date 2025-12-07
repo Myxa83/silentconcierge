@@ -37,7 +37,8 @@ async def load_cogs():
         "cogs.sync_cog",
         "cogs.timezone_cog",
         "cogs.vell_cog",
-        "cogs.welcome_cog"
+        "cogs.welcome_cog",
+        "cogs.interest_roles_cog"   # <-- ТУТ ДОДАНО ТВІЙ НОВИЙ КОГ
     ]
     for cog in cogs:
         try:
@@ -91,9 +92,8 @@ async def on_ready():
 async def clear_global(ctx):
     """Очистити глобальні команди і примусово запушити локальні"""
     await bot.tree.clear_commands(guild=None)
-    await bot.tree.sync(guild=None)  # підтвердили видалення глобальних
+    await bot.tree.sync(guild=None)
 
-    # Примусово пушимо локальні
     synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     await ctx.send(
         f"✅ Глобальні команди очищено.\n"
