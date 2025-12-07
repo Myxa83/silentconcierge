@@ -12,12 +12,12 @@ FOOTER_TEXT = "Silent Concierge by Myxa"
 
 # ---------------- HELPERS ----------------
 def convert_github_blob_to_raw(url: str) -> str:
-    """Якщо це GitHub blob-посилання — конвертуємо в raw. Інакше повертаємо як є."""
+    """Якщо це GitHub blob-посилання, конвертуємо в raw. Інакше повертаємо як є."""
     if url and "github.com" in url and "/blob/" in url:
         return url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
     return url
 
-def normalize_image_url(url: str) -> str:
+def normalize_image_url(url: str) -> str | None:
     """Підтримує будь-які прямі URL (Discord CDN, GitHub raw, Imgur direct тощо)."""
     if not url:
         return None
@@ -32,123 +32,216 @@ def random_anon_name() -> str:
 
 # ---------------- UI ----------------
 class ChannelSelectView(View):
-    def __init__(self, bot: commands.Bot):
+    """Вибір каналу для публікації."""
+
+    def __init__(self, bot: commands.Bot, attachment: discord.Attachment | None):
         super().__init__(timeout=60)
         self.bot = bot
-        self.select = Select(placeholder="Оберіть канал для публікації", min_values=1, max_values=1)
+        self.attachment = attachment
+
+        self.select = Select(
+            placeholder="Оберіть канал для публікації",
+            min_values=1,
+            max_values=1,
+        )
 
         for channel in bot.get_all_channels():
             if isinstance(channel, discord.TextChannel):
-                self.select.append_option(SelectOption(label=channel.name, value=str(channel.id)))
+                self.select.append_option(
+                    SelectOption(label=channel.name, value=str(channel.id))
+                )
 
         self.select.callback = self.select_callback
         self.add_item(self.select)
 
     async def select_callback(self, interaction: Interaction):
         selected_channel_id = int(self.select.values[0])
-        await interaction.response.send_modal(PostModal(self.bot, selected_channel_id))
+        await interaction.response.send_modal(
+            PostModal(self.bot, selected_channel_id, self.attachment)
+        )
 
 class PostModal(Modal, title="Створити пост у вибраний канал"):
-    def __init__(self, bot: commands.Bot, channel_id: int):
+    """Модалка з текстом посту та необовʼязковим URL картинки."""
+
+    def __init__(self, bot: commands.Bot, channel_id: int, attachment: discord.Attachment | None):
         super().__init__(timeout=None)
         self.bot = bot
         self.channel_id = channel_id
+        self.attachment = attachment
 
         self.text = TextInput(
             label="Текст повідомлення",
             style=discord.TextStyle.paragraph,
             required=True,
-            placeholder="Підтримуються абзаци й розділювачі (𓆟 ⊹ ࣪ ˖ …)"
+            placeholder="Підтримуються абзаци й розділювачі (𓆟 ⊹ ࣪ ˖ …)",
         )
         self.image_url = TextInput(
             label="URL зображення (необов'язково)",
             required=False,
-            placeholder="Пряме посилання або GitHub raw / Discord CDN"
+            placeholder="Пряме посилання або GitHub raw / Discord CDN",
         )
+
         self.add_item(self.text)
         self.add_item(self.image_url)
 
     async def on_submit(self, interaction: Interaction):
         channel = self.bot.get_channel(self.channel_id)
-        if not channel:
-            await interaction.response.send_message("❌ Канал не знайдено.", ephemeral=True)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "❌ Канал не знайдено.",
+                ephemeral=True,
+            )
             return
 
-        # Кнопка вибору публікації — анонімно чи ні
+        # Внутрішній вʼю для вибору: анонімно чи публічно
         class AnonChoiceView(View):
-            def __init__(self, modal, channel, text, image_url):
+            def __init__(
+                self,
+                modal: "PostModal",
+                channel: discord.TextChannel,
+                text: str,
+                image_url: str,
+                attachment: discord.Attachment | None,
+            ):
                 super().__init__(timeout=60)
                 self.modal = modal
                 self.channel = channel
                 self.text = text
                 self.image_url = image_url
+                self.attachment = attachment
 
-            @discord.ui.button(label="🕵️‍♀️ Анонімно", style=discord.ButtonStyle.secondary)
-            async def anon_btn(self, button, i: Interaction):
-                await self.send_post(i, anonymous=True)
+            @discord.ui.button(
+                label="🕵️‍♀️ Анонімно",
+                style=discord.ButtonStyle.secondary,
+            )
+            async def anon_btn(
+                self,
+                interaction: Interaction,
+                button: Button,
+            ):
+                await self.send_post(interaction, anonymous=True)
 
-            @discord.ui.button(label="👤 Від мого імені", style=discord.ButtonStyle.success)
-            async def public_btn(self, button, i: Interaction):
-                await self.send_post(i, anonymous=False)
+            @discord.ui.button(
+                label="👤 Від мого імені",
+                style=discord.ButtonStyle.success,
+            )
+            async def public_btn(
+                self,
+                interaction: Interaction,
+                button: Button,
+            ):
+                await self.send_post(interaction, anonymous=False)
 
-            async def send_post(self, i: Interaction, anonymous: bool):
-                # Формуємо ембед
-                embed = discord.Embed(description=self.text, color=discord.Color.teal())
+            async def send_post(self, interaction: Interaction, anonymous: bool):
+                embed = discord.Embed(
+                    description=self.text,
+                    color=discord.Color.teal(),
+                )
+
+                # Готуємо картинку
+                file: discord.File | None = None
                 img_url = normalize_image_url(self.image_url)
-                if img_url:
+
+                # Якщо користувач прикріпив файл до слеш-команди і це картинка
+                if (
+                    self.attachment
+                    and getattr(self.attachment, "content_type", None)
+                    and self.attachment.content_type.startswith("image/")
+                ):
+                    file = await self.attachment.to_file()
+                    embed.set_image(url=f"attachment://{file.filename}")
+                elif img_url:
+                    # Якщо файла немає, але є URL
                     embed.set_image(url=img_url)
 
-                # Якщо не анонімно — показуємо автора
+                # Автор
                 if not anonymous:
-                    author = i.user
+                    author = interaction.user
                     author_link = f"https://discord.com/users/{author.id}"
                     embed.add_field(
                         name="Автор:",
                         value=f"[{author.display_name}]({author_link})",
-                        inline=False
+                        inline=False,
                     )
                     embed.set_thumbnail(url=author.display_avatar.url)
                 else:
-                    # Анонімний підпис
                     anon_name = random_anon_name()
                     embed.add_field(
                         name="Автор:",
                         value=anon_name,
-                        inline=False
+                        inline=False,
                     )
 
-                # Футер — стандартний
-                embed.set_footer(
-                    text=FOOTER_TEXT,
-                    icon_url=i.client.user.display_avatar.url
-                )
+                # Футер
+                if interaction.client and interaction.client.user:
+                    embed.set_footer(
+                        text=FOOTER_TEXT,
+                        icon_url=interaction.client.user.display_avatar.url,
+                    )
+                else:
+                    embed.set_footer(text=FOOTER_TEXT)
 
-                await self.channel.send(embed=embed)
-                await i.response.send_message(
+                # Відправка в канал
+                if file:
+                    await self.channel.send(embed=embed, file=file)
+                else:
+                    await self.channel.send(embed=embed)
+
+                await interaction.response.send_message(
                     f"✅ {'Анонімне ' if anonymous else ''}повідомлення надіслано в {self.channel.mention}",
-                    ephemeral=True
+                    ephemeral=True,
                 )
                 self.stop()
 
         await interaction.response.send_message(
             "Оберіть спосіб публікації:",
-            view=AnonChoiceView(self, channel, self.text.value, self.image_url.value),
-            ephemeral=True
+            view=AnonChoiceView(
+                self,
+                channel,
+                self.text.value,
+                self.image_url.value,
+                self.attachment,
+            ),
+            ephemeral=True,
         )
 
 # ---------------- COG ----------------
 class PostCog(commands.Cog):
+    """Ког для створення постів у будь-який канал через модалку."""
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="допис", description="Створити пост з текстом та зображенням у вибраний канал")
-    async def допис(self, interaction: Interaction):
+    @app_commands.command(
+        name="пост",
+        description="Створити пост з текстом та зображенням у вибраний канал",
+    )
+    async def пост(
+        self,
+        interaction: Interaction,
+        image: discord.Attachment | None = None,
+    ):
+        """
+        Виклик:
+        /пост image:<картинка з ПК, опціонально>
+
+        Далі бот покаже вибір каналу і модалку з текстом.
+        """
+
+        # Тільки модератори
         if not any(role.id == MODERATOR_ROLE_ID for role in interaction.user.roles):
-            await interaction.response.send_message("❌ Лише модератори можуть користуватись цією командою.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Лише модератори можуть користуватись цією командою.",
+                ephemeral=True,
+            )
             return
 
-        view = ChannelSelectView(self.bot)
-        await interaction.response.send_message("Оберіть канал нижче, щоб створити пост:", view=view, ephemeral=True)
+        view = ChannelSelectView(self.bot, image)
+        await interaction.response.send_message(
+            "Оберіть канал нижче, щоб створити пост:",
+            view=view,
+            ephemeral=True,
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PostCog(bot))
