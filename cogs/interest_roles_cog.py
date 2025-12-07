@@ -4,53 +4,42 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+import json
+from pathlib import Path
 
-# Ролі
-ROLE_STRAZHDUSHCHI = 1406569206815658077
-ROLE_HLIBCHYKY = 1396485384199733460
-ROLE_VERSHNYK = 1375827978180890752
-ROLE_SOLONI_VUHA = 1410284666853785752
-ROLE_MORIAK = 1338862723844407317
-ROLE_ZBERIHACH = 1413564813421838337
-ROLE_BDZHILKA = 1396485460611698708
-ROLE_MERILIN = 1447368601387663400
-
-# Тестовий канал
 ROLES_CHANNEL_ID = 1370522199873814528
-
-# Кастомний емодзі bullet
 B = "<:bullet:1447181813641511025>"
+JSON_PATH = Path("data/interest_roles.json")
 
 
-def build_roles_embed() -> discord.Embed:
+def load_roles():
+    if not JSON_PATH.exists():
+        raise FileNotFoundError("Не знайдено data/interest_roles.json")
+    with open(JSON_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def build_roles_embed(roles_data) -> discord.Embed:
     embed = discord.Embed(
         title="Ролі за інтересами SilentCove",
-        description=(
-            f"{B} Страждущі - мембери і друзі гільдії, яким потрібна допомога з Атораксіоном або Шрайнами.\n"
-            f"{B} Хлібчики - орда неадекватів на нодах.\n"
-            f"{B} Вершник - мембери, яким цікаві скачки.\n"
-            f"{B} Солоні Вуха - мембери і друзі гільдії, яким цікавий морський контент.\n"
-            f"{B} Моряк - любителі морських пригод, які можуть і гайд написати, і на квести звозити.\n"
-            f"{B} Зберігач Мудрощів - мембери, які пишуть гайди.\n"
-            f"{B} Шалена Бджілка - лайфскілерні мембери і друзі гільдії.\n"
-            f"{B} Мерілін Монро - мембери і друзі гільдії, які хочуть брати участь у медійних івентах.\n"
-        ),
-        color=0x1F2427   # темний графіт SilentCove
+        description="Обери одну або кілька ролей, які підходять тобі.\n",
+        color=0x1F2427
     )
+
+    for name in roles_data.keys():
+        readable = name.replace("_", " ")
+        embed.add_field(name=f"{B} {readable}", value="\u200b", inline=False)
+
     return embed
 
 
 class InterestRolesSelect(discord.ui.Select):
-    def __init__(self):
+    def __init__(self, roles_data: dict):
+        self.role_map = {k: int(v) for k, v in roles_data.items()}
+
         options = [
-            discord.SelectOption(label="Страждущі", value="strazhd"),
-            discord.SelectOption(label="Хлібчики", value="hlib"),
-            discord.SelectOption(label="Вершник", value="vershnyk"),
-            discord.SelectOption(label="Солоні Вуха", value="soloni"),
-            discord.SelectOption(label="Моряк", value="moriak"),
-            discord.SelectOption(label="Зберігач Мудрощів", value="zberihach"),
-            discord.SelectOption(label="Шалена Бджілка", value="bdzhilka"),
-            discord.SelectOption(label="Мерілін Монро", value="merilin"),
+            discord.SelectOption(label=name, value=name)
+            for name in self.role_map.keys()
         ]
 
         super().__init__(
@@ -64,27 +53,16 @@ class InterestRolesSelect(discord.ui.Select):
         guild = interaction.guild
         member = interaction.user
 
-        role_map = {
-            "strazhd": ROLE_STRAZHDUSHCHI,
-            "hlib": ROLE_HLIBCHYKY,
-            "vershnyk": ROLE_VERSHNYK,
-            "soloni": ROLE_SOLONI_VUHA,
-            "moriak": ROLE_MORIAK,
-            "zberihach": ROLE_ZBERIHACH,
-            "bdzhilka": ROLE_BDZHILKA,
-            "merilin": ROLE_MERILIN,
-        }
-
         selected = set(self.values)
         roles_to_add = []
         roles_to_remove = []
 
-        for value, role_id in role_map.items():
+        for name, role_id in self.role_map.items():
             role = guild.get_role(role_id)
-            if role is None:
+            if not role:
                 continue
 
-            should_have = value in selected
+            should_have = name in selected
             has_role = role in member.roles
 
             if should_have and not has_role:
@@ -104,31 +82,34 @@ class InterestRolesSelect(discord.ui.Select):
 
 
 class InterestRolesView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, roles_data):
         super().__init__(timeout=None)
-        self.add_item(InterestRolesSelect())
+        self.add_item(InterestRolesSelect(roles_data))
 
 
 class InterestRolesCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
-    @app_commands.command(name="roles_panel", description="Показати панель вибору ролей")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def roles_panel(self, interaction: discord.Interaction):
-        channel = interaction.guild.get_channel(ROLES_CHANNEL_ID)
-        if channel is None:
-            channel = interaction.channel
-
-        await channel.send(embed=build_roles_embed(), view=InterestRolesView())
-
-        # тиха відповідь, ніхто не бачить
-        await interaction.response.send_message(content=None, ephemeral=True)
+        self.roles_data = load_roles()
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # забезпечує роботу меню після перезапуску
-        self.bot.add_view(InterestRolesView())
+        await self.send_panel_once()
+
+        # реєструємо view після рестарту
+        self.bot.add_view(InterestRolesView(self.roles_data))
+
+    async def send_panel_once(self):
+        channel = self.bot.get_channel(ROLES_CHANNEL_ID)
+        if not channel:
+            return
+
+        embed = build_roles_embed(self.roles_data)
+        view = InterestRolesView(self.roles_data)
+
+        # Тихо, без видимих команд
+        await channel.send(embed=embed, view=view)
+        print("[INFO] Панель вибору ролей автоматично відправлена.")
 
 
 async def setup(bot):
