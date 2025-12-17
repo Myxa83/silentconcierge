@@ -38,7 +38,7 @@ async def load_cogs():
         "cogs.timezone_cog",
         "cogs.vell_cog",
         "cogs.welcome_cog",
-        "cogs.interest_roles_cog"   # <-- ТУТ ДОДАНО ТВІЙ НОВИЙ КОГ
+        "cogs.discord_role_select_cog",
     ]
     for cog in cogs:
         try:
@@ -101,3 +101,4 @@ async def clear_global(ctx):
     )
 
 bot.run(TOKEN)
+
