@@ -1,3 +1,36 @@
+# cogs/discord_role_select_cog.py
+# Discord Role Select Cog
+# ВІДПОВІДАЄ ТІЛЬКИ ЗА ЛОГІКУ РОЛЕЙ
+# Embed створюється ІНШИМ cog-ом
+
+
+from __future__ import annotations
+
+
+import discord
+from discord.ext import commands
+
+
+# ================== CONFIG ==================
+GUILD_ID = 1323454227816906802
+ROLE_SVITOCH = 1383410423704846396
+MODLOG_CHAN = 1350571574557675520
+
+
+SELECTABLE_ROLES = {
+"Мерілін Монро": 1447368601387663400,
+"Вершник": 1375827978180890752,
+"Солоні Вуха": 1410284666853785752,
+"Стрімер": 1395419857016852520,
+"Шалена Бджілка": 1396485460611698708,
+"Фотограф": 1330492212525662281,
+}
+
+
+EMBED_COLOR = 0x05B2B4
+
+
+# ================== VIEW ==================
 class RoleSelectView(discord.ui.View):
 def __init__(self):
 super().__init__(timeout=None)
@@ -85,33 +118,4 @@ embed.add_field(
 name="Added",
 value="\n".join(r.mention for r in added),
 inline=False
-)
-if removed:
-embed.add_field(
-name="Removed",
-value="\n".join(r.mention for r in removed),
-inline=False
-)
-
-
-await channel.send(embed=embed)
-
-
-
-
-# ================== COG ==================
-class DiscordRoleSelectCog(commands.Cog):
-def __init__(self, bot: commands.Bot):
-self.bot = bot
-
-
-@commands.Cog.listener()
-async def on_ready(self):
-# persistent view
-self.bot.add_view(RoleSelectView())
-
-
-
-
-async def setup(bot: commands.Bot):
 await bot.add_cog(DiscordRoleSelectCog(bot))
