@@ -30,7 +30,7 @@
     "nickname": "Максим",
     "guild": "Silent Cove"
   },
-  "last_ticket": 6,
+  "last_ticket": 15,
   "tickets": {
     "1056623056350617600": {
       "number": 1,
@@ -82,6 +82,118 @@
       "type": "friend",
       "input_guild": "fdsg",
       "created": "2025-09-26 23:47:07"
+    },
+    "1426576157880488057": {
+      "number": 7,
+      "member_id": 1398404811161862158,
+      "family": "Silent",
+      "display_name": "Cove",
+      "notes": null,
+      "type": "guild",
+      "target_guild": "SilentCove",
+      "created": "2025-10-11 14:24:19",
+      "assigned_to": 279395551198445568,
+      "status": "accepted",
+      "assigned_at": "2025-10-11 14:25:07",
+      "processed_by": 279395551198445568,
+      "processed_at": "2025-10-11 14:26:51"
+    },
+    "1426578688828244074": {
+      "number": 8,
+      "member_id": 279395551198445568,
+      "family": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂",
+      "display_name": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂",
+      "notes": null,
+      "type": "guest",
+      "target_guild": null,
+      "created": 1760189663,
+      "assigned_to": 279395551198445568,
+      "status": "open",
+      "assigned_at": "2025-10-11 14:34:49"
+    },
+    "1426715056824914040": {
+      "number": 9,
+      "member_id": 1398404811161862158,
+      "family": "SunsetCove",
+      "display_name": "Галя",
+      "notes": null,
+      "type": "guild",
+      "target_guild": "SilentCove",
+      "created": 1760222176,
+      "assigned_to": 279395551198445568,
+      "status": "closed"
+    },
+    "1426741248366215298": {
+      "number": 10,
+      "member_id": 1398404811161862158,
+      "family": "Infidom",
+      "display_name": "Галя",
+      "notes": "вафвафвіпфф",
+      "type": "guild",
+      "target_guild": "SilentCove",
+      "created": 1760228420,
+      "assigned_to": null,
+      "status": "open"
+    },
+    "1426918252348440587": {
+      "number": 11,
+      "member_id": 1398404811161862158,
+      "family": "Infidom",
+      "display_name": "Галя",
+      "notes": "івамвіапваіпівм",
+      "type": "guild",
+      "target_guild": "SilentCove",
+      "created": 1760270621,
+      "assigned_to": null,
+      "status": "closed"
+    },
+    "1427007079289458843": {
+      "number": 12,
+      "member_id": 279395551198445568,
+      "family": "вапівпівап",
+      "display_name": "івпівап",
+      "notes": "авпаіп",
+      "type": "guild",
+      "target_guild": "SilentCove",
+      "created": 1760291799,
+      "assigned_to": null,
+      "status": "closed"
+    },
+    "1427026856959545536": {
+      "number": 13,
+      "member_id": 1398404811161862158,
+      "family": "Infidom",
+      "display_name": "Галя",
+      "notes": "ІАОРДЛОАРЛОВІ\nАОВДІЛОАДЛІВА\nдіоаДЛВІОА",
+      "type": "guild",
+      "target_guild": "SilentCove",
+      "created": 1760296514,
+      "assigned_to": null,
+      "status": "open"
+    },
+    "1427096178113118299": {
+      "number": 14,
+      "member_id": 1398404811161862158,
+      "family": "Infidom",
+      "display_name": "Галя",
+      "notes": "віафівафвіа",
+      "type": "guild",
+      "target_guild": "SilentCove",
+      "created": 1760313041,
+      "assigned_to": null,
+      "status": "kicked"
+    },
+    "1427097006337294388": {
+      "number": 15,
+      "member_id": 1398404811161862158,
+      "family": "SunsetCove",
+      "display_name": "Галя",
+      "notes": "афавіаф",
+      "type": "guild",
+      "target_guild": "SilentCove",
+      "created": 1760313239,
+      "assigned_to": 279395551198445568,
+      "status": "accepted"
     }
   }
 }
