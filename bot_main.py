@@ -61,7 +61,7 @@ COGS = [
     # "cogs.message_report_bot",
     "cogs.post_cog",
     # "cogs.profile_cog",
-    "cogs.raid_cog",
+    # "cogs.raid_cog",
     #"cogs.ruin_cog",
     #"cogs.seaquests_cog",
     #"cogs.server_updates_cog",
@@ -75,6 +75,8 @@ COGS = [
     "cogs.purge_cog",
     "cogs.discord_role_select_cog",
     "cogs.role_panel_post_cog", 
+    "cogs.dm_permission_cog",
+    "cogs.music_cog",
 ]
 
 # ===================== EVENTS =====================
