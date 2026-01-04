@@ -1,9 +1,9 @@
 import os
-from dotenv import load_dotenv
+from config.loader import DISCORD_TOKEN  # єдине джерело токена
 
-load_dotenv()
+# сумісність зі старими когами
+BOT_TOKEN = DISCORD_TOKEN
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # токен бота
 WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", "0"))
 MODER_CHANNEL_ID = int(os.getenv("MODER_CHANNEL_ID", "0"))
 
@@ -17,11 +17,10 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 MODERATOR_ROLE_ID = int(os.getenv("MODERATOR_ROLE_ID", "0"))
 ANNOUNCEMENT_CHANNEL_ID = int(os.getenv("ANNOUNCEMENT_CHANNEL_ID", "0"))
 
-# дефолтні параметри для ембеду велла
-DEFAULT_WHISPER = "Myxa"
-DEFAULT_SERVER = "Kamasylvia 5"
-DEFAULT_CTG = "Так"
-DEFAULT_PLACE = "Око Окілу"
+DEFAULT_WHISPER = os.getenv("DEFAULT_WHISPER", "Myxa")
+DEFAULT_SERVER = os.getenv("DEFAULT_SERVER", "Kamasylvia 5")
+DEFAULT_CTG = os.getenv("DEFAULT_CTG", "Так")
+DEFAULT_PLACE = os.getenv("DEFAULT_PLACE", "Око Окілу")
 
 SIEGE_CHANNEL_ID = int(os.getenv("SIEGE_CHANNEL_ID", "0"))
 BOSS_CHANNEL_ID = int(os.getenv("BOSS_CHANNEL_ID", "0"))
