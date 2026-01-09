@@ -38,7 +38,7 @@ class BanCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        """🚪 або 📤 — вихід або вигнання (але не бан)."""
+        """🚪 або 📤 - вихід або вигнання (але не бан)."""
         channel = self.bot.get_channel(FAREWELL_CHANNEL_ID)
         if not channel:
             return
@@ -50,7 +50,7 @@ class BanCog(commands.Cog):
         try:
             await asyncio.sleep(1)
             await member.guild.fetch_ban(member)
-            return  # якщо забанили — не дублюємо
+            return  # якщо забанили - не дублюємо
         except discord.NotFound:
             pass
         except Exception as e:
@@ -226,3 +226,4 @@ class BanCog(commands.Cog):
 
 # ===================== SETUP =====================
 async def setup(bot: commands.Bot):
+    await bot.add_cog(BanCog(bot))
