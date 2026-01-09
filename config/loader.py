@@ -6,8 +6,8 @@ import os
 import json
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parents[1]   
-CFG = Path(__file__).resolve().parent        
+ROOT = Path(__file__).resolve().parents[1]   # корінь проєкту
+CFG = Path(__file__).resolve().parent        # папка config
 
 CANDIDATES = [
     ROOT / ".env",
@@ -30,10 +30,6 @@ def _require(name: str) -> str:
         where = ", ".join([str(p) for p in CANDIDATES if p.exists()]) or "no .env found"
         raise RuntimeError(f"Missing env var {name}. Put it into one of: {where}")
     return str(value).strip()
-
-_loaded = _load_all()
-
-DISCORD_TOKEN = _require("DISCORD_TOKEN")
 
 def _get_int(name: str, default: int = 0) -> int:
     v = os.getenv(name)
@@ -59,11 +55,14 @@ def _get_int_list(name: str) -> list[int]:
             raise RuntimeError(f"{name} must be a comma-separated list of integers")
     return out
 
+_loaded = _load_all()
+
+DISCORD_TOKEN = _require("DISCORD_TOKEN")
 GUILD_ID = _get_int("GUILD_ID", 0)
 APPLICATION_ID = os.getenv("APPLICATION_ID")
 CLIENT_ID = os.getenv("CLIENT_ID")
 
-# ================= JSON CONFIG LOADER =================
+# ---------------- JSON loader ----------------
 
 def load_json(filename: str) -> dict:
     path = CFG / filename
@@ -79,6 +78,7 @@ def load_json_optional(filename: str, default):
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
+# IMPORTANT: робимо optional, щоб Render не падав
 STATUSES = load_json_optional("statuses.json", {"day": [], "night": []})
 STATUS_PHRASES = load_json_optional("status_phrases.json", {"day_phrases": [], "night_phrases": []})
 TIMEZONES = load_json_optional("timezones.json", {})
@@ -88,22 +88,6 @@ def debug_print():
     print("[env] GUILD_ID:", GUILD_ID)
     token = DISCORD_TOKEN
     print("[env] TOKEN:", f"{token[:6]}.. ({len(token)} chars)")
-
-    try:
-        print("[json] STATUSES keys:", list(STATUSES.keys()))
-    except Exception as e:
-        print("[json][FAIL] STATUSES:", type(e).__name__, str(e))
-
-    try:
-        print("[json] STATUS_PHRASES keys:", list(STATUS_PHRASES.keys()))
-    except Exception as e:
-        print("[json][FAIL] STATUS_PHRASES:", type(e).__name__, str(e))
-
-    try:
-        if isinstance(TIMEZONES, dict):
-            print("[json] TIMEZONES entries:", len(TIMEZONES))
-        else:
-            print("[json] TIMEZONES type:", type(TIMEZONES).__name__)
-    except Exception as e:
-        print("[json][FAIL] TIMEZONES:", type(e).__name__, str(e))
-
+    print("[json] STATUSES keys:", list(STATUSES.keys()) if isinstance(STATUSES, dict) else type(STATUSES).__name__)
+    print("[json] STATUS_PHRASES keys:", list(STATUS_PHRASES.keys()) if isinstance(STATUS_PHRASES, dict) else type(STATUS_PHRASES).__name__)
+    print("[json] TIMEZONES type:", type(TIMEZONES).__name__)
