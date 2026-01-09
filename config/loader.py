@@ -6,8 +6,8 @@ import os
 import json
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parents[1]   # корінь проєкту
-CFG = Path(__file__).resolve().parent        # папка config
+ROOT = Path(__file__).resolve().parents[1]   
+CFG = Path(__file__).resolve().parent        
 
 CANDIDATES = [
     ROOT / ".env",
@@ -66,10 +66,6 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 # ================= JSON CONFIG LOADER =================
 
 def load_json(filename: str) -> dict:
-    """
-    Завжди читає JSON з папки config незалежно від того,
-    звідки запустили бота (Render або локально).
-    """
     path = CFG / filename
     if not path.exists():
         raise FileNotFoundError(f"[config] Missing file: {path}")
@@ -77,20 +73,14 @@ def load_json(filename: str) -> dict:
         return json.load(f)
 
 def load_json_optional(filename: str, default):
-    """
-    Не валить старт, якщо файла нема. Повертає default.
-    """
     path = CFG / filename
     if not path.exists():
         return default
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
-# Обовязкові (якщо хочеш, щоб падало коли нема файла):
-STATUSES = load_json("statuses.json")
-STATUS_PHRASES = load_json("status_phrases.json")
-
-# Опціонально (можеш зробити обовязковим, якщо хочеш):
+STATUSES = load_json_optional("statuses.json", {"day": [], "night": []})
+STATUS_PHRASES = load_json_optional("status_phrases.json", {"day_phrases": [], "night_phrases": []})
 TIMEZONES = load_json_optional("timezones.json", {})
 
 def debug_print():
@@ -99,21 +89,21 @@ def debug_print():
     token = DISCORD_TOKEN
     print("[env] TOKEN:", f"{token[:6]}.. ({len(token)} chars)")
 
-    # Діагностика JSON
     try:
-        print("[json] statuses keys:", list(STATUSES.keys()))
+        print("[json] STATUSES keys:", list(STATUSES.keys()))
     except Exception as e:
         print("[json][FAIL] STATUSES:", type(e).__name__, str(e))
 
     try:
-        print("[json] status_phrases keys:", list(STATUS_PHRASES.keys()))
+        print("[json] STATUS_PHRASES keys:", list(STATUS_PHRASES.keys()))
     except Exception as e:
         print("[json][FAIL] STATUS_PHRASES:", type(e).__name__, str(e))
 
     try:
         if isinstance(TIMEZONES, dict):
-            print("[json] timezones entries:", len(TIMEZONES))
+            print("[json] TIMEZONES entries:", len(TIMEZONES))
         else:
-            print("[json] timezones type:", type(TIMEZONES).__name__)
+            print("[json] TIMEZONES type:", type(TIMEZONES).__name__)
     except Exception as e:
         print("[json][FAIL] TIMEZONES:", type(e).__name__, str(e))
+
