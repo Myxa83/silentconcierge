@@ -1,9 +1,13 @@
 # bot_main.py
 import asyncio
+import json
 import os
 import traceback
+from datetime import datetime
+from pathlib import Path
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from config.loader import DISCORD_TOKEN, GUILD_ID
@@ -13,6 +17,33 @@ INTENTS = discord.Intents.default()
 INTENTS.members = True
 INTENTS.message_content = True
 INTENTS.voice_states = True
+
+
+LOG_DIR = Path("logs")
+RUNTIME_LOG = LOG_DIR / "runtime_logs.json"
+
+
+def _utc_now() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _append_runtime_log(entry: dict) -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+        data = []
+        if RUNTIME_LOG.exists():
+            try:
+                data = json.loads(RUNTIME_LOG.read_text(encoding="utf-8"))
+                if not isinstance(data, list):
+                    data = []
+            except Exception:
+                data = []
+
+        data.append(entry)
+        RUNTIME_LOG.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 class Bot(commands.Bot):
@@ -27,21 +58,26 @@ class Bot(commands.Bot):
         # ---------- BOOT DIAGNOSTICS ----------
         print("[BOOT] bot_main.py started")
         print("[BOOT] CWD:", os.getcwd())
-        print("[BOOT] ROOT FILES:", sorted(os.listdir(".")))
 
+        try:
+            root_files = sorted(os.listdir("."))
+        except Exception as e:
+            root_files = [f"[ERR] {type(e).__name__}: {e}"]
+        print("[BOOT] ROOT FILES:", root_files)
+
+        cogs_files = []
         if os.path.isdir("cogs"):
-            print("[BOOT] COGS FILES:", sorted(os.listdir("cogs")))
+            try:
+                cogs_files = sorted(os.listdir("cogs"))
+                print("[BOOT] COGS FILES:", cogs_files)
+            except Exception as e:
+                print(f"[BOOT][WARN] cannot list cogs/: {type(e).__name__}: {e}")
         else:
             print("[BOOT][WARN] cogs/ directory NOT FOUND")
 
-        if os.path.isdir("data"):
-            print("[BOOT] DATA FILES:", sorted(os.listdir("data")))
-        else:
-            print("[BOOT][WARN] data/ directory NOT FOUND")
-
         # ---------- AUTO LOAD COGS ----------
-        loaded = 0
-        failed = 0
+        loaded_ext = []
+        failed_ext = []
 
         if os.path.isdir("cogs"):
             for file in sorted(os.listdir("cogs")):
@@ -56,30 +92,103 @@ class Bot(commands.Bot):
                 try:
                     await self.load_extension(ext)
                     print(f"[COG][OK] Loaded {ext}")
-                    loaded += 1
+                    loaded_ext.append(ext)
                 except Exception as e:
-                    print(f"[COG][FAIL] {ext}: {type(e).__name__}: {e}")
+                    msg = f"{type(e).__name__}: {e}"
+                    print(f"[COG][FAIL] {ext}: {msg}")
                     traceback.print_exc()
-                    failed += 1
-        else:
-            print("[BOOT][FATAL] No cogs directory, nothing to load")
+                    failed_ext.append({"ext": ext, "error": msg, "traceback": traceback.format_exc()})
 
-        print(f"[BOOT] COG LOAD RESULT: ok={loaded}, fail={failed}")
+        print(f"[BOOT] COG LOAD RESULT: ok={len(loaded_ext)}, fail={len(failed_ext)}")
+
+        _append_runtime_log({
+            "time": _utc_now(),
+            "event": "cogs_loaded",
+            "cwd": os.getcwd(),
+            "loaded": loaded_ext,
+            "failed": failed_ext,
+        })
 
         # ---------- SYNC COMMANDS ----------
+        gid = None
         try:
-            if GUILD_ID:
-                await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-                print(f"[SYNC] Commands synced to guild {GUILD_ID}")
+            gid = int(GUILD_ID) if GUILD_ID else None
+        except Exception:
+            gid = None
+
+        try:
+            if gid:
+                synced = await self.tree.sync(guild=discord.Object(id=gid))
+                print(f"[SYNC] Commands synced to guild {gid} count={len(synced)}")
+                _append_runtime_log({
+                    "time": _utc_now(),
+                    "event": "sync",
+                    "mode": "guild",
+                    "guild_id": gid,
+                    "count": len(synced),
+                })
             else:
-                await self.tree.sync()
-                print("[SYNC] Commands synced globally")
+                synced = await self.tree.sync()
+                print(f"[SYNC] Commands synced globally count={len(synced)}")
+                _append_runtime_log({
+                    "time": _utc_now(),
+                    "event": "sync",
+                    "mode": "global",
+                    "count": len(synced),
+                })
         except Exception as e:
             print(f"[SYNC][FAIL] {type(e).__name__}: {e}")
             traceback.print_exc()
+            _append_runtime_log({
+                "time": _utc_now(),
+                "event": "sync_fail",
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            })
+
+        # ---------- GLOBAL APP COMMAND ERROR HANDLER ----------
+        @self.tree.error
+        async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+            tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+
+            cmd_name = None
+            try:
+                if interaction.command:
+                    cmd_name = interaction.command.qualified_name
+            except Exception:
+                cmd_name = None
+
+            print(f"[APP_CMD_ERROR] cmd={cmd_name} user={getattr(interaction.user,'id',None)} guild={getattr(interaction.guild,'id',None)}")
+            print(tb)
+
+            _append_runtime_log({
+                "time": _utc_now(),
+                "event": "app_cmd_error",
+                "cmd": cmd_name,
+                "user_id": getattr(interaction.user, "id", None),
+                "guild_id": getattr(interaction.guild, "id", None),
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "traceback": tb,
+            })
+
+            # Відповідаємо без double-ack
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(f"❌ Помилка: `{type(error).__name__}`", ephemeral=True)
+                else:
+                    await interaction.response.send_message(f"❌ Помилка: `{type(error).__name__}`", ephemeral=True)
+            except Exception:
+                pass
 
     async def on_ready(self):
         print(f"[READY] Logged in as {self.user} ({self.user.id})")
+        _append_runtime_log({
+            "time": _utc_now(),
+            "event": "ready",
+            "user_id": getattr(self.user, "id", None),
+        })
 
 
 async def main():
@@ -93,4 +202,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
