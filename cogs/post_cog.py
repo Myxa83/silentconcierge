@@ -4,7 +4,7 @@ import json
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Any, Dict
 
 import aiohttp
 import discord
@@ -17,12 +17,25 @@ from PIL import Image, ImageDraw
 LOG_DIR = Path("logs")
 POST_LOG_FILE = LOG_DIR / "post_logs.json"
 
+HTTP_TIMEOUT_SECONDS = 12
+MAX_BUTTONS = 25
+
 
 def _utc_now() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _append_post_log(entry: dict) -> None:
+def _safe_str(v: Any, limit: int = 500) -> str:
+    try:
+        s = str(v)
+    except Exception:
+        s = "<unprintable>"
+    if len(s) > limit:
+        return s[:limit] + "...(cut)"
+    return s
+
+
+def _append_post_log(entry: Dict[str, Any]) -> None:
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -38,29 +51,39 @@ def _append_post_log(entry: dict) -> None:
         data.append(entry)
         POST_LOG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
+        # лог не має валити бота
         pass
 
 
 def _parse_options(opts: List[Optional[str]]) -> List[str]:
-    return [o.strip() for o in opts if o and o.strip()]
+    cleaned: List[str] = []
+    for o in opts:
+        if not o:
+            continue
+        s = o.strip()
+        if not s:
+            continue
+        cleaned.append(s)
+    return cleaned[:MAX_BUTTONS]
 
 
-async def rounded_image_from_url(url: str) -> Tuple[Optional[discord.File], Optional[str]]:
+async def rounded_image_from_url(url: str) -> Tuple[Optional[discord.File], Optional[str], Optional[str]]:
     """
-    Завжди повертає 2 значення: (file, attachment_url) або (None, None).
+    Returns: (file, attachment_url, debug_reason)
+    Never crashes, never returns single None.
     """
     if not url:
-        return None, None
+        return None, None, "empty_url"
 
     try:
-        timeout = aiohttp.ClientTimeout(total=12)
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
-                    return None, None
+                    return None, None, f"http_status_{resp.status}"
                 data = await resp.read()
-    except Exception:
-        return None, None
+    except Exception as e:
+        return None, None, f"download_error_{type(e).__name__}:{_safe_str(e, 200)}"
 
     try:
         image = Image.open(io.BytesIO(data)).convert("RGBA")
@@ -79,9 +102,9 @@ async def rounded_image_from_url(url: str) -> Tuple[Optional[discord.File], Opti
         buffer.seek(0)
 
         file = discord.File(buffer, filename="rounded.png")
-        return file, "attachment://rounded.png"
-    except Exception:
-        return None, None
+        return file, "attachment://rounded.png", "ok"
+    except Exception as e:
+        return None, None, f"pillow_error_{type(e).__name__}:{_safe_str(e, 200)}"
 
 
 class PostButton(Button):
@@ -90,7 +113,16 @@ class PostButton(Button):
 
     async def callback(self, interaction: Interaction):
         try:
-            await interaction.response.send_message(f"✅ Ви обрали: **{self.label}**", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    f"✅ Ви обрали: **{self.label}**",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    f"✅ Ви обрали: **{self.label}**",
+                    ephemeral=True
+                )
         except Exception:
             pass
 
@@ -98,7 +130,7 @@ class PostButton(Button):
 class PostView(View):
     def __init__(self, options: List[str]):
         super().__init__(timeout=None)
-        for label in options[:25]:
+        for label in options[:MAX_BUTTONS]:
             self.add_item(PostButton(label))
 
 
@@ -107,102 +139,189 @@ class PostCog(commands.Cog):
         self.bot = bot
         print("[COG][OK] Loaded cogs.post_cog")
 
+    async def _defer(self, interaction: Interaction, debug: bool) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=True)
+        except Exception as e:
+            _append_post_log({
+                "time": _utc_now(),
+                "stage": "defer_fail",
+                "error_type": type(e).__name__,
+                "error": _safe_str(e),
+            })
+            if debug:
+                print(f"[POST][DBG] defer_fail {type(e).__name__}: {_safe_str(e)}")
+
+    async def _reply_ephemeral(self, interaction: Interaction, content: str) -> None:
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(content, ephemeral=True)
+            else:
+                await interaction.response.send_message(content, ephemeral=True)
+        except Exception:
+            pass
+
     async def _run_post(
         self,
         interaction: Interaction,
-        заголовок: Optional[str],
-        текст: Optional[str],
-        картинка: Optional[str],
-        шрифт: Optional[str],
+        title: Optional[str],
+        text: Optional[str],
+        image_url: Optional[str],
+        font: Optional[str],
         options: List[Optional[str]],
+        debug: bool,
     ):
-        # Відповідаємо одразу, щоб не було "Програма не відповідає"
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True, thinking=True)
+        await self._defer(interaction, debug=debug)
+
+        cmd_name = getattr(getattr(interaction, "command", None), "qualified_name", None)
+        guild_id = getattr(getattr(interaction, "guild", None), "id", None)
+        channel_id = getattr(getattr(interaction, "channel", None), "id", None)
+        user_id = getattr(getattr(interaction, "user", None), "id", None)
+
+        # Stage: received
+        recv_entry = {
+            "time": _utc_now(),
+            "stage": "received",
+            "cmd": cmd_name,
+            "user_id": user_id,
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "title": title,
+            "text_len": (len(text) if text else 0),
+            "image_url": image_url,
+            "font": font,
+            "options_raw": options,
+        }
+        _append_post_log(recv_entry)
+        if debug:
+            print(
+                "[POST][DBG] received "
+                f"cmd={cmd_name} user={user_id} guild={guild_id} channel={channel_id} "
+                f"title={bool(title)} text_len={(len(text) if text else 0)} image={bool(image_url)} font={bool(font)} "
+                f"opt_raw={len([o for o in options if o])}"
+            )
 
         try:
             opts = _parse_options(options)
 
-            if not any([заголовок, текст, картинка, шрифт, opts]):
-                await interaction.followup.send("❌ Ви не заповнили жодне поле.", ephemeral=True)
+            # Stage: parsed
+            _append_post_log({
+                "time": _utc_now(),
+                "stage": "parsed",
+                "cmd": cmd_name,
+                "options_parsed": opts,
+                "options_count": len(opts),
+            })
+            if debug:
+                print(f"[POST][DBG] parsed options_count={len(opts)}")
+
+            if not any([title, text, image_url, font, opts]):
+                _append_post_log({
+                    "time": _utc_now(),
+                    "stage": "empty_fields",
+                    "cmd": cmd_name,
+                    "title": title,
+                    "text_len": (len(text) if text else 0),
+                    "image": image_url,
+                    "font": font,
+                    "options_count": len(opts),
+                })
+                await self._reply_ephemeral(
+                    interaction,
+                    "❌ Ви не заповнили жодне поле.\n"
+                    f"DEBUG: title={bool(title)}, text_len={(len(text) if text else 0)}, "
+                    f"image={bool(image_url)}, font={bool(font)}, options={len(opts)}"
+                )
                 return
 
-            embed = None
+            # Build embed
+            embed = discord.Embed(color=discord.Color.teal())
+            if title:
+                embed.title = title
+            if text:
+                embed.description = text
+            if font:
+                embed.set_author(name=f"Шрифт: {font}")
+
             file = None
+            attach_url = None
+            img_debug = None
 
-            if заголовок or текст or картинка or шрифт:
-                embed = discord.Embed(
-                    title=заголовок or "",
-                    description=текст or "",
-                    color=discord.Color.teal(),
-                )
-                if шрифт:
-                    embed.set_author(name=f"Шрифт: {шрифт}")
+            if image_url:
+                file, attach_url, img_debug = await rounded_image_from_url(image_url)
+                _append_post_log({
+                    "time": _utc_now(),
+                    "stage": "image_processed",
+                    "cmd": cmd_name,
+                    "image_url": image_url,
+                    "image_result": img_debug,
+                    "has_file": bool(file),
+                    "attach_url": attach_url,
+                })
+                if debug:
+                    print(f"[POST][DBG] image_processed result={img_debug} has_file={bool(file)}")
 
-                if картинка:
-                    file, image_url = await rounded_image_from_url(картинка)
-                    if image_url:
-                        embed.set_image(url=image_url)
+                if attach_url:
+                    embed.set_image(url=attach_url)
 
             view = PostView(opts) if opts else None
 
-            # Публічний пост в канал
-            channel = interaction.channel
-
-            # Лог старту
+            # Stage: sending
             _append_post_log({
                 "time": _utc_now(),
-                "event": "post_start",
-                "cmd": getattr(getattr(interaction, "command", None), "qualified_name", None),
-                "user_id": getattr(interaction.user, "id", None),
-                "guild_id": getattr(getattr(interaction, "guild", None), "id", None),
-                "channel_id": getattr(channel, "id", None),
-                "has_embed": bool(embed),
+                "stage": "sending",
+                "cmd": cmd_name,
+                "has_embed": True,
                 "has_view": bool(view),
                 "has_file": bool(file),
             })
+            if debug:
+                print(f"[POST][DBG] sending has_view={bool(view)} has_file={bool(file)}")
 
-            if not embed and view:
-                await channel.send("📊 Виберіть варіант:", view=view)
-            elif embed and view:
-                if file:
-                    await channel.send(embed=embed, view=view, file=file)
-                else:
-                    await channel.send(embed=embed, view=view)
-            elif embed:
-                if file:
-                    await channel.send(embed=embed, file=file)
-                else:
-                    await channel.send(embed=embed)
+            channel = interaction.channel
+            if channel is None:
+                await self._reply_ephemeral(interaction, "❌ Не можу визначити канал для посту.")
+                _append_post_log({
+                    "time": _utc_now(),
+                    "stage": "fail_no_channel",
+                    "cmd": cmd_name,
+                })
+                return
+
+            # Send public message to the channel
+            if view and file:
+                await channel.send(embed=embed, view=view, file=file)
+            elif view and not file:
+                await channel.send(embed=embed, view=view)
+            elif (not view) and file:
+                await channel.send(embed=embed, file=file)
             else:
-                # Теоретично сюди не попадемо, але хай буде
-                await channel.send("❌ Ви не заповнили жодне поле.")
+                await channel.send(embed=embed)
 
-            await interaction.followup.send("✅ Пост відправлено.", ephemeral=True)
-
+            # Stage: done
             _append_post_log({
                 "time": _utc_now(),
-                "event": "post_done",
-                "user_id": getattr(interaction.user, "id", None),
+                "stage": "done",
+                "cmd": cmd_name,
+                "user_id": user_id,
             })
+            await self._reply_ephemeral(interaction, "✅ Пост відправлено.")
 
         except Exception as e:
             tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             print(f"[POST][ERR] {type(e).__name__}: {e}")
             _append_post_log({
                 "time": _utc_now(),
-                "event": "post_error",
+                "stage": "post_error",
+                "cmd": cmd_name,
                 "error_type": type(e).__name__,
-                "error": str(e),
+                "error": _safe_str(e, 1000),
                 "traceback": tb,
             })
+            await self._reply_ephemeral(interaction, f"❌ Помилка: `{type(e).__name__}: {_safe_str(e, 300)}`")
 
-            try:
-                await interaction.followup.send(f"❌ Помилка: `{type(e).__name__}: {e}`", ephemeral=True)
-            except Exception:
-                pass
-
-    # Латиниця: /post
+    # Latin: /post
     @app_commands.command(name="post", description="Create a post or poll with buttons")
     @app_commands.describe(
         заголовок="Заголовок повідомлення",
@@ -214,6 +333,7 @@ class PostCog(commands.Cog):
         опитування3="Варіант 3",
         опитування4="Варіант 4",
         опитування5="Варіант 5",
+        debug="Показати debug в логах і коротко в консолі",
     )
     async def post_cmd(
         self,
@@ -227,17 +347,19 @@ class PostCog(commands.Cog):
         опитування3: str = None,
         опитування4: str = None,
         опитування5: str = None,
+        debug: bool = False,
     ):
         await self._run_post(
-            interaction,
-            заголовок,
-            текст,
-            картинка,
-            шрифт,
-            [опитування1, опитування2, опитування3, опитування4, опитування5],
+            interaction=interaction,
+            title=заголовок,
+            text=текст,
+            image_url=картинка,
+            font=шрифт,
+            options=[опитування1, опитування2, опитування3, опитування4, опитування5],
+            debug=debug,
         )
 
-    # Кирилиця: /пост
+    # Ukrainian: /пост
     @app_commands.command(name="пост", description="Створити допис або опитування з кнопками")
     @app_commands.describe(
         заголовок="Заголовок повідомлення",
@@ -249,6 +371,7 @@ class PostCog(commands.Cog):
         опитування3="Варіант 3",
         опитування4="Варіант 4",
         опитування5="Варіант 5",
+        debug="Показати debug в логах і коротко в консолі",
     )
     async def post_ua_cmd(
         self,
@@ -262,14 +385,16 @@ class PostCog(commands.Cog):
         опитування3: str = None,
         опитування4: str = None,
         опитування5: str = None,
+        debug: bool = False,
     ):
         await self._run_post(
-            interaction,
-            заголовок,
-            текст,
-            картинка,
-            шрифт,
-            [опитування1, опитування2, опитування3, опитування4, опитування5],
+            interaction=interaction,
+            title=заголовок,
+            text=текст,
+            image_url=картинка,
+            font=шрифт,
+            options=[опитування1, опитування2, опитування3, опитування4, опитування5],
+            debug=debug,
         )
 
 
