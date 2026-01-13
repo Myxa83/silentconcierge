@@ -15,15 +15,33 @@ from discord.ui import View, Button, Modal, TextInput
 from PIL import Image, ImageDraw
 
 
+# ---------------- ACCESS CONFIG ----------------
+ROLE_ALLOWED = [
+    1375070910138028044,  # Leader
+    1425974196181270671,  # Officer
+    1323454517664157736,  # Moderator
+]
+# ----------------------------------------------
+
+
 LOG_DIR = Path("logs")
 POST_LOG_FILE = LOG_DIR / "post_logs.json"
 
 HTTP_TIMEOUT_SECONDS = 15
-VIEW_TIMEOUT_SECONDS = 600  # 10 хв
+VIEW_TIMEOUT_SECONDS = 600
+WAIT_FILE_TIMEOUT_SECONDS = 120
 
 
 def _utc_now() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_str(x: Any, limit: int = 600) -> str:
+    try:
+        s = str(x)
+    except Exception:
+        s = "<unprintable>"
+    return s if len(s) <= limit else s[:limit] + "...(cut)"
 
 
 def _append_post_log(entry: Dict[str, Any]) -> None:
@@ -43,33 +61,11 @@ def _append_post_log(entry: Dict[str, Any]) -> None:
         pass
 
 
-def _safe_str(x: Any, limit: int = 400) -> str:
-    try:
-        s = str(x)
-    except Exception:
-        s = "<unprintable>"
-    if len(s) > limit:
-        return s[:limit] + "...(cut)"
-    return s
+def _has_access(member: discord.Member) -> bool:
+    return any(r.id in ROLE_ALLOWED for r in getattr(member, "roles", []))
 
 
-@dataclass
-class PostSession:
-    channel_id: int
-    guild_id: Optional[int]
-    user_id: int
-
-    title: Optional[str] = None
-    text: Optional[str] = None
-    image_url: Optional[str] = None
-
-    attachment_filename: Optional[str] = None
-    attachment_bytes: Optional[bytes] = None  # якщо прикріпили файл-картинку
-
-    created_at: str = ""
-
-
-async def _download_bytes(url: str) -> Tuple[Optional[bytes], Optional[str]]:
+async def _download_bytes(url: str) -> Tuple[Optional[bytes], str]:
     if not url:
         return None, "empty_url"
     try:
@@ -83,11 +79,7 @@ async def _download_bytes(url: str) -> Tuple[Optional[bytes], Optional[str]]:
         return None, f"download_error_{type(e).__name__}:{_safe_str(e)}"
 
 
-def _rounded_png_from_bytes(data: bytes, radius: int = 40) -> Tuple[Optional[discord.File], Optional[str], Optional[str]]:
-    """
-    Робить округлення, повертає (discord.File, attachment_url, debug_reason)
-    Ніколи не кидає виняток назовні.
-    """
+def _rounded_png_from_bytes(data: bytes, radius: int = 40) -> Tuple[Optional[discord.File], Optional[str], str]:
     if not data:
         return None, None, "empty_bytes"
     try:
@@ -111,51 +103,19 @@ def _rounded_png_from_bytes(data: bytes, radius: int = 40) -> Tuple[Optional[dis
         return None, None, f"pillow_error_{type(e).__name__}:{_safe_str(e)}"
 
 
-class AddImageView(View):
-    def __init__(self, cog: "PostCog", session: PostSession):
-        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
-        self.cog = cog
-        self.session = session
+@dataclass
+class PostSession:
+    user_id: int
+    channel_id: int
+    guild_id: Optional[int]
+    created_at: str
 
-        self.add_item(AddImageButton())
-        self.add_item(SkipImageButton())
+    title: Optional[str] = None
+    text: Optional[str] = None
+    image_url: Optional[str] = None
 
-
-class AddImageButton(Button):
-    def __init__(self):
-        super().__init__(label="Додати картинку (файл)", style=discord.ButtonStyle.primary)
-
-    async def callback(self, interaction: Interaction):
-        view: AddImageView = self.view  # type: ignore
-        await view.cog._handle_add_image_click(interaction, view.session)
-
-
-class SkipImageButton(Button):
-    def __init__(self):
-        super().__init__(label="Без картинки", style=discord.ButtonStyle.secondary)
-
-    async def callback(self, interaction: Interaction):
-        view: AddImageView = self.view  # type: ignore
-        await view.cog._handle_skip_image_click(interaction, view.session)
-
-
-class ImageUploadModal(Modal, title="Додати картинку файлом"):
-    def __init__(self, cog: "PostCog", session: PostSession):
-        super().__init__()
-        self.cog = cog
-        self.session = session
-
-        self.image_link = TextInput(
-            label="Посилання на картинку (якщо хочеш через URL)",
-            required=False,
-            placeholder="https://...png або GitHub raw",
-            max_length=400,
-        )
-        self.add_item(self.image_link)
-
-    async def on_submit(self, interaction: Interaction):
-        url = (self.image_link.value or "").strip() or None
-        await self.cog._handle_image_modal_submit(interaction, self.session, url)
+    attachment_bytes: Optional[bytes] = None
+    attachment_filename: Optional[str] = None
 
 
 class PostTextModal(Modal, title="Текст поста"):
@@ -176,7 +136,7 @@ class PostTextModal(Modal, title="Текст поста"):
             max_length=4000,
         )
         self.image_url_input = TextInput(
-            label="Картинка по посиланню (необовязково)",
+            label="Додатково: картинка по посиланню (необовязково)",
             required=False,
             placeholder="https://...png або GitHub raw",
             max_length=400,
@@ -190,7 +150,74 @@ class PostTextModal(Modal, title="Текст поста"):
         title = (self.title_input.value or "").strip() or None
         text = (self.text_input.value or "").strip() or None
         img = (self.image_url_input.value or "").strip() or None
-        await self.cog._handle_text_modal_submit(interaction, self.session, title, text, img)
+        await self.cog._handle_text_submit(interaction, self.session, title, text, img)
+
+
+class ImageLinkModal(Modal, title="Картинка по посиланню"):
+    def __init__(self, cog: "PostCog", session: PostSession):
+        super().__init__()
+        self.cog = cog
+        self.session = session
+
+        self.image_link = TextInput(
+            label="Посилання на картинку",
+            required=True,
+            placeholder="https://...png або GitHub raw",
+            max_length=400,
+        )
+        self.add_item(self.image_link)
+
+    async def on_submit(self, interaction: Interaction):
+        url = (self.image_link.value or "").strip() or None
+        await self.cog._handle_image_link_submit(interaction, self.session, url)
+
+
+class StartPostView(View):
+    def __init__(self, cog: "PostCog", session: PostSession):
+        super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.session = session
+
+        self.add_item(UploadFromDeviceButton())
+        self.add_item(AddImageLinkButton())
+        self.add_item(NoImageButton())
+        self.add_item(CancelButton())
+
+
+class UploadFromDeviceButton(Button):
+    def __init__(self):
+        super().__init__(label="Картинка з машини (файл)", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: Interaction):
+        view: StartPostView = self.view  # type: ignore
+        await view.cog._handle_wait_file(interaction, view.session)
+
+
+class AddImageLinkButton(Button):
+    def __init__(self):
+        super().__init__(label="Картинка по посиланню", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: Interaction):
+        view: StartPostView = self.view  # type: ignore
+        await view.cog._handle_open_link_modal(interaction, view.session)
+
+
+class NoImageButton(Button):
+    def __init__(self):
+        super().__init__(label="Без картинки", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: Interaction):
+        view: StartPostView = self.view  # type: ignore
+        await view.cog._handle_open_text_modal(interaction, view.session)
+
+
+class CancelButton(Button):
+    def __init__(self):
+        super().__init__(label="Скасувати", style=discord.ButtonStyle.danger)
+
+    async def callback(self, interaction: Interaction):
+        view: StartPostView = self.view  # type: ignore
+        await view.cog._cancel(interaction, view.session)
 
 
 class AnonChoiceView(View):
@@ -198,10 +225,9 @@ class AnonChoiceView(View):
         super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
         self.cog = cog
         self.session = session
-
         self.add_item(PostWithAuthorButton())
         self.add_item(PostAnonymousButton())
-        self.add_item(CancelPostButton())
+        self.add_item(CancelFinalizeButton())
 
 
 class PostWithAuthorButton(Button):
@@ -210,7 +236,7 @@ class PostWithAuthorButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: AnonChoiceView = self.view  # type: ignore
-        await view.cog._finalize_post(interaction, view.session, anonymous=False)
+        await view.cog._finalize(interaction, view.session, anonymous=False)
 
 
 class PostAnonymousButton(Button):
@@ -219,16 +245,16 @@ class PostAnonymousButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: AnonChoiceView = self.view  # type: ignore
-        await view.cog._finalize_post(interaction, view.session, anonymous=True)
+        await view.cog._finalize(interaction, view.session, anonymous=True)
 
 
-class CancelPostButton(Button):
+class CancelFinalizeButton(Button):
     def __init__(self):
         super().__init__(label="Скасувати", style=discord.ButtonStyle.danger)
 
     async def callback(self, interaction: Interaction):
         view: AnonChoiceView = self.view  # type: ignore
-        await view.cog._cancel_post(interaction, view.session)
+        await view.cog._cancel(interaction, view.session)
 
 
 class PostCog(commands.Cog):
@@ -251,71 +277,146 @@ class PostCog(commands.Cog):
         _append_post_log(entry)
         print(f"[POST][DBG] stage={stage} user={entry['user_id']} cmd={entry['cmd']}")
 
-    async def _reply_ephemeral(self, interaction: Interaction, content: str, *, view: Optional[View] = None):
+    async def _reply_ephemeral(self, interaction: Interaction, content: str, *, view: Optional[View] = None, embed: Optional[discord.Embed] = None):
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(content, ephemeral=True, view=view)
+                await interaction.followup.send(content, ephemeral=True, view=view, embed=embed)
             else:
-                await interaction.response.send_message(content, ephemeral=True, view=view)
+                await interaction.response.send_message(content, ephemeral=True, view=view, embed=embed)
         except Exception:
             pass
 
-    def _get_or_create_session(self, interaction: Interaction) -> PostSession:
-        uid = interaction.user.id
+    def _new_session(self, interaction: Interaction) -> PostSession:
         sess = PostSession(
+            user_id=interaction.user.id,
             channel_id=getattr(interaction.channel, "id", 0),
             guild_id=getattr(getattr(interaction, "guild", None), "id", None),
-            user_id=uid,
             created_at=_utc_now(),
         )
-        self.sessions[uid] = sess
+        self.sessions[sess.user_id] = sess
         return sess
 
-    # ---------- PUBLIC COMMANDS ----------
-    @app_commands.command(name="post", description="Створити пост через модалки")
-    async def post_cmd(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        sess = self._get_or_create_session(interaction)
-        self._log("start", interaction)
+    async def _access_check(self, interaction: Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            await self._reply_ephemeral(interaction, "❌ Цю команду можна використовувати тільки на сервері.")
+            return False
+        if not _has_access(interaction.user):
+            await self._reply_ephemeral(interaction, "⛔ У вас немає прав для використання /post.")
+            return False
+        return True
 
-        view = AddImageView(self, sess)
-        await interaction.followup.send(
-            "Починаємо пост.\nСпочатку вибери: додати картинку чи без неї.",
-            ephemeral=True,
+    # ---------------- COMMANDS ----------------
+    @app_commands.command(name="post", description="Створити пост через майстер")
+    @app_commands.describe(attachment="Картинка файлом (необовязково)")
+    async def post_cmd(self, interaction: Interaction, attachment: Optional[discord.Attachment] = None):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if not await self._access_check(interaction):
+            return
+
+        sess = self._new_session(interaction)
+        self._log("start", interaction, {"has_attachment": bool(attachment)})
+
+        # Якщо файл прикріплено прямо у /post, беремо його і йдемо в текстову модалку
+        if attachment:
+            try:
+                data = await attachment.read()
+                sess.attachment_bytes = data
+                sess.attachment_filename = attachment.filename
+                self._log("attachment_read_ok", interaction, {"filename": attachment.filename, "size": len(data) if data else 0})
+                await self._reply_ephemeral(interaction, "✅ Файл прийнято. Тепер введи текст поста.")
+                await interaction.followup.send_modal(PostTextModal(self, sess))
+                return
+            except Exception as e:
+                tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                self._log("attachment_read_fail", interaction, {"error": _safe_str(e)})
+                _append_post_log({"time": _utc_now(), "stage": "attachment_read_traceback", "traceback": tb})
+                await self._reply_ephemeral(interaction, f"❌ Не можу прочитати файл: `{type(e).__name__}: {_safe_str(e, 200)}`")
+                return
+
+        # Інакше даємо вибір
+        view = StartPostView(self, sess)
+        await self._reply_ephemeral(
+            interaction,
+            "Починаємо пост.\nОбери варіант: файл з машини, посилання, або без картинки.\n"
+            "Примітка: якщо хочеш файл, натисни кнопку і потім відправ повідомлення з картинкою в цей канал.",
             view=view,
         )
 
-    @app_commands.command(name="пост", description="Створити пост через модалки")
-    async def post_cmd_ua(self, interaction: Interaction):
-        await self.post_cmd(interaction)
+    @app_commands.command(name="пост", description="Створити пост через майстер")
+    @app_commands.describe(attachment="Картинка файлом (необовязково)")
+    async def post_cmd_ua(self, interaction: Interaction, attachment: Optional[discord.Attachment] = None):
+        await self.post_cmd(interaction, attachment)
 
-    # ---------- FLOW HANDLERS ----------
-    async def _handle_add_image_click(self, interaction: Interaction, session: PostSession):
-        self._log("add_image_click", interaction)
+    # ---------------- FLOW HANDLERS ----------------
+    async def _cancel(self, interaction: Interaction, session: PostSession):
+        self._log("cancel", interaction)
+        self.sessions.pop(session.user_id, None)
+        await self._reply_ephemeral(interaction, "Скасовано.")
 
-        # Тут нема прямого способу отримати файл у кнопці, тому робимо модалку з URL.
-        # А файл можна прикріпити до наступного повідомлення користувача руками, але це складніше.
-        # Тому робимо: або URL, або пропуск. Якщо хочеш саме файл, я дам окрему схему з "слухати наступне повідомлення".
-        await interaction.response.send_modal(ImageUploadModal(self, session))
-
-    async def _handle_skip_image_click(self, interaction: Interaction, session: PostSession):
-        self._log("skip_image_click", interaction)
+    async def _handle_open_text_modal(self, interaction: Interaction, session: PostSession):
+        self._log("open_text_modal", interaction)
         await interaction.response.send_modal(PostTextModal(self, session))
 
-    async def _handle_image_modal_submit(self, interaction: Interaction, session: PostSession, url: Optional[str]):
-        self._log("image_modal_submit", interaction, {"url": url})
+    async def _handle_open_link_modal(self, interaction: Interaction, session: PostSession):
+        self._log("open_link_modal", interaction)
+        await interaction.response.send_modal(ImageLinkModal(self, session))
 
-        # Зберігаємо URL як "попередню картинку". Реально підтягнемо при фіналі.
-        session.image_url = url or session.image_url
-
-        # Далі текст
+    async def _handle_image_link_submit(self, interaction: Interaction, session: PostSession, url: Optional[str]):
+        self._log("image_link_submit", interaction, {"url": url})
+        session.image_url = url
         await interaction.response.send_modal(PostTextModal(self, session))
 
-    async def _handle_text_modal_submit(self, interaction: Interaction, session: PostSession, title: Optional[str], text: Optional[str], img: Optional[str]):
-        self._log("text_modal_submit", interaction, {
+    async def _handle_wait_file(self, interaction: Interaction, session: PostSession):
+        self._log("wait_file_start", interaction)
+
+        await self._reply_ephemeral(
+            interaction,
+            "Добре. Тепер відправ сюди в цей канал ОДНЕ повідомлення з картинкою (файлом).\n"
+            f"Чекаю {WAIT_FILE_TIMEOUT_SECONDS} секунд. Якщо передумала, натисни Скасувати у старому повідомленні.",
+        )
+
+        channel = interaction.channel
+        if channel is None:
+            self._log("wait_file_no_channel", interaction)
+            return
+
+        def check(msg: discord.Message) -> bool:
+            if msg.author.id != session.user_id:
+                return False
+            if msg.channel.id != session.channel_id:
+                return False
+            return bool(msg.attachments)
+
+        try:
+            msg: discord.Message = await self.bot.wait_for("message", timeout=WAIT_FILE_TIMEOUT_SECONDS, check=check)
+            att = msg.attachments[0]
+            data = await att.read()
+            session.attachment_bytes = data
+            session.attachment_filename = att.filename
+            self._log("wait_file_got_attachment", interaction, {"filename": att.filename, "size": len(data) if data else 0})
+
+            # Переходимо до модалки тексту
+            try:
+                await interaction.followup.send("✅ Файл отримано. Відкриваю модалку тексту.", ephemeral=True)
+                await interaction.followup.send_modal(PostTextModal(self, session))
+            except Exception:
+                # Якщо send_modal через followup не працює, дамо інструкцію
+                await interaction.followup.send("❌ Не вдалося відкрити модалку автоматично. Запусти /post ще раз і обери Без картинки, потім встав текст. Файл вже збережено в сесії.", ephemeral=True)
+
+        except Exception as e:
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            self._log("wait_file_timeout_or_error", interaction, {"error_type": type(e).__name__, "error": _safe_str(e)})
+            _append_post_log({"time": _utc_now(), "stage": "wait_file_traceback", "traceback": tb})
+            await self._reply_ephemeral(interaction, "⏳ Не дочекалась файлу. Запусти /post ще раз.")
+
+    async def _handle_text_submit(self, interaction: Interaction, session: PostSession, title: Optional[str], text: Optional[str], img: Optional[str]):
+        self._log("text_submit", interaction, {
             "title_set": bool(title),
             "text_len": len(text or ""),
             "img_set": bool(img),
+            "has_attachment": bool(session.attachment_bytes),
+            "has_image_url": bool(session.image_url),
         })
 
         session.title = title
@@ -323,40 +424,18 @@ class PostCog(commands.Cog):
         if img:
             session.image_url = img
 
-        # Показуємо превю і вибір анонімності
         preview = discord.Embed(
             title=session.title or "",
             description=session.text or "",
-            color=discord.Color.teal()
+            color=discord.Color.teal(),
         )
-        preview_note = "Підтверди пост: анонімно чи з автором."
-
         view = AnonChoiceView(self, session)
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(preview_note, ephemeral=True, embed=preview, view=view)
-            else:
-                await interaction.response.send_message(preview_note, ephemeral=True, embed=preview, view=view)
-        except Exception:
-            pass
+        await self._reply_ephemeral(interaction, "Підтверди пост: анонімно чи з автором.", view=view, embed=preview)
 
-    async def _cancel_post(self, interaction: Interaction, session: PostSession):
-        self._log("cancel", interaction)
-        self.sessions.pop(session.user_id, None)
-        await self._reply_ephemeral(interaction, "Скасовано.", view=None)
-
-    async def _finalize_post(self, interaction: Interaction, session: PostSession, anonymous: bool):
+    async def _finalize(self, interaction: Interaction, session: PostSession, anonymous: bool):
         self._log("finalize_start", interaction, {"anonymous": anonymous})
 
-        # Захист від протухлої сесії
-        if not session.text and not session.title and not session.image_url and not session.attachment_bytes:
-            self._log("finalize_empty_session", interaction)
-            await self._reply_ephemeral(interaction, "Сесія порожня. Запусти /post ще раз.")
-            self.sessions.pop(session.user_id, None)
-            return
-
         try:
-            # Build embed
             embed = discord.Embed(
                 title=session.title or "",
                 description=session.text or "",
@@ -372,10 +451,16 @@ class PostCog(commands.Cog):
 
             file_to_send = None
 
-            # Image priority:
-            # 1) session.attachment_bytes (поки не використовуємо в цій версії)
-            # 2) session.image_url (якщо є)
-            if session.image_url:
+            # Пріоритет: файл з машини (attachment)
+            if session.attachment_bytes:
+                f, attach_url, reason = _rounded_png_from_bytes(session.attachment_bytes)
+                self._log("image_from_attachment", interaction, {"reason": reason, "has_file": bool(f)})
+                if f and attach_url:
+                    file_to_send = f
+                    embed.set_image(url=attach_url)
+
+            # Далі: посилання (якщо файлу нема)
+            if (not file_to_send) and session.image_url:
                 self._log("image_download_start", interaction, {"url": session.image_url})
                 data, reason = await _download_bytes(session.image_url)
                 self._log("image_download_done", interaction, {"reason": reason, "has_bytes": bool(data)})
@@ -386,11 +471,10 @@ class PostCog(commands.Cog):
                         file_to_send = f
                         embed.set_image(url=attach_url)
 
-            # Send to channel
             channel = interaction.channel
             if channel is None or not hasattr(channel, "send"):
                 self._log("finalize_no_channel", interaction)
-                await self._reply_ephemeral(interaction, "Не бачу канал для відправки поста.")
+                await self._reply_ephemeral(interaction, "❌ Не бачу канал для відправки поста.")
                 return
 
             self._log("send_channel_start", interaction, {"has_file": bool(file_to_send)})
@@ -401,19 +485,14 @@ class PostCog(commands.Cog):
                 await channel.send(embed=embed)
 
             self._log("send_channel_done", interaction)
-
             await self._reply_ephemeral(interaction, "✅ Пост опубліковано.")
             self.sessions.pop(session.user_id, None)
 
         except Exception as e:
             tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             self._log("finalize_error", interaction, {"error_type": type(e).__name__, "error": _safe_str(e, 800)})
-            _append_post_log({
-                "time": _utc_now(),
-                "stage": "finalize_traceback",
-                "traceback": tb,
-            })
-            await self._reply_ephemeral(interaction, f"❌ Помилка: `{type(e).__name__}: {_safe_str(e, 300)}`")
+            _append_post_log({"time": _utc_now(), "stage": "finalize_traceback", "traceback": tb})
+            await self._reply_ephemeral(interaction, f"❌ Помилка: `{type(e).__name__}: {_safe_str(e, 200)}`")
 
 
 async def setup(bot: commands.Bot):
