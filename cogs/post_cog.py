@@ -23,6 +23,7 @@ ROLE_ALLOWED = [
 
 LOG_DIR = Path("logs")
 POST_LOG_FILE = LOG_DIR / "post_logs.json"
+POST_TB_FILE = LOG_DIR / "post_tracebacks.json"
 
 HTTP_TIMEOUT_SECONDS = 15
 VIEW_TIMEOUT_SECONDS = 600
@@ -34,7 +35,7 @@ def _utc_now() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _safe_str(x: Any, limit: int = 600) -> str:
+def _safe_str(x: Any, limit: int = 700) -> str:
     try:
         s = str(x)
     except Exception:
@@ -42,21 +43,49 @@ def _safe_str(x: Any, limit: int = 600) -> str:
     return s if len(s) <= limit else s[:limit] + "...(cut)"
 
 
-def _append_post_log(entry: Dict[str, Any]) -> None:
+def _append_json_list(path: Path, entry: Dict[str, Any]) -> None:
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         data = []
-        if POST_LOG_FILE.exists():
+        if path.exists():
             try:
-                data = json.loads(POST_LOG_FILE.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(data, list):
                     data = []
             except Exception:
                 data = []
         data.append(entry)
-        POST_LOG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+
+def _log_stage(stage: str, interaction: Optional[Interaction], extra: Optional[Dict[str, Any]] = None) -> None:
+    entry = {
+        "time": _utc_now(),
+        "stage": stage,
+        "user_id": getattr(getattr(interaction, "user", None), "id", None) if interaction else None,
+        "guild_id": getattr(getattr(getattr(interaction, "guild", None), "id", None), "__int__", None) if interaction else None,
+        "channel_id": getattr(getattr(getattr(interaction, "channel", None), "id", None), "__int__", None) if interaction else None,
+        "cmd": getattr(getattr(interaction, "command", None), "qualified_name", None) if interaction else None,
+    }
+    if extra:
+        entry.update(extra)
+    _append_json_list(POST_LOG_FILE, entry)
+
+
+def _log_traceback(stage: str, interaction: Optional[Interaction], err: BaseException) -> None:
+    tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+    entry = {
+        "time": _utc_now(),
+        "stage": stage,
+        "user_id": getattr(getattr(interaction, "user", None), "id", None) if interaction else None,
+        "cmd": getattr(getattr(interaction, "command", None), "qualified_name", None) if interaction else None,
+        "error_type": type(err).__name__,
+        "error": _safe_str(err),
+        "traceback": tb,
+    }
+    _append_json_list(POST_TB_FILE, entry)
 
 
 def _has_access(member: discord.Member) -> bool:
@@ -132,27 +161,18 @@ class PostSession:
     poll_options: Optional[List[str]] = None
 
 
-class PostTextModal(Modal, title="Текст поста"):
+class PostTextModal(Modal, title="Текст"):
     def __init__(self, cog: "PostCog", session: PostSession):
         super().__init__()
         self.cog = cog
         self.session = session
 
-        self.title_input = TextInput(
-            label="Заголовок (необовязково)",
-            required=False,
-            max_length=256,
-        )
-        self.text_input = TextInput(
-            label="Текст",
-            required=True,
-            style=discord.TextStyle.paragraph,
-            max_length=4000,
-        )
+        self.title_input = TextInput(label="Заголовок (необовязково)", required=False, max_length=256)
+        self.text_input = TextInput(label="Текст", required=True, style=discord.TextStyle.paragraph, max_length=4000)
         self.image_url_input = TextInput(
             label="Додатково: картинка по посиланню (необовязково)",
             required=False,
-            placeholder="https://...png або GitHub raw",
+            placeholder="https://...png",
             max_length=400,
         )
 
@@ -161,10 +181,10 @@ class PostTextModal(Modal, title="Текст поста"):
         self.add_item(self.image_url_input)
 
     async def on_submit(self, interaction: Interaction):
-        title = (self.title_input.value or "").strip() or None
-        text = (self.text_input.value or "").strip() or None
-        img = (self.image_url_input.value or "").strip() or None
-        await self.cog._handle_text_submit(interaction, self.session, title, text, img)
+        await self.cog._safe_call("modal_text_submit", interaction, self.cog._handle_text_submit, interaction, self.session,
+                                  (self.title_input.value or "").strip() or None,
+                                  (self.text_input.value or "").strip() or None,
+                                  (self.image_url_input.value or "").strip() or None)
 
 
 class ImageLinkModal(Modal, title="Картинка по посиланню"):
@@ -172,18 +192,12 @@ class ImageLinkModal(Modal, title="Картинка по посиланню"):
         super().__init__()
         self.cog = cog
         self.session = session
-
-        self.image_link = TextInput(
-            label="Посилання на картинку",
-            required=True,
-            placeholder="https://...png або GitHub raw",
-            max_length=400,
-        )
+        self.image_link = TextInput(label="Посилання", required=True, max_length=400)
         self.add_item(self.image_link)
 
     async def on_submit(self, interaction: Interaction):
-        url = (self.image_link.value or "").strip() or None
-        await self.cog._handle_image_link_submit(interaction, self.session, url)
+        await self.cog._safe_call("modal_link_submit", interaction, self.cog._handle_image_link_submit, interaction, self.session,
+                                  (self.image_link.value or "").strip() or None)
 
 
 class PollOptionsModal(Modal, title="Опитування: варіанти"):
@@ -206,7 +220,7 @@ class PollOptionsModal(Modal, title="Опитування: варіанти"):
 
     async def on_submit(self, interaction: Interaction):
         opts = _clean_poll_options([self.o1.value, self.o2.value, self.o3.value, self.o4.value, self.o5.value])
-        await self.cog._handle_poll_options_submit(interaction, self.session, opts)
+        await self.cog._safe_call("modal_poll_submit", interaction, self.cog._handle_poll_options_submit, interaction, self.session, opts)
 
 
 class StartPostView(View):
@@ -214,7 +228,6 @@ class StartPostView(View):
         super().__init__(timeout=VIEW_TIMEOUT_SECONDS)
         self.cog = cog
         self.session = session
-
         self.add_item(UploadFromDeviceButton())
         self.add_item(AddImageLinkButton())
         self.add_item(NoImageButton())
@@ -228,7 +241,7 @@ class UploadFromDeviceButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: StartPostView = self.view  # type: ignore
-        await view.cog._handle_wait_file(interaction, view.session)
+        await view.cog._safe_call("btn_device", interaction, view.cog._handle_wait_file, interaction, view.session)
 
 
 class AddImageLinkButton(Button):
@@ -237,7 +250,7 @@ class AddImageLinkButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: StartPostView = self.view  # type: ignore
-        await view.cog._handle_open_link_modal(interaction, view.session)
+        await view.cog._safe_call("btn_link", interaction, view.cog._handle_open_link_modal, interaction, view.session)
 
 
 class NoImageButton(Button):
@@ -246,7 +259,7 @@ class NoImageButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: StartPostView = self.view  # type: ignore
-        await view.cog._handle_open_text_modal(interaction, view.session)
+        await view.cog._safe_call("btn_noimg", interaction, view.cog._handle_open_text_modal, interaction, view.session)
 
 
 class PollButton(Button):
@@ -255,7 +268,7 @@ class PollButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: StartPostView = self.view  # type: ignore
-        await view.cog._handle_start_poll(interaction, view.session)
+        await view.cog._safe_call("btn_poll", interaction, view.cog._handle_start_poll, interaction, view.session)
 
 
 class CancelButton(Button):
@@ -264,7 +277,7 @@ class CancelButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: StartPostView = self.view  # type: ignore
-        await view.cog._cancel(interaction, view.session)
+        await view.cog._safe_call("btn_cancel", interaction, view.cog._cancel, interaction, view.session)
 
 
 class OpenModalView(View):
@@ -282,7 +295,7 @@ class OpenTextModalButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: OpenModalView = self.view  # type: ignore
-        await view.cog._handle_open_text_modal(interaction, view.session)
+        await view.cog._safe_call("btn_open_modal", interaction, view.cog._handle_open_text_modal, interaction, view.session)
 
 
 class CancelButton2(Button):
@@ -291,7 +304,7 @@ class CancelButton2(Button):
 
     async def callback(self, interaction: Interaction):
         view: OpenModalView = self.view  # type: ignore
-        await view.cog._cancel(interaction, view.session)
+        await view.cog._safe_call("btn_cancel2", interaction, view.cog._cancel, interaction, view.session)
 
 
 class PollButtonView(View):
@@ -331,7 +344,7 @@ class PostWithAuthorButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: ConfirmView = self.view  # type: ignore
-        await view.cog._finalize(interaction, view.session, anonymous=False)
+        await view.cog._safe_call("btn_author", interaction, view.cog._finalize, interaction, view.session, False)
 
 
 class PostAnonymousButton(Button):
@@ -340,7 +353,7 @@ class PostAnonymousButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: ConfirmView = self.view  # type: ignore
-        await view.cog._finalize(interaction, view.session, anonymous=True)
+        await view.cog._safe_call("btn_anon", interaction, view.cog._finalize, interaction, view.session, True)
 
 
 class CancelFinalizeButton(Button):
@@ -349,7 +362,7 @@ class CancelFinalizeButton(Button):
 
     async def callback(self, interaction: Interaction):
         view: ConfirmView = self.view  # type: ignore
-        await view.cog._cancel(interaction, view.session)
+        await view.cog._safe_call("btn_cancel_finalize", interaction, view.cog._cancel, interaction, view.session)
 
 
 class PostCog(commands.Cog):
@@ -358,28 +371,24 @@ class PostCog(commands.Cog):
         self.sessions: Dict[int, PostSession] = {}
         print("[COG][OK] Loaded cogs.post_cog")
 
-    def _log(self, stage: str, interaction: Interaction, extra: Optional[Dict[str, Any]] = None):
-        entry = {
-            "time": _utc_now(),
-            "stage": stage,
-            "user_id": getattr(interaction.user, "id", None),
-            "guild_id": getattr(getattr(interaction, "guild", None), "id", None),
-            "channel_id": getattr(getattr(interaction, "channel", None), "id", None),
-            "cmd": getattr(getattr(interaction, "command", None), "qualified_name", None),
-        }
-        if extra:
-            entry.update(extra)
-        _append_post_log(entry)
-        print(f"[POST][DBG] stage={stage} user={entry['user_id']} cmd={entry['cmd']}")
-
     async def _reply_ephemeral(self, interaction: Interaction, content: str, *, view: Optional[View] = None, embed: Optional[discord.Embed] = None):
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=True, view=view, embed=embed)
+        else:
+            await interaction.response.send_message(content, ephemeral=True, view=view, embed=embed)
+
+    async def _safe_call(self, stage: str, interaction: Interaction, fn, *args):
         try:
-            if interaction.response.is_done():
-                await interaction.followup.send(content, ephemeral=True, view=view, embed=embed)
-            else:
-                await interaction.response.send_message(content, ephemeral=True, view=view, embed=embed)
-        except Exception:
-            pass
+            _log_stage(stage, interaction)
+            return await fn(*args)
+        except Exception as e:
+            _log_stage("error", interaction, {"at": stage, "error_type": type(e).__name__, "error": _safe_str(e)})
+            _log_traceback(stage, interaction, e)
+            try:
+                await self._reply_ephemeral(interaction, f"❌ Помилка в /post: `{type(e).__name__}`. Дивись logs/post_tracebacks.json")
+            except Exception:
+                pass
+            return None
 
     async def _access_check(self, interaction: Interaction) -> bool:
         if not isinstance(interaction.user, discord.Member):
@@ -400,7 +409,6 @@ class PostCog(commands.Cog):
         self.sessions[sess.user_id] = sess
         return sess
 
-    # COMMANDS
     @app_commands.command(name="post", description="Пост або опитування через майстер")
     @app_commands.describe(image="Опційне зображення для поста (attachment з ПК)")
     async def post_cmd(self, interaction: Interaction, image: Optional[discord.Attachment] = None):
@@ -408,13 +416,12 @@ class PostCog(commands.Cog):
             return
 
         sess = self._new_session(interaction)
-        self._log("start", interaction, {"has_image": bool(image)})
+        _log_stage("start", interaction, {"has_image": bool(image)})
 
-        # Якщо image вже прикріплений, НЕ питаємо про картинку знов
         if image:
             sess.attachment_url = image.url
             sess.attachment_filename = image.filename
-            self._log("image_set_from_slash", interaction, {"filename": image.filename})
+            _log_stage("image_set_from_slash", interaction, {"filename": image.filename})
             await interaction.response.send_modal(PostTextModal(self, sess))
             return
 
@@ -430,40 +437,30 @@ class PostCog(commands.Cog):
     async def post_cmd_ua(self, interaction: Interaction, image: Optional[discord.Attachment] = None):
         await self.post_cmd(interaction, image)
 
-    # FLOW
     async def _cancel(self, interaction: Interaction, session: PostSession):
-        self._log("cancel", interaction)
         self.sessions.pop(session.user_id, None)
         await self._reply_ephemeral(interaction, "Скасовано.")
 
     async def _handle_open_text_modal(self, interaction: Interaction, session: PostSession):
-        self._log("open_text_modal", interaction)
         await interaction.response.send_modal(PostTextModal(self, session))
 
     async def _handle_open_link_modal(self, interaction: Interaction, session: PostSession):
-        self._log("open_link_modal", interaction)
         await interaction.response.send_modal(ImageLinkModal(self, session))
 
     async def _handle_start_poll(self, interaction: Interaction, session: PostSession):
-        self._log("start_poll", interaction)
         session.mode = "poll"
         await interaction.response.send_modal(PostTextModal(self, session))
 
     async def _handle_image_link_submit(self, interaction: Interaction, session: PostSession, url: Optional[str]):
-        self._log("image_link_submit", interaction, {"url": url})
         session.image_url = url
         await interaction.response.send_modal(PostTextModal(self, session))
 
     async def _handle_wait_file(self, interaction: Interaction, session: PostSession):
-        self._log("wait_file_start", interaction)
-        await self._reply_ephemeral(
-            interaction,
-            f"Надішли 1 повідомлення з картинкою (файлом). Чекаю {WAIT_FILE_TIMEOUT_SECONDS} секунд.",
-        )
+        await self._reply_ephemeral(interaction, f"Надішли 1 повідомлення з картинкою (файлом). Чекаю {WAIT_FILE_TIMEOUT_SECONDS} секунд.")
 
         channel = interaction.channel
         if channel is None:
-            self._log("wait_file_no_channel", interaction)
+            await self._reply_ephemeral(interaction, "❌ Не бачу канал.")
             return
 
         def check(msg: discord.Message) -> bool:
@@ -473,38 +470,20 @@ class PostCog(commands.Cog):
                 return False
             return bool(msg.attachments)
 
-        try:
-            msg: discord.Message = await self.bot.wait_for("message", timeout=WAIT_FILE_TIMEOUT_SECONDS, check=check)
-            att = msg.attachments[0]
-            session.attachment_url = att.url
-            session.attachment_filename = att.filename
-            self._log("wait_file_got_attachment", interaction, {"filename": att.filename})
+        msg: discord.Message = await self.bot.wait_for("message", timeout=WAIT_FILE_TIMEOUT_SECONDS, check=check)
+        att = msg.attachments[0]
+        session.attachment_url = att.url
+        session.attachment_filename = att.filename
 
-            view = OpenModalView(self, session)
-            await self._reply_ephemeral(interaction, "✅ Файл отримано. Натисни кнопку щоб відкрити модалку тексту.", view=view)
-
-        except Exception as e:
-            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-            self._log("wait_file_timeout_or_error", interaction, {"error_type": type(e).__name__, "error": _safe_str(e)})
-            _append_post_log({"time": _utc_now(), "stage": "wait_file_traceback", "traceback": tb})
-            await self._reply_ephemeral(interaction, "⏳ Не дочекалась файлу. Запусти /post ще раз.")
+        view = OpenModalView(self, session)
+        await self._reply_ephemeral(interaction, "✅ Файл отримано. Натисни кнопку щоб відкрити модалку тексту.", view=view)
 
     async def _handle_text_submit(self, interaction: Interaction, session: PostSession, title: Optional[str], text: Optional[str], img: Optional[str]):
-        self._log("text_submit", interaction, {
-            "mode": session.mode,
-            "title_set": bool(title),
-            "text_len": len(text or ""),
-            "img_set": bool(img),
-            "has_attachment_url": bool(session.attachment_url),
-            "has_image_url": bool(session.image_url),
-        })
-
         session.title = title
         session.text = text
         if img:
             session.image_url = img
 
-        # Якщо це опитування, спочатку зберемо варіанти
         if session.mode == "poll" and not session.poll_options:
             await interaction.response.send_modal(PollOptionsModal(self, session))
             return
@@ -512,7 +491,6 @@ class PostCog(commands.Cog):
         await self._show_confirm(interaction, session)
 
     async def _handle_poll_options_submit(self, interaction: Interaction, session: PostSession, options: List[str]):
-        self._log("poll_options_submit", interaction, {"options_count": len(options)})
         if len(options) < 2:
             await self._reply_ephemeral(interaction, "❌ Треба мінімум 2 варіанти.")
             return
@@ -520,85 +498,58 @@ class PostCog(commands.Cog):
         await self._show_confirm(interaction, session)
 
     async def _show_confirm(self, interaction: Interaction, session: PostSession):
-        preview = discord.Embed(
-            title=session.title or "",
-            description=session.text or "",
-            color=discord.Color.teal(),
-        )
+        preview = discord.Embed(title=session.title or "", description=session.text or "", color=discord.Color.teal())
         if session.mode == "poll" and session.poll_options:
-            preview.add_field(
-                name="Опитування",
-                value="\n".join([f"- {o}" for o in session.poll_options]),
-                inline=False,
-            )
+            preview.add_field(name="Опитування", value="\n".join([f"- {o}" for o in session.poll_options]), inline=False)
 
         view = ConfirmView(self, session)
         await self._reply_ephemeral(interaction, "Підтверди: анонімно чи з автором.", view=view, embed=preview)
 
     async def _finalize(self, interaction: Interaction, session: PostSession, anonymous: bool):
-        self._log("finalize_start", interaction, {"anonymous": anonymous, "mode": session.mode})
+        embed = discord.Embed(title=session.title or "", description=session.text or "", color=discord.Color.teal())
+        if not anonymous:
+            u = interaction.user
+            if hasattr(u, "display_avatar"):
+                embed.set_author(name=u.display_name, icon_url=u.display_avatar.url)
 
-        try:
-            embed = discord.Embed(
-                title=session.title or "",
-                description=session.text or "",
-                color=discord.Color.teal(),
-            )
+        file_to_send = None
 
-            if not anonymous:
-                try:
-                    u = interaction.user
-                    embed.set_author(name=u.display_name, icon_url=u.display_avatar.url)
-                except Exception:
-                    pass
+        if session.attachment_url:
+            data, reason = await _download_bytes(session.attachment_url)
+            _log_stage("image_download_attachment", interaction, {"reason": reason, "has_bytes": bool(data)})
+            if data:
+                f, attach_url, r = _rounded_png_from_bytes(data)
+                _log_stage("image_round_attachment", interaction, {"reason": r, "has_file": bool(f)})
+                if f and attach_url:
+                    file_to_send = f
+                    embed.set_image(url=attach_url)
 
-            file_to_send = None
+        if (not file_to_send) and session.image_url:
+            data, reason = await _download_bytes(session.image_url)
+            _log_stage("image_download_url", interaction, {"reason": reason, "has_bytes": bool(data)})
+            if data:
+                f, attach_url, r = _rounded_png_from_bytes(data)
+                _log_stage("image_round_url", interaction, {"reason": r, "has_file": bool(f)})
+                if f and attach_url:
+                    file_to_send = f
+                    embed.set_image(url=attach_url)
 
-            # priority: attachment_url
-            if session.attachment_url:
-                data, reason = await _download_bytes(session.attachment_url)
-                self._log("image_download_attachment", interaction, {"reason": reason, "has_bytes": bool(data)})
-                if data:
-                    f, attach_url, r = _rounded_png_from_bytes(data)
-                    self._log("image_round_attachment", interaction, {"reason": r, "has_file": bool(f)})
-                    if f and attach_url:
-                        file_to_send = f
-                        embed.set_image(url=attach_url)
+        view = None
+        if session.mode == "poll" and session.poll_options:
+            view = PollButtonView(session.poll_options)
 
-            # fallback: image_url
-            if (not file_to_send) and session.image_url:
-                data, reason = await _download_bytes(session.image_url)
-                self._log("image_download_url", interaction, {"reason": reason, "has_bytes": bool(data)})
-                if data:
-                    f, attach_url, r = _rounded_png_from_bytes(data)
-                    self._log("image_round_url", interaction, {"reason": r, "has_file": bool(f)})
-                    if f and attach_url:
-                        file_to_send = f
-                        embed.set_image(url=attach_url)
+        channel = interaction.channel
+        if channel is None or not hasattr(channel, "send"):
+            await self._reply_ephemeral(interaction, "❌ Не бачу канал для поста.")
+            return
 
-            channel = interaction.channel
-            if channel is None or not hasattr(channel, "send"):
-                await self._reply_ephemeral(interaction, "❌ Не бачу канал для поста.")
-                return
+        if file_to_send:
+            await channel.send(embed=embed, view=view, file=file_to_send)
+        else:
+            await channel.send(embed=embed, view=view)
 
-            # якщо опитування, додаємо кнопки
-            view = None
-            if session.mode == "poll" and session.poll_options:
-                view = PollButtonView(session.poll_options)
-
-            if file_to_send:
-                await channel.send(embed=embed, view=view, file=file_to_send)
-            else:
-                await channel.send(embed=embed, view=view)
-
-            await self._reply_ephemeral(interaction, "✅ Готово.")
-            self.sessions.pop(session.user_id, None)
-
-        except Exception as e:
-            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-            self._log("finalize_error", interaction, {"error_type": type(e).__name__, "error": _safe_str(e, 800)})
-            _append_post_log({"time": _utc_now(), "stage": "finalize_traceback", "traceback": tb})
-            await self._reply_ephemeral(interaction, f"❌ Помилка: `{type(e).__name__}: {_safe_str(e, 200)}`")
+        self.sessions.pop(session.user_id, None)
+        await self._reply_ephemeral(interaction, "✅ Готово.")
 
 
 async def setup(bot: commands.Bot):
