@@ -579,4 +579,4 @@ class PostCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(PostCog(bot))
+    await bot.add_cog(PostCog(bot)
