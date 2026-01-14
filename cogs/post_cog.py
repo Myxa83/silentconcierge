@@ -3,7 +3,7 @@ import io
 import json
 import traceback
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
 
@@ -29,6 +29,10 @@ HTTP_TIMEOUT_SECONDS = 15
 VIEW_TIMEOUT_SECONDS = 600
 WAIT_FILE_TIMEOUT_SECONDS = 120
 MAX_POLL_OPTIONS = 5
+
+# Скільки часу в минуле шукати "останню картинку"
+RECENT_IMAGE_LOOKBACK_MINUTES = 60
+RECENT_IMAGE_HISTORY_LIMIT = 30
 
 
 def _utc_now() -> str:
@@ -65,8 +69,8 @@ def _log_stage(stage: str, interaction: Optional[Interaction], extra: Optional[D
         "time": _utc_now(),
         "stage": stage,
         "user_id": getattr(getattr(interaction, "user", None), "id", None) if interaction else None,
-        "guild_id": getattr(getattr(getattr(interaction, "guild", None), "id", None), "__int__", None) if interaction else None,
-        "channel_id": getattr(getattr(getattr(interaction, "channel", None), "id", None), "__int__", None) if interaction else None,
+        "guild_id": getattr(getattr(getattr(interaction, "guild", None), "id", None), None) if interaction else None,
+        "channel_id": getattr(getattr(getattr(interaction, "channel", None), "id", None), None) if interaction else None,
         "cmd": getattr(getattr(interaction, "command", None), "qualified_name", None) if interaction else None,
     }
     if extra:
@@ -181,10 +185,16 @@ class PostTextModal(Modal, title="Текст"):
         self.add_item(self.image_url_input)
 
     async def on_submit(self, interaction: Interaction):
-        await self.cog._safe_call("modal_text_submit", interaction, self.cog._handle_text_submit, interaction, self.session,
-                                  (self.title_input.value or "").strip() or None,
-                                  (self.text_input.value or "").strip() or None,
-                                  (self.image_url_input.value or "").strip() or None)
+        await self.cog._safe_call(
+            "modal_text_submit",
+            interaction,
+            self.cog._handle_text_submit,
+            interaction,
+            self.session,
+            (self.title_input.value or "").strip() or None,
+            (self.text_input.value or "").strip() or None,
+            (self.image_url_input.value or "").strip() or None,
+        )
 
 
 class ImageLinkModal(Modal, title="Картинка по посиланню"):
@@ -196,8 +206,14 @@ class ImageLinkModal(Modal, title="Картинка по посиланню"):
         self.add_item(self.image_link)
 
     async def on_submit(self, interaction: Interaction):
-        await self.cog._safe_call("modal_link_submit", interaction, self.cog._handle_image_link_submit, interaction, self.session,
-                                  (self.image_link.value or "").strip() or None)
+        await self.cog._safe_call(
+            "modal_link_submit",
+            interaction,
+            self.cog._handle_image_link_submit,
+            interaction,
+            self.session,
+            (self.image_link.value or "").strip() or None,
+        )
 
 
 class PollOptionsModal(Modal, title="Опитування: варіанти"):
@@ -409,6 +425,30 @@ class PostCog(commands.Cog):
         self.sessions[sess.user_id] = sess
         return sess
 
+    async def _find_recent_attachment_url(self, interaction: Interaction) -> Tuple[Optional[str], Optional[str]]:
+        channel = interaction.channel
+        if channel is None or not hasattr(channel, "history"):
+            return None, None
+
+        cutoff = datetime.utcnow() - timedelta(minutes=RECENT_IMAGE_LOOKBACK_MINUTES)
+
+        try:
+            async for msg in channel.history(limit=RECENT_IMAGE_HISTORY_LIMIT):
+                if msg.author.id != interaction.user.id:
+                    continue
+
+                created = msg.created_at
+                if created is not None and created.replace(tzinfo=None) < cutoff:
+                    continue
+
+                if msg.attachments:
+                    att = msg.attachments[0]
+                    return att.url, att.filename
+        except Exception:
+            return None, None
+
+        return None, None
+
     @app_commands.command(name="post", description="Пост або опитування через майстер")
     @app_commands.describe(image="Опційне зображення для поста (attachment з ПК)")
     async def post_cmd(self, interaction: Interaction, image: Optional[discord.Attachment] = None):
@@ -418,6 +458,7 @@ class PostCog(commands.Cog):
         sess = self._new_session(interaction)
         _log_stage("start", interaction, {"has_image": bool(image)})
 
+        # 1) Якщо image прикріпили в команді, беремо його і одразу модалка
         if image:
             sess.attachment_url = image.url
             sess.attachment_filename = image.filename
@@ -425,6 +466,16 @@ class PostCog(commands.Cog):
             await interaction.response.send_modal(PostTextModal(self, sess))
             return
 
+        # 2) Якщо image не прикріпили, але ти вже кидала картинку до цього, підхоплюємо автоматом
+        recent_url, recent_name = await self._find_recent_attachment_url(interaction)
+        if recent_url:
+            sess.attachment_url = recent_url
+            sess.attachment_filename = recent_name
+            _log_stage("image_set_from_recent", interaction, {"filename": recent_name})
+            await interaction.response.send_modal(PostTextModal(self, sess))
+            return
+
+        # 3) Інакше показуємо меню вибору
         view = StartPostView(self, sess)
         await interaction.response.send_message(
             "Обери варіант: з машини, з посилання, без картинки, або опитування.",
