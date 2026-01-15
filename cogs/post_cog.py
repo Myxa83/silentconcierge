@@ -12,7 +12,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 from discord import app_commands, Interaction
-from discord.ui import View, Button, Modal, TextInput
+from discord.ui import View, Modal, TextInput
 from PIL import Image, ImageDraw
 
 
@@ -105,7 +105,6 @@ async def download_and_round(url: str) -> Tuple[Optional[discord.File], Optional
 
 
 def parse_message_link(link: str) -> Optional[Tuple[int, int, int]]:
-    # https://discord.com/channels/guild_id/channel_id/message_id
     m = re.search(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)", link or "")
     if not m:
         return None
@@ -113,8 +112,6 @@ def parse_message_link(link: str) -> Optional[Tuple[int, int, int]]:
 
 
 def has_access(member: discord.Member) -> bool:
-    # Права не чіпаю, але можеш підв'язати ROLE_ALLOWED як раніше
-    # Тут зроблено максимально просто: або manage_messages, або адмін.
     return member.guild_permissions.manage_messages or member.guild_permissions.administrator
 
 
@@ -141,12 +138,7 @@ class TextModal(Modal, title="Текст поста"):
         self.cog = cog
         self.session = session
 
-        self.title_input = TextInput(
-            label="Заголовок",
-            required=False,
-            max_length=256,
-            default=session.title or "",
-        )
+        self.title_input = TextInput(label="Заголовок", required=False, max_length=256, default=session.title or "")
         self.text_input = TextInput(
             label="Текст",
             style=discord.TextStyle.paragraph,
@@ -154,7 +146,6 @@ class TextModal(Modal, title="Текст поста"):
             max_length=4000,
             default=session.text or "",
         )
-
         self.add_item(self.title_input)
         self.add_item(self.text_input)
 
@@ -163,17 +154,13 @@ class TextModal(Modal, title="Текст поста"):
             self.session.title = (self.title_input.value or "").strip() or None
             self.session.text = (self.text_input.value or "").strip()
             log_event("text_modal_submit", interaction, {"edit_mode": self.session.edit_mode})
-            await interaction.response.send_message(
-                "Показувати автора?",
-                ephemeral=True,
-                view=AuthorView(self.cog, self.session),
-            )
+            await interaction.response.send_message("Показувати автора?", ephemeral=True, view=AuthorView(self.cog, self.session))
         except Exception as e:
             log_tb("text_modal_submit", interaction, e)
-            if not interaction.response.is_done():
-                await interaction.response.send_message("❌ Помилка. Дивись logs/post_tracebacks.json", ephemeral=True)
-            else:
+            if interaction.response.is_done():
                 await interaction.followup.send("❌ Помилка. Дивись logs/post_tracebacks.json", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Помилка. Дивись logs/post_tracebacks.json", ephemeral=True)
 
 
 class LinkModal(Modal, title="Картинка з посилання"):
@@ -192,7 +179,7 @@ class LinkModal(Modal, title="Картинка з посилання"):
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
 
-class ImageChoiceView(View):
+class ImageChoiceView(discord.ui.View):
     def __init__(self, cog: "PostCog", session: PostSession):
         super().__init__(timeout=VIEW_TIMEOUT)
         self.cog = cog
@@ -201,7 +188,11 @@ class ImageChoiceView(View):
     @discord.ui.button(label="З ПК", style=discord.ButtonStyle.primary)
     async def from_pc(self, interaction: Interaction, _):
         try:
-            await interaction.response.send_message("Надішли повідомлення з картинкою (файлом)", ephemeral=True)
+            log_event("wait_file_start", interaction, {"edit_mode": self.session.edit_mode})
+            await interaction.response.send_message(
+                "Надішли повідомлення з картинкою (файлом) в цей канал. Після цього відкрию модалку тексту.",
+                ephemeral=True,
+            )
 
             def check(m: discord.Message) -> bool:
                 return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id and bool(m.attachments)
@@ -232,7 +223,7 @@ class ImageChoiceView(View):
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
 
-class EditImageChoiceView(View):
+class EditImageChoiceView(discord.ui.View):
     def __init__(self, cog: "PostCog", session: PostSession):
         super().__init__(timeout=VIEW_TIMEOUT)
         self.cog = cog
@@ -243,7 +234,7 @@ class EditImageChoiceView(View):
         self.session.keep_existing_image = True
         self.session.remove_image = False
         self.session.image_url = None
-        log_event("keep_image", interaction)
+        log_event("keep_image", interaction, {"edit_mode": True})
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
     @discord.ui.button(label="Замінити (ПК)", style=discord.ButtonStyle.primary)
@@ -260,11 +251,11 @@ class EditImageChoiceView(View):
         self.session.keep_existing_image = False
         self.session.remove_image = True
         self.session.image_url = None
-        log_event("remove_image", interaction)
+        log_event("remove_image", interaction, {"edit_mode": True})
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
 
-class AuthorView(View):
+class AuthorView(discord.ui.View):
     def __init__(self, cog: "PostCog", session: PostSession):
         super().__init__(timeout=VIEW_TIMEOUT)
         self.cog = cog
@@ -281,7 +272,7 @@ class AuthorView(View):
         await interaction.response.send_message("Додавати футер?", ephemeral=True, view=FooterView(self.cog, self.session))
 
 
-class FooterView(View):
+class FooterView(discord.ui.View):
     def __init__(self, cog: "PostCog", session: PostSession):
         super().__init__(timeout=VIEW_TIMEOUT)
         self.cog = cog
@@ -304,7 +295,8 @@ class PostCog(commands.Cog):
         print("[COG] post_cog loaded")
 
     @app_commands.command(name="post", description="Створити пост")
-    async def post_cmd(self, interaction: Interaction):
+    @app_commands.describe(image="Опційно: прикріпи файл одразу, тоді модалка відкриється відразу")
+    async def post_cmd(self, interaction: Interaction, image: Optional[discord.Attachment] = None):
         try:
             if not isinstance(interaction.user, discord.Member):
                 await interaction.response.send_message("❌ Тільки на сервері.", ephemeral=True)
@@ -314,8 +306,18 @@ class PostCog(commands.Cog):
                 return
 
             sess = PostSession(edit_mode=False)
-            log_event("start_post", interaction)
-            await interaction.response.send_message("Обери картинку: ПК, посилання, або без", ephemeral=True, view=ImageChoiceView(self, sess))
+            log_event("start_post", interaction, {"has_attachment": bool(image)})
+
+            if image is not None:
+                sess.image_url = image.url
+                await interaction.response.send_modal(TextModal(self, sess))
+                return
+
+            await interaction.response.send_message(
+                "Обери картинку: ПК, посилання, або без",
+                ephemeral=True,
+                view=ImageChoiceView(self, sess),
+            )
         except Exception as e:
             log_tb("start_post", interaction, e)
             await interaction.response.send_message("❌ Помилка. Дивись logs/post_tracebacks.json", ephemeral=True)
@@ -407,12 +409,11 @@ class PostCog(commands.Cog):
                 embed.set_footer(text=FOOTER_TEXT, icon_url=self.bot.user.display_avatar.url)
 
             file_to_send = None
+
             if session.edit_mode:
                 channel = interaction.guild.get_channel(session.target_channel_id) if interaction.guild else None
                 if channel is None and interaction.guild:
                     channel = await interaction.guild.fetch_channel(session.target_channel_id)
-                if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-                    raise RuntimeError("bad_target_channel")
 
                 msg = await channel.fetch_message(session.target_message_id)
 
@@ -446,7 +447,6 @@ class PostCog(commands.Cog):
                 log_event("edit_done_text_only", interaction, {"message_id": msg.id})
                 return
 
-            # publish new
             if session.image_url:
                 f, attach_url, reason = await download_and_round(session.image_url)
                 log_event("post_image_round", interaction, {"reason": reason})
