@@ -141,7 +141,6 @@ class TextModal(Modal, title="Текст поста"):
             await interaction.response.send_message("Показувати автора?", ephemeral=True, view=AuthorView(self.cog, self.session))
         except Exception as e:
             log_tb("text_modal_submit", interaction, e)
-            await interaction.response.send_message("❌ Помилка в модалці тексту.", ephemeral=True)
 
 class LinkModal(Modal, title="Картинка з посилання"):
     def __init__(self, cog: "PostCog", session: PostSession):
@@ -155,7 +154,6 @@ class LinkModal(Modal, title="Картинка з посилання"):
         self.session.image_url = (self.url.value or "").strip() or None
         self.session.keep_existing_image = False
         self.session.remove_image = False
-        log_event("link_set", interaction, {"edit_mode": self.session.edit_mode})
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
 class ImageChoiceView(discord.ui.View):
@@ -167,21 +165,17 @@ class ImageChoiceView(discord.ui.View):
     @discord.ui.button(label="З ПК", style=discord.ButtonStyle.primary)
     async def from_pc(self, interaction: Interaction, _):
         try:
-            log_event("wait_file_start", interaction, {"edit_mode": self.session.edit_mode})
             if not interaction.response.is_done():
-                await interaction.response.send_message("Надішли картинку файлом у цей канал. Чекаю...", ephemeral=True)
+                await interaction.response.send_message("Надішли картинку файлом у цей канал.", ephemeral=True)
             
             def check(m: discord.Message) -> bool:
                 return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id and bool(m.attachments)
 
             msg = await self.cog.bot.wait_for("message", timeout=WAIT_FILE_TIMEOUT, check=check)
             self.session.image_url = msg.attachments[0].url
-            self.session.keep_existing_image = False
-            self.session.remove_image = False
             await interaction.followup.send_modal(TextModal(self.cog, self.session))
-        except Exception as e:
-            log_tb("from_pc", interaction, e)
-            await interaction.followup.send("❌ Час вийшов або сталась помилка.", ephemeral=True)
+        except:
+            await interaction.followup.send("❌ Час очікування вийшов.", ephemeral=True)
 
     @discord.ui.button(label="З посилання", style=discord.ButtonStyle.secondary)
     async def from_link(self, interaction: Interaction, _):
@@ -190,7 +184,6 @@ class ImageChoiceView(discord.ui.View):
     @discord.ui.button(label="Без картинки", style=discord.ButtonStyle.secondary)
     async def no_image(self, interaction: Interaction, _):
         self.session.image_url = None
-        self.session.keep_existing_image = False
         self.session.remove_image = True
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
@@ -203,35 +196,24 @@ class EditImageChoiceView(discord.ui.View):
     @discord.ui.button(label="Залишити поточну", style=discord.ButtonStyle.success)
     async def keep(self, interaction: Interaction, _):
         self.session.keep_existing_image = True
-        self.session.remove_image = False
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
     @discord.ui.button(label="Замінити (ПК)", style=discord.ButtonStyle.primary)
     async def repl_pc(self, interaction: Interaction, _):
-        await self.from_pc_logic(interaction)
-
-    @discord.ui.button(label="Замінити (посилання)", style=discord.ButtonStyle.secondary)
-    async def repl_link(self, interaction: Interaction, _):
-        await interaction.response.send_modal(LinkModal(self.cog, self.session))
-
-    @discord.ui.button(label="Прибрати картинку", style=discord.ButtonStyle.danger)
-    async def remove(self, interaction: Interaction, _):
-        self.session.keep_existing_image = False
-        self.session.remove_image = True
-        await interaction.response.send_modal(TextModal(self.cog, self.session))
-
-    async def from_pc_logic(self, interaction: Interaction):
-        await interaction.response.send_message("Надішли новий файл у цей канал.", ephemeral=True)
+        await interaction.response.send_message("Надішли файл.", ephemeral=True)
         def check(m: discord.Message) -> bool:
             return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id and bool(m.attachments)
         try:
             msg = await self.cog.bot.wait_for("message", timeout=WAIT_FILE_TIMEOUT, check=check)
             self.session.image_url = msg.attachments[0].url
-            self.session.keep_existing_image = False
-            self.session.remove_image = False
             await interaction.followup.send_modal(TextModal(self.cog, self.session))
         except:
-            await interaction.followup.send("❌ Помилка очікування файлу.", ephemeral=True)
+            await interaction.followup.send("❌ Помилка.", ephemeral=True)
+
+    @discord.ui.button(label="Прибрати картинку", style=discord.ButtonStyle.danger)
+    async def remove(self, interaction: Interaction, _):
+        self.session.remove_image = True
+        await interaction.response.send_modal(TextModal(self.cog, self.session))
 
 class AuthorView(discord.ui.View):
     def __init__(self, cog: "PostCog", session: PostSession):
@@ -270,113 +252,91 @@ class FooterView(discord.ui.View):
 class PostCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        print("[COG] post_cog loaded")
 
     @app_commands.command(name="post", description="Створити пост")
     @app_commands.describe(image="Прикріпи файл одразу")
     async def post_cmd(self, interaction: Interaction, image: Optional[discord.Attachment] = None):
-        try:
-            if not isinstance(interaction.user, discord.Member) or not has_access(interaction.user):
-                return await interaction.response.send_message("⛔ Нема прав або не на сервері.", ephemeral=True)
+        if not isinstance(interaction.user, discord.Member) or not has_access(interaction.user):
+            return await interaction.response.send_message("⛔ Нема прав.", ephemeral=True)
 
-            sess = PostSession(edit_mode=False)
-            log_event("start_post", interaction, {"has_attachment": bool(image)})
-
-            if image:
-                sess.image_url = image.url
-                await interaction.response.send_modal(TextModal(self, sess))
-            else:
-                await interaction.response.send_message("Обери картинку:", ephemeral=True, view=ImageChoiceView(self, sess))
-        except Exception as e:
-            log_tb("start_post", interaction, e)
+        sess = PostSession()
+        if image:
+            sess.image_url = image.url
+            await interaction.response.send_modal(TextModal(self, sess))
+        else:
+            await interaction.response.send_message("Обери картинку:", ephemeral=True, view=ImageChoiceView(self, sess))
 
     @app_commands.command(name="post_edit", description="Редагувати пост бота")
     @app_commands.describe(message_link="Посилання на повідомлення")
     async def post_edit_cmd(self, interaction: Interaction, message_link: str):
-        try:
-            if not isinstance(interaction.user, discord.Member) or not has_access(interaction.user):
-                return await interaction.response.send_message("⛔ Нема прав.", ephemeral=True)
+        if not isinstance(interaction.user, discord.Member) or not has_access(interaction.user):
+            return await interaction.response.send_message("⛔ Нема прав.", ephemeral=True)
 
-            parsed = parse_message_link(message_link)
-            if not parsed:
-                return await interaction.response.send_message("❌ Невірне посилання.", ephemeral=True)
+        parsed = parse_message_link(message_link)
+        if not parsed:
+            return await interaction.response.send_message("❌ Невірне посилання.", ephemeral=True)
 
-            g_id, c_id, m_id = parsed
-            channel = interaction.guild.get_channel(c_id) or await interaction.guild.fetch_channel(c_id)
-            msg = await channel.fetch_message(m_id)
+        _, c_id, m_id = parsed
+        channel = self.bot.get_channel(c_id) or await self.bot.fetch_channel(c_id)
+        msg = await channel.fetch_message(m_id)
 
-            if msg.author.id != self.bot.user.id:
-                return await interaction.response.send_message("❌ Це не моє повідомлення.", ephemeral=True)
+        if msg.author.id != self.bot.user.id:
+            return await interaction.response.send_message("❌ Це не мій пост.", ephemeral=True)
 
-            # Парсимо існуючий ембед
-            title, text, anon, foot, has_img = None, "", True, False, False
-            if msg.embeds:
-                emb = msg.embeds[0]
-                title, text = emb.title, emb.description or ""
-                anon = not (emb.author and emb.author.name)
-                foot = bool(emb.footer and emb.footer.text)
-                has_img = bool(emb.image and emb.image.url)
+        # Парсимо старий ембед
+        title, text, anon, foot, has_img = None, "", True, False, False
+        if msg.embeds:
+            emb = msg.embeds[0]
+            title, text = emb.title, emb.description or ""
+            anon = not (emb.author and emb.author.name)
+            foot = bool(emb.footer and emb.footer.text)
+            has_img = bool(emb.image and emb.image.url)
 
-            sess = PostSession(title=title, text=text, anonymous=anon, footer=foot, edit_mode=True, target_channel_id=c_id, target_message_id=m_id)
-
-            if has_img:
-                await interaction.response.send_message("Що з картинкою?", ephemeral=True, view=EditImageChoiceView(self, sess))
-            else:
-                await interaction.response.send_message("Додати картинку?", ephemeral=True, view=ImageChoiceView(self, sess))
-        except Exception as e:
-            log_tb("start_edit", interaction, e)
-            await interaction.response.send_message("❌ Помилка при редагуванні.", ephemeral=True)
+        sess = PostSession(title=title, text=text, anonymous=anon, footer=foot, edit_mode=True, target_channel_id=c_id, target_message_id=m_id)
+        
+        if has_img:
+            await interaction.response.send_message("Що з картинкою?", ephemeral=True, view=EditImageChoiceView(self, sess))
+        else:
+            await interaction.response.send_message("Додати картинку?", ephemeral=True, view=ImageChoiceView(self, sess))
 
     async def finalize(self, interaction: Interaction, session: PostSession):
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        
+        embed = discord.Embed(title=session.title or "", description=session.text or "", color=discord.Color.teal())
+        if not session.anonymous:
+            embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        if session.footer:
+            embed.set_footer(text=FOOTER_TEXT, icon_url=self.bot.user.display_avatar.url)
 
-            embed = discord.Embed(title=session.title or "", description=session.text or "", color=discord.Color.teal())
-            if not session.anonymous:
-                embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-            if session.footer and self.bot.user:
-                embed.set_footer(text=FOOTER_TEXT, icon_url=self.bot.user.display_avatar.url)
-
-            file_to_send = None
+        # Редагування
+        if session.edit_mode:
+            channel = await self.bot.fetch_channel(session.target_channel_id)
+            msg = await channel.fetch_message(session.target_message_id)
             
-            # Логіка редагування
-            if session.edit_mode:
-                channel = await self.bot.fetch_channel(session.target_channel_id)
-                msg = await channel.fetch_message(session.target_message_id)
-
-                if session.keep_existing_image and msg.embeds and msg.embeds[0].image:
-                    embed.set_image(url=msg.embeds[0].image.url)
-                    await msg.edit(embed=embed)
-                elif session.remove_image:
-                    await msg.edit(embed=embed, attachments=[])
-                elif session.image_url:
-                    f, url, _ = await download_and_round(session.image_url)
-                    if f:
-                        embed.set_image(url=url)
-                        await msg.edit(embed=embed, attachments=[], list_files=[f] if hasattr(msg, 'edit') else [f]) # Спрощено для сумісності
-                        # В деяких версіях discord.py edit приймає attachments або запитує очистку старих
-                        await msg.edit(embed=embed, attachments=[f])
-                else:
-                    await msg.edit(embed=embed)
-                return await interaction.followup.send("✅ Оновлено.", ephemeral=True)
-
-            # Логіка створення нового поста
-            if session.image_url and not session.remove_image:
+            if session.keep_existing_image and msg.embeds and msg.embeds[0].image:
+                embed.set_image(url=msg.embeds[0].image.url)
+                await msg.edit(embed=embed)
+            elif session.remove_image:
+                await msg.edit(embed=embed, attachments=[])
+            elif session.image_url:
                 f, url, _ = await download_and_round(session.image_url)
                 if f:
-                    file_to_send = f
                     embed.set_image(url=url)
-
-            if file_to_send:
-                await interaction.channel.send(embed=embed, file=file_to_send)
+                    await msg.edit(embed=embed, attachments=[f])
             else:
-                await interaction.channel.send(embed=embed)
+                await msg.edit(embed=embed)
+            return await interaction.followup.send("✅ Оновлено.", ephemeral=True)
 
-            await interaction.followup.send("✅ Готово.", ephemeral=True)
-        except Exception as e:
-            log_tb("finalize", interaction, e)
-            await interaction.followup.send("❌ Помилка фіналізації.", ephemeral=True)
+        # Створення
+        f_send = None
+        if session.image_url:
+            f_send, url, _ = await download_and_round(session.image_url)
+            if f_send: embed.set_image(url=url)
+
+        if f_send: await interaction.channel.send(embed=embed, file=f_send)
+        else: await interaction.channel.send(embed=embed)
+        
+        await interaction.followup.send("✅ Готово.", ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PostCog(bot))
