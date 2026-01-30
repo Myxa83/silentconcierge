@@ -28,19 +28,27 @@ ROLE_SVITOCH = 1383410423704846396
 # ============================== UI COMPONENTS ================================
 
 class RecruitModal(discord.ui.Modal, title="Анкета в Silent Cove"):
+    """Модалка для подачі заявки в гільдію."""
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
         self.family = discord.ui.TextInput(label="Family Name", required=True)
         self.display = discord.ui.TextInput(label="Як до тебе звертатися?", required=True)
-        self.guild = discord.ui.TextInput(label="Твоя гільдія (в грі)", required=False, placeholder="Silent Cove, Angry Beavers...")
-        for i in (self.family, self.display, self.guild): self.add_item(i)
+        self.guild = discord.ui.TextInput(
+            label="Твоя гільдія (в грі)", 
+            required=False, 
+            placeholder="Silent Cove, Angry Beavers..."
+        )
+        for i in (self.family, self.display, self.guild): 
+            self.add_item(i)
 
     async def on_submit(self, itx: discord.Interaction):
+        # defer() запобігає помилці "Дія не вдалася"
         await itx.response.defer(ephemeral=True)
         await self.cog.create_ticket(itx, "guild", self.family.value, self.display.value, self.guild.value)
 
 class WelcomeView(discord.ui.View):
+    """Кнопки під вітальним повідомленням."""
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
@@ -60,19 +68,22 @@ class WelcomeView(discord.ui.View):
         await self.cog.create_ticket(itx, "guest", itx.user.display_name, itx.user.display_name, "")
 
 class TicketModeratorView(discord.ui.View):
+    """Кнопки керування тікетом для модераторів."""
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
 
     @discord.ui.button(label="✅ Прийняти", style=discord.ButtonStyle.success, custom_id="mod_accept")
     async def acc(self, itx: discord.Interaction, _):
-        if not await self.cog.is_moderator(itx.user): return
+        if not await self.cog.is_moderator(itx.user): 
+            return await itx.response.send_message("🚫 Немає прав.", ephemeral=True)
         await itx.response.defer(ephemeral=True)
         await self.cog.accept_member(itx)
 
     @discord.ui.button(label="⛔ Бан", style=discord.ButtonStyle.danger, custom_id="mod_ban")
     async def b(self, itx: discord.Interaction, _):
-        if not await self.cog.is_moderator(itx.user): return
+        if not await self.cog.is_moderator(itx.user): 
+            return await itx.response.send_message("🚫 Немає прав.", ephemeral=True)
         await itx.response.defer(ephemeral=True)
         await self.cog.ban_member(itx)
 
@@ -84,7 +95,7 @@ class VitalnijCog(commands.Cog):
         self.guild_tags = self.load_tags()
 
     def load_tags(self):
-        """Завантажує теги з config/guild_tags.json"""
+        """Завантажує теги гільдій з JSON файлу."""
         try:
             if GUILD_TAGS_PATH.exists():
                 with open(GUILD_TAGS_PATH, 'r', encoding='utf-8') as f:
@@ -92,34 +103,51 @@ class VitalnijCog(commands.Cog):
                     return {k.lower().strip(): v for k, v in data.items()}
             return {}
         except Exception as e:
-            print(f"[Vitalnij] Помилка завантаження тегів: {e}")
+            print(f"[VitalnijCog] Помилка завантаження тегів: {e}")
             return {}
 
-    async def is_moderator(self, user):
+    async def is_moderator(self, user: discord.Member) -> bool:
         return any(r.id in {ROLE_MODERATOR, ROLE_LEADER} for r in user.roles)
 
     @commands.Cog.listener()
     async def on_ready(self):
         self.bot.add_view(WelcomeView(self))
         self.bot.add_view(TicketModeratorView(self))
-        print("[VitalnijCog] Готовий до роботи.")
+        print("[VitalnijCog] Persistent views loaded.")
 
-    # Команда для адміна
-    @app_commands.command(name="send_welcome", description="Надіслати вітальний ембед")
+    @app_commands.command(name="send_welcome", description="Надіслати вітальний ембед Silent Cove")
     async def send_welcome(self, itx: discord.Interaction):
         if not itx.user.guild_permissions.administrator:
-            return await itx.response.send_message("Немає прав", ephemeral=True)
-        
+            return await itx.response.send_message("❌ Немає прав.", ephemeral=True)
+
+        ch = itx.guild.get_channel(WELCOME_CHAN)
+        if not ch:
+            return await itx.response.send_message("❌ Канал не знайдено.", ephemeral=True)
+
         e = discord.Embed(
             title="<a:SilentCove:1425637670197133444> · Ласкаво просимо до Silent Cove",
-            description="Оберіть вашу роль нижче. Наші модератори допоможуть вам.",
-            color=discord.Color.dark_teal()
+            description=(
+                "Ми раді тебе бачити у нас на сервері.\n"
+                "Це наша Тиха Затока, у якій ми будуємо\n"
+                "Дружнє товариство та спільноту, яка оточує допомогою і підтримкою.\n\n"
+                "Обери, з якої причини ти завітав до нас.\n\n"
+                "Найкращі герої нашої гільдії змагаються,\n"
+                "проливаючи кров за можливість поспілкуватися з тобою."
+            ),
+            color=discord.Color.dark_teal(),
         )
-        e.set_footer(text="Silent Concierge by Myxa")
-        await itx.channel.send(embed=e, view=WelcomeView(self))
-        await itx.response.send_message("✅ Готово", ephemeral=True)
 
-    # Логіка створення тікета
+        # Фонова гіфка (raw посилання з GitHub)
+        gif_url = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/%D0%97%D0%B0%D0%BF%D0%B8%D1%81%D1%8C_2025_09_25_02_22_16_748.gif"
+        e.set_image(url=gif_url)
+
+        # Футер з аватаркою бота
+        avatar_url = self.bot.user.display_avatar.url if self.bot.user else None
+        e.set_footer(text="Silent Concierge by Myxa", icon_url=avatar_url)
+
+        await ch.send(embed=e, view=WelcomeView(self))
+        await itx.response.send_message("✅ Вітальне повідомлення надіслано.", ephemeral=True)
+
     async def create_ticket(self, itx, typ, family, display, guild_name):
         g = itx.guild
         cat = g.get_channel(CATEGORY_TICKETS)
@@ -137,35 +165,35 @@ class VitalnijCog(commands.Cog):
         meta = {"user_id": itx.user.id, "type": typ, "family": family, "display": display, "guild": guild_name}
         await ch.edit(topic=f"SC_DATA:{json.dumps(meta, ensure_ascii=False)}")
 
-        # Ембед всередині тікета
         info = discord.Embed(title=f"🎫 Нова заявка: {typ}", color=discord.Color.blue())
-        info.add_field(name="Family Name", value=family or "—")
-        info.add_field(name="Нік", value=display or itx.user.display_name)
-        if guild_name: info.add_field(name="Колишня гільдія", value=guild_name)
+        info.add_field(name="Family Name", value=family or "—", inline=True)
+        info.add_field(name="Нік", value=display or itx.user.display_name, inline=True)
+        if guild_name: info.add_field(name="Гільдія (в грі)", value=guild_name, inline=False)
         
-        await ch.send(f"{g.get_role(ROLE_MODERATOR).mention} Новий запит!", embed=info, view=TicketModeratorView(self))
+        await ch.send(f"{g.get_role(ROLE_MODERATOR).mention} Нова заявка!", embed=info, view=TicketModeratorView(self))
         
-        # DM модераторам та Логи
         await self.dm_mods(itx, ch.id, typ, family, display, guild_name)
         await self.log_action("Створено тікет", f"Канал: {ch.mention}\nКористувач: {itx.user.mention}\nТип: {typ}", discord.Color.blurple())
         
         await itx.followup.send(f"✅ Тікет відкрито: {ch.mention}", ephemeral=True)
 
-    # Прийняття учасника
     async def accept_member(self, itx):
         ch = itx.channel
+        if not ch.topic or "SC_DATA:" not in ch.topic: return
+        
         data = json.loads(ch.topic.split("SC_DATA:")[1])
         member = await itx.guild.fetch_member(data["user_id"])
         mode = data["type"]
 
-        # Пошук тега
+        # Пошук тега в завантаженому JSON
         user_guild = data.get("guild", "").lower().strip()
-        tag = self.guild_tags.get(user_guild, "SC") # Якщо немає в списку, ставимо SC
+        tag = self.guild_tags.get(user_guild, "SC")
 
         if mode == "guild":
             clean_fam = re.sub(r"[^A-Za-z0-9]+", "", data["family"])
             new_nick = f"[{tag}] {clean_fam} | {data['display']}"[:32]
-            await member.edit(nick=new_nick)
+            try: await member.edit(nick=new_nick)
+            except: pass
             await member.add_roles(itx.guild.get_role(ROLE_RECRUIT), itx.guild.get_role(ROLE_SVITOCH))
         elif mode == "friend":
             await member.add_roles(itx.guild.get_role(ROLE_FRIEND))
@@ -175,35 +203,32 @@ class VitalnijCog(commands.Cog):
         newbie = itx.guild.get_role(ROLE_NEWBIE)
         if newbie in member.roles: await member.remove_roles(newbie)
 
-        await self.log_action("Тікет прийнято", f"Користувач: {member.mention}\nРежим: {mode}\nНік: `{member.display_name}`", discord.Color.green())
-        await itx.followup.send("✅ Користувача прийнято. Канал видаляється...")
+        await self.log_action("Тікет прийнято", f"Учасник: {member.mention}\nРежим: {mode}\nНовий нік: `{member.display_name}`", discord.Color.green())
+        await itx.followup.send("✅ Прийнято. Канал закриється через 5 секунд.")
         await asyncio.sleep(5)
         await ch.delete()
 
-    # Бан
     async def ban_member(self, itx):
         data = json.loads(itx.channel.topic.split("SC_DATA:")[1])
         member = await itx.guild.fetch_member(data["user_id"])
-        await itx.guild.ban(member, reason="Відмова в тікеті")
-        await self.log_action("Бан з тікета", f"Модератор: {itx.user.mention}\nОб'єкт: {member.mention}", discord.Color.red())
+        await itx.guild.ban(member, reason="Відмова/Бан через систему тікетів")
+        await self.log_action("Бан", f"Модератор: {itx.user.mention}\nЗабанено: {member.mention}", discord.Color.red())
         await itx.channel.delete()
 
-    # Функція розсилки модераторам (DM)
     async def dm_mods(self, itx, ch_id, typ, family, display, guild):
         mod_role = itx.guild.get_role(ROLE_MODERATOR)
         if not mod_role: return
         
         e = discord.Embed(title=f"📨 Нова заявка від {itx.user}", color=discord.Color.dark_teal())
         e.add_field(name="Тип", value=typ, inline=True)
-        e.add_field(name="Discord створено", value=f"<t:{int(itx.user.created_at.timestamp())}:R>", inline=True)
-        e.add_field(name="Тікет", value=f"[Перейти до каналу](https://discord.com/channels/{itx.guild.id}/{ch_id})", inline=False)
+        e.add_field(name="Акаунт створено", value=f"<t:{int(itx.user.created_at.timestamp())}:R>", inline=True)
+        e.add_field(name="Посилання", value=f"[Перейти до тікета](https://discord.com/channels/{itx.guild.id}/{ch_id})", inline=False)
         e.set_thumbnail(url=itx.user.display_avatar.url)
 
         for mod in mod_role.members:
             try: await mod.send(embed=e)
             except: continue
 
-    # Функція логування
     async def log_action(self, title, desc, color):
         log_ch = self.bot.get_channel(MODLOG_CHAN)
         if log_ch:
