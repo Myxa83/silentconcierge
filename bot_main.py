@@ -173,7 +173,6 @@ class Bot(commands.Bot):
                 "traceback": tb,
             })
 
-            # Відповідаємо без double-ack
             try:
                 if interaction.response.is_done():
                     await interaction.followup.send(f"❌ Помилка: `{type(error).__name__}`", ephemeral=True)
@@ -189,6 +188,26 @@ class Bot(commands.Bot):
             "event": "ready",
             "user_id": getattr(self.user, "id", None),
         })
+
+    # ---------- ТЕКСТОВА КОМАНДА ДЛЯ ПРИМУСОВОЇ СИНХРОНІЗАЦІЇ ----------
+    @commands.command(name="force_sync")
+    @commands.is_owner()
+    async def force_sync(self, ctx: commands.Context):
+        """Текстова команда !force_sync для виправлення слеш-команд"""
+        msg = await ctx.send("⏳ Починаю жорстку синхронізацію команд...")
+        try:
+            gid = int(GUILD_ID) if GUILD_ID else None
+            if gid:
+                guild_obj = discord.Object(id=gid)
+                self.tree.copy_global_to(guild=guild_obj)
+                synced = await self.tree.sync(guild=guild_obj)
+                await msg.edit(content=f"✅ Готово! Команди сервера `{gid}` оновлено: **{len(synced)}**.\nПерезавантаж Discord (Ctrl+R).")
+            else:
+                synced = await self.tree.sync()
+                await msg.edit(content=f"🌍 Глобальна синхронізація успішна: **{len(synced)}** команд.\nПерезавантаж Discord (Ctrl+R).")
+        except Exception as e:
+            await msg.edit(content=f"❌ Помилка при синхронізації: `{e}`")
+            traceback.print_exc()
 
 
 async def main():
