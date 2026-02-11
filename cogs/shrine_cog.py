@@ -71,12 +71,11 @@ class ShrineCog(commands.Cog):
         self.log_event("СИСТЕМА: Тижневий прогрес скинуто.")
         channel = self.bot.get_channel(self.report_channel_id)
         if channel:
-            await channel.send("♻️ **Системне повідомлення:** Всі ліміти Black Shrine скинуто на новий тиждень!")
+            await channel.send("♻️ Системне повідомлення: Всі ліміти Black Shrine скинуто на новий тиждень!")
 
     # --- Команда для тесту DM ---
     @app_commands.command(name="shrine_test_dm", description="Тест DM для Пані Мушки")
     async def shrine_test_dm(self, interaction: discord.Interaction):
-        # Список ID: ви та ваш колега
         target_ids = [interaction.user.id, 892107885482491945]
         sent_to = []
         
@@ -85,7 +84,7 @@ class ShrineCog(commands.Cog):
                 user = await self.bot.fetch_user(uid)
                 view = ConfirmProgressView("Тестовий Бос", 1, self)
                 await user.send(
-                    "🧪 **Тестове повідомлення від Пані Мушки!**\n"
+                    "🧪 Тестове повідомлення від Пані Мушки!\n"
                     "Будь ласка, натисніть кнопку нижче, щоб перевірити систему підтвердження проходжень.",
                     view=view
                 )
@@ -107,7 +106,7 @@ class ShrineCog(commands.Cog):
     ])
     async def shrine_create(self, interaction: discord.Interaction, boss: app_commands.Choice[str], count: int, time: str):
         if interaction.channel.id not in [self.report_channel_id, self.test_channel_id]:
-            return await interaction.response.send_message("Тут не можна створювати рейди! Використовуйте тест-канал або основний.", ephemeral=True)
+            return await interaction.response.send_message("Тут не можна створювати рейди! Використовуйте тест канал або основний.", ephemeral=True)
 
         if count < 1 or count > 5:
             return await interaction.response.send_message("Кількість має бути від 1 до 5!", ephemeral=True)
@@ -135,7 +134,6 @@ class ShrineCog(commands.Cog):
         if not channel: return
         weekly = self.load_json(WEEKLY_PATH)
         embed = discord.Embed(title="⚔️ Black Shrine Weekly Report", color=discord.Color.blue())
-        # Логіка виводу звіту
         embed.description = "Звіт формується на основі підтверджених проходжень."
         await channel.send(embed=embed)
 
@@ -224,5 +222,6 @@ class ConfirmProgressView(discord.ui.View):
         self.cog.log_event(f"Гравець {interaction.user.name} підтвердив {self.count} босів.")
         await interaction.response.edit_message(content=f"✅ Прогрес оновлено! ({weekly[uid]}/5)", view=None)
 
+# ВАЖЛИВО: функція setup має бути БЕЗ відступів праворуч!
 async def setup(bot):
     await bot.add_cog(ShrineCog(bot))
