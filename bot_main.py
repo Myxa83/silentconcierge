@@ -109,27 +109,36 @@ class Bot(commands.Bot):
             "failed": failed_ext,
         })
 
-        # ---------- SYNC COMMANDS ----------
-        gid = None
+        # ---------- SYNC COMMANDS (ЖОРСТКИЙ РЕЖИМ) ----------
         try:
-            gid = int(GUILD_ID) if GUILD_ID else None
-        except Exception:
             gid = None
+            try:
+                gid = int(GUILD_ID) if GUILD_ID else None
+            except Exception:
+                gid = None
 
-        try:
             if gid:
-                synced = await self.tree.sync(guild=discord.Object(id=gid))
-                print(f"[SYNC] Commands synced to guild {gid} count={len(synced)}")
+                guild_obj = discord.Object(id=gid)
+                # 1. Видаляємо привиди старих команд
+                self.tree.clear_commands(guild=guild_obj)
+                # 2. Копіюємо нові команди з когів у дерево сервера
+                self.tree.copy_global_to(guild=guild_obj)
+                # 3. Синхронізуємо
+                synced = await self.tree.sync(guild=guild_obj)
+                
+                print(f"[SYNC] Force synced to guild {gid}. Count: {len(synced)}")
+                for c in synced: print(f"  - /{c.name}")
+                
                 _append_runtime_log({
                     "time": _utc_now(),
                     "event": "sync",
-                    "mode": "guild",
+                    "mode": "guild_force",
                     "guild_id": gid,
                     "count": len(synced),
                 })
             else:
                 synced = await self.tree.sync()
-                print(f"[SYNC] Commands synced globally count={len(synced)}")
+                print(f"[SYNC] Global sync successful. Count: {len(synced)}")
                 _append_runtime_log({
                     "time": _utc_now(),
                     "event": "sync",
@@ -199,6 +208,7 @@ class Bot(commands.Bot):
             gid = int(GUILD_ID) if GUILD_ID else None
             if gid:
                 guild_obj = discord.Object(id=gid)
+                self.tree.clear_commands(guild=guild_obj)
                 self.tree.copy_global_to(guild=guild_obj)
                 synced = await self.tree.sync(guild=guild_obj)
                 await msg.edit(content=f"✅ Готово! Команди сервера `{gid}` оновлено: **{len(synced)}**.\nПерезавантаж Discord (Ctrl+R).")
@@ -221,3 +231,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
