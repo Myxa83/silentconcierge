@@ -1,17 +1,4 @@
 # -*- coding: utf-8 -*-
-# cogs/timezone_cog.py
-# Silent Concierge - Timezone Panel (dropdown, persistent)
-#
-# - /tz_post posts the panel (only roles: Свiточ, Друг)
-# - Dropdown can be USED only by roles: Свiточ, Друг
-# - Stores timezone in data/timezones.json
-# - No footer (per request)
-# - Title style like BDO: «« Title »»
-# - Divider: Deff x16
-# - Big bold title in description with animated trees around phrase "обери свою таймзону!"
-
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from datetime import datetime, timezone
@@ -35,15 +22,9 @@ RSL = "<a:RSL:1447204908494225529>"
 BULLET = "<a:bulletpoint:1447549436137046099>"
 DEFF = "<:Deff:1448272177848913951>"
 DIVIDER = DEFF * 16
+BOTTOM_IMAGE_URL = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/PolosBir.gif"
 
-BOTTOM_IMAGE_URL = (
-    "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/"
-    "assets/backgrounds/PolosBir.gif"
-)
-
-# ========================= TIMEZONES =========================
-# key: (label, flag_emoji, tz)
-COUNTRIES: dict[str, tuple[str, str, str]] = {
+COUNTRIES = {
     "europe": ("Europe (Berlin time)", "🇪🇺", "Europe/Berlin"),
     "united_kingdom": ("United Kingdom", "🇬🇧", "Europe/London"),
     "ukraine": ("Ukraine", "🇺🇦", "Europe/Kyiv"),
@@ -66,65 +47,17 @@ def load_data() -> dict:
     if not DATA_PATH.exists():
         return {}
     try:
-        return json.loads(DATA_PATH.read_text(encoding="utf-8"))
-    except Exception:
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[ERROR] Помилка читання: {e}")
         return {}
 
 def save_data(data: dict) -> None:
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DATA_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-def utc_stamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-def tz_valid(tz_name: str) -> bool:
-    try:
-        ZoneInfo(tz_name)
-        return True
-    except Exception:
-        return False
-
-def now_hhmm(tz_name: str) -> str:
-    return datetime.now(ZoneInfo(tz_name)).strftime("%H:%M")
-
-def can_use(member: discord.Member) -> bool:
-    return any(r.id in ALLOWED_TZ_ROLES for r in member.roles)
-
-# ========================= EMBED TEXT =========================
-def build_timezone_embed() -> discord.Embed:
-    title_text = f"{ASL}```Налаштування діскорду під себе:```{RSL}"
-
-    # Big bold title with animated trees only here (as you asked)
-    big_tree_title = f"{ASL}`Обери свою таймзону!`{RSL}"
-
-    desc = (
-        "Вітаю, авантюристу! Я **Silent Concierge**.\n"
-        "Я буду твоїм провідником на сервері **Silent Cove**.\n"
-        "Якщо ти побачиш помилки в моїй роботі або в інформації, що я надаю - сповістіть Модераторів. Дякую.\n\n"
-        f"{DIVIDER}\n\n"
-        "Щоб рейди, нагадування і події приходили тобі в правильний час\n"
-        f"{big_tree_title}\n\n"
-        "Як обрати:\n"
-        f"{BULLET} Відкрий випадаюче меню під цим повідомленням\n"
-        f"{BULLET} Обери країну **англійською мовою**\n\n"
-        "Якщо ти не обереш таймзону, я спробую підібрати її автоматично.\n"
-        "Але я можу помилитись.\n\n"
-        "Хто може обрати таймзону:\n"
-        f"{BULLET} Лише ролі <@&{ROLE_SVITOCH}> та <@&{ROLE_FRIEND}>\n"
-        f"{BULLET} Ролі надаються після повної реєстрації на сервері.\n"
-    )
-
-    embed = discord.Embed(
-        title=title_text,
-        description=desc,
-        color=0x05B2B4,
-    )
-
-    # Bottom "strip" image
-    embed.set_image(url=BOTTOM_IMAGE_URL)
-
-    # Footer removed completely (per request)
-    return embed
+    with open(DATA_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"[SYSTEM] Дані збережено на диск Render. Записів: {len(data)}")
 
 # ========================= UI =========================
 class TZSelect(discord.ui.Select):
@@ -134,30 +67,27 @@ class TZSelect(discord.ui.Select):
             for key, (label, flag, _tz) in COUNTRIES.items()
         ]
         super().__init__(
-            placeholder="Обери країну або регіон...",
+            placeholder="Оберіть країну або регіон...",
             options=options,
             min_values=1,
             max_values=1,
-            custom_id="tz_select_persistent_v1",  # required for persistent view
+            custom_id="tz_select_persistent_v1",
         )
 
     async def callback(self, interaction: discord.Interaction):
-        if not isinstance(interaction.user, discord.Member) or not can_use(interaction.user):
+        # Перевірка ролей
+        if not any(r.id in ALLOWED_TZ_ROLES for r in interaction.user.roles):
             return await interaction.response.send_message(
-                f"Доступно лише для ролей <@&{ROLE_SVITOCH}> та <@&{ROLE_FRIEND}>.",
-                ephemeral=True,
+                f"Це доступно лише для <@&{ROLE_SVITOCH}> та <@&{ROLE_FRIEND}>.", ephemeral=True
             )
 
         cog = interaction.client.get_cog("TimezoneCog")
-        if cog is None:
-            return await interaction.response.send_message("Cog не завантажено.", ephemeral=True)
-
         ok, msg = await cog.apply_country(interaction.user.id, self.values[0])
         await interaction.response.send_message(msg, ephemeral=True)
 
 class TZView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None)  # persistent
+        super().__init__(timeout=None)
         self.add_item(TZSelect())
 
 # ========================= COG =========================
@@ -171,46 +101,53 @@ class TimezoneCog(commands.Cog):
             return False, "Невірний вибір."
 
         label, flag, tz = COUNTRIES[key]
-        if not tz_valid(tz):
-            return False, "Проблема з timezone для цієї країни."
-
+        
+        # Актуалізуємо дані з диска, щоб не затерти людей, що додалися в іншому процесі
+        self.data = load_data()
         self.data[str(user_id)] = {
             "country_key": key,
             "country_label": label,
             "timezone": tz,
-            "updated_at_utc": utc_stamp(),
+            "updated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         save_data(self.data)
 
-        return True, f"✅ {flag} **{label}**\n🕒 `{tz}` (зараз **{now_hhmm(tz)}**)"
+        now_time = datetime.now(ZoneInfo(tz)).strftime("%H:%M")
+        return True, f"✅ {flag} **{label}** збережено!\n🕒 Ваш поточний час: **{now_time}**"
 
-    @app_commands.command(name="tz_post", description="Панель вибору таймзони")
+    @app_commands.command(name="tz_post", description="Надіслати панель таймзон")
+    @app_commands.checks.has_permissions(administrator=True)
     async def tz_post(self, interaction: discord.Interaction):
-        if not isinstance(interaction.user, discord.Member) or not can_use(interaction.user):
-            return await interaction.response.send_message("Нема доступу.", ephemeral=True)
+        title_text = f"{ASL}```Налаштування діскорду під себе:```{RSL}"
+        big_tree_title = f"{ASL}**Обери свою таймзону!**{RSL}"
 
-        await interaction.response.send_message(
-            embed=build_timezone_embed(),
-            view=TZView(),
+        desc = (
+            "Вітаю, авантюристу! Я **Silent Concierge**.\n"
+            "Я буду твоїм провідником на сервері **Silent Cove**.\n"
+            "Якщо ти побачиш помилки в роботі - сповістіть Модераторів.\n\n"
+            f"{DIVIDER}\n\n"
+            "Щоб рейди та події приходили тобі в правильний час\n"
+            f"{big_tree_title}\n\n"
+            "Як обрати:\n"
+            f"{BULLET} Відкрий меню під цим повідомленням\n"
+            f"{BULLET} Обери країну **англійською мовою**\n\n"
+            "Хто може обрати таймзону:\n"
+            f"{BULLET} Лише ролі <@&{ROLE_SVITOCH}> та <@&{ROLE_FRIEND}>"
         )
 
-    @app_commands.command(name="time", description="Показує твій поточний час за збереженою таймзоною")
-    async def time_slash(self, interaction: discord.Interaction):
-        entry = self.data.get(str(interaction.user.id), {})
-        tz = entry.get("timezone")
+        embed = discord.Embed(title=title_text, description=desc, color=0x05B2B4)
+        embed.set_image(url=BOTTOM_IMAGE_URL)
+        await interaction.response.send_message(embed=embed, view=TZView())
 
-        if not isinstance(tz, str) or not tz_valid(tz):
-            return await interaction.response.send_message(
-                "Таймзона не збережена. Обери її у випадаючому меню під панеллю.",
-                ephemeral=True,
-            )
-
+    @app_commands.command(name="tz_check_db", description="Адмін: Скільки людей у базі?")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def tz_check_db(self, interaction: discord.Interaction):
+        # Команда, щоб ви бачили реальну кількість людей на Render
+        db = load_data()
         await interaction.response.send_message(
-            f"🕒 Твій час зараз: **{now_hhmm(tz)}**\nТаймзона: `{tz}`",
-            ephemeral=True,
+            f"📊 На диску Render зараз записів: **{len(db)}**", ephemeral=True
         )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TimezoneCog(bot))
-    # persistent view registration
     bot.add_view(TZView())
