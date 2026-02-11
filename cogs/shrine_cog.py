@@ -220,3 +220,9 @@ class ConfirmProgressView(discord.ui.View):
         uid = str(interaction.user.id)
         current = weekly.get(uid, 0)
         weekly[uid] = min(5, current + self.count)
+        self.cog.save_json(weekly, WEEKLY_PATH)
+        self.cog.log_event(f"Гравець {interaction.user.name} підтвердив {self.count} босів.")
+        await interaction.response.edit_message(content=f"✅ Прогрес оновлено! ({weekly[uid]}/5)", view=None)
+
+async def setup(bot):
+    await bot.add_cog(ShrineCog(bot))
