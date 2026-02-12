@@ -27,7 +27,6 @@ class DetailsModal(discord.ui.Modal):
         self.add_item(self.user_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Визначаємо шлях залежно від ключа
         paths = {"gs": GS_PATH, "schedule": SCHEDULE_PATH, "vacation": VACATION_PATH}
         path = paths.get(self.key, GS_PATH)
         
@@ -48,6 +47,7 @@ class PollResponseView(discord.ui.View):
         custom_id="shrine_boss_select"
     )
     async def select_bosses(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # Оновлюємо кількість босів у щотижневій базі (наприклад, як план)
         await interaction.response.send_message(f"👌 Записано: {select.values[0]} босів.", ephemeral=True)
 
     @discord.ui.button(label="Мій GS", style=discord.ButtonStyle.primary, emoji="⚔️", custom_id="dm_set_gs")
@@ -156,6 +156,7 @@ class ShrineCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.role_id = 1406569206815658077
+        self.mod_role_id = 1375070910138028044
         self.report_channel_id = 1421625193134166200
         self.guild_id = 1335930065090641971
 
@@ -239,6 +240,41 @@ class ShrineCog(commands.Cog):
             report += f"{status_icon} **{member.display_name}** | GS: `{gs}` | Боси: `{done}/5` | Графік: *{sched}*\n"
 
         await channel.send(report)
+
+    # --- КОМАНДА ТЕСТУВАННЯ ---
+    @app_commands.command(name="shrine_test", description="Тест розсилки та звітів (Тільки Модератор)")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Тест DM (на себе)", value="dm"),
+        app_commands.Choice(name="Тест Списків (у канал)", value="report")
+    ])
+    async def shrine_test(self, interaction: discord.Interaction, action: str):
+        # Перевірка ролі Модератор
+        if not any(r.id == self.mod_role_id for r in interaction.user.roles):
+            return await interaction.response.send_message("❌ Ця команда тільки для Модераторів!", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        if action == "dm":
+            # Відправляємо тест тільки тому, хто викликав команду
+            uid = str(interaction.user.id)
+            gs_data = self.load_json(GS_PATH)
+            weekly = self.load_json(WEEKLY_PATH)
+            
+            embed = discord.Embed(
+                title="ТЕСТ: Нагадування Black Shrine",
+                description=f"Ваш GS: **{gs_data.get(uid, '??')}**\nЗалишилось босів: **{5 - weekly.get(uid, 0)}**",
+                color=0x2ecc71
+            )
+            embed.set_image(url="https://github.com/Myxa83/silentconcierge/blob/main/assets/backgrounds/PolosBir.gif?raw=true")
+            try:
+                await interaction.user.send(embed=embed, view=PollResponseView(self))
+                await interaction.followup.send("✅ Тестове повідомлення надіслано в особисті.")
+            except discord.Forbidden:
+                await interaction.followup.send("❌ Не вдалося надіслати DM (закритий профіль).")
+
+        elif action == "report":
+            await self.send_daily_report()
+            await interaction.followup.send("✅ Тестовий звіт надіслано в канал.")
 
     @app_commands.command(name="shrine_create", description="Створити рейд")
     async def shrine_create(self, interaction: discord.Interaction, boss: str, count: int, time_hhmm: int):
