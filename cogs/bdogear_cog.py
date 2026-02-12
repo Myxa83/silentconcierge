@@ -4,65 +4,74 @@ import json
 import asyncio
 import re
 import os
-from datetime import datetime
 
 class BdoGear(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Шлях до вашої папки data
         self.data_path = os.path.join("data", "members_gear.json")
-        # Ваша послідовність затримок
         self.delays = [20, 41, 37, 12, 23, 5, 11, 14, 31, 38]
+        # Вставте ID каналу з посиланнями сюди, якщо хочете за замовчуванням
+        self.target_channel_id = 1338167475141017765 
 
-    async def scrape_gear_links(self, ctx):
-        await ctx.send("🔍 Починаю збір посилань на екіпірування з історії каналу...")
+    async def scrape_gear_links(self, ctx, channel: discord.TextChannel):
+        await ctx.send(f"🔍 Починаю збір з каналу: **#{channel.name}**...")
         
         gear_data = {}
         offset = 0
         count = 0
-        # Регулярний вираз для пошуку посилань на Garmoth
         pattern = r'https?://(?:www\.)?garmoth\.com/character/\S+'
 
-        # Зчитуємо останні 1000 повідомлень у каналі
-        async for message in ctx.channel.history(limit=1000):
+        async for message in channel.history(limit=1000):
             if "garmoth.com" in message.content:
                 links = re.findall(pattern, message.content)
                 if links:
                     author_name = message.author.display_name
-                    # Зберігаємо тільки останнє (найсвіжіше) посилання від кожного гравця
                     if author_name not in gear_data:
                         gear_data[author_name] = links[0]
                         
-                        # Ваша логіка затримок: список + додавання 1с після кожного повного кола
                         delay_idx = count % len(self.delays)
                         if delay_idx == 0 and count > 0:
                             offset += 1
                         
                         wait_time = self.delays[delay_idx] + offset
-                        print(f"Оброблено: {author_name}, очікування {wait_time}с")
+                        # Виводимо прогрес у консоль Render
+                        print(f"Знайдено: {author_name}, очікування {wait_time}с")
                         
-                        # Чекаємо згідно з вашим графіком
                         await asyncio.sleep(wait_time)
                         count += 1
 
-        # Створення директорії, якщо вона відсутня
         os.makedirs(os.path.dirname(self.data_path), exist_ok=True)
-        
-        # Запис у JSON файл
         with open(self.data_path, "w", encoding="utf-8") as f:
             json.dump(gear_data, f, ensure_ascii=False, indent=4)
 
         if gear_data:
             file = discord.File(self.data_path)
-            await ctx.send(f"✅ Готово! Оброблено {len(gear_data)} гравців. Ось файл з результатами:", file=file)
+            await ctx.send(f"✅ Готово! Оброблено {len(gear_data)} гравців з каналу {channel.mention}.", file=file)
         else:
-            await ctx.send("❌ У цьому каналі не знайдено посилань на Garmoth в останніх 1000 повідомленнях.")
+            await ctx.send(f"❌ У каналі {channel.mention} не знайдено посилань на Garmoth.")
 
     @commands.command(name="collect_gear")
     @commands.has_permissions(administrator=True)
-    async def collect_gear(self, ctx):
-        """Нова команда для збору даних (замість test_parse та start_parse)"""
-        await self.scrape_gear_links(ctx)
+    async def collect_gear(self, ctx, channel_id: int = None):
+        """
+        Використання: 
+        !collect_gear (використає ID з коду)
+        !collect_gear 123456789 (використає вказаний ID)
+        """
+        # Якщо ID не вказано в команді, беремо той, що прописаний у __init__
+        target_id = channel_id or self.target_channel_id
+        
+        target_channel = self.bot.get_channel(target_id)
+        
+        if not target_channel:
+            # Спробуємо завантажити канал, якщо він не в кеші
+            try:
+                target_channel = await self.bot.fetch_channel(target_id)
+            except:
+                await ctx.send(f"❌ Не вдалося знайти канал з ID `{target_id}`. Перевірте доступ бота.")
+                return
+
+        await self.scrape_gear_links(ctx, target_channel)
 
 async def setup(bot):
     await bot.add_cog(BdoGear(bot))
