@@ -13,6 +13,44 @@ VACATION_PATH = Path("data/vacations.json")
 SCHEDULE_PATH = Path("data/schedule.json")
 
 # --- МОДАЛЬНІ ВІКНА ---
+
+class GSModal(discord.ui.Modal, title="Оновлення Гір Скору"):
+    ap = discord.ui.TextInput(label="Атака (AP)", placeholder="310", min_length=1, max_length=3)
+    dp = discord.ui.TextInput(label="Захист (DP)", placeholder="410", min_length=1, max_length=3)
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        gs_string = f"{self.ap.value}/{self.dp.value}"
+        data = self.cog.load_json(GS_PATH)
+        data[str(interaction.user.id)] = gs_string
+        self.cog.save_json(data, GS_PATH)
+        
+        embed = discord.Embed(description=f"✅ Дані оновлено: **{gs_string}**", color=0x2ecc71)
+        embed.set_footer(text="Silent Concierge", icon_url=self.cog.bot.user.display_avatar.url)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+class BossModal(discord.ui.Modal, title="Скільки босів уже вбито?"):
+    count = discord.ui.TextInput(label="Кількість (0-5)", placeholder="Наприклад: 3", min_length=1, max_length=1)
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not self.count.value.isdigit() or not (0 <= int(self.count.value) <= 5):
+            return await interaction.response.send_message("❌ Введіть число від 0 до 5!", ephemeral=True)
+        
+        data = self.cog.load_json(WEEKLY_PATH)
+        data[str(interaction.user.id)] = int(self.count.value)
+        self.cog.save_json(data, WEEKLY_PATH)
+        
+        embed = discord.Embed(description=f"✅ Дані оновлено. Залишилося: **{5 - int(self.count.value)}**", color=0x3498db)
+        embed.set_footer(text="Silent Concierge", icon_url=self.cog.bot.user.display_avatar.url)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 class DetailsModal(discord.ui.Modal):
     def __init__(self, title, label, placeholder, key, cog):
         super().__init__(title=title)
@@ -20,43 +58,51 @@ class DetailsModal(discord.ui.Modal):
         self.user_input = discord.ui.TextInput(
             label=label, placeholder=placeholder,
             style=discord.TextStyle.paragraph if key == "schedule" else discord.TextStyle.short,
-            min_length=1, max_length=100
+            min_length=1, max_length=150
         )
         self.add_item(self.user_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        paths = {"gs": GS_PATH, "schedule": SCHEDULE_PATH, "vacation": VACATION_PATH}
-        data = self.cog.load_json(paths.get(self.key, GS_PATH))
+        paths = {"schedule": SCHEDULE_PATH, "vacation": VACATION_PATH}
+        data = self.cog.load_json(paths[self.key])
         data[str(interaction.user.id)] = self.user_input.value
-        self.cog.save_json(data, paths.get(self.key, GS_PATH))
+        self.cog.save_json(data, paths[self.key])
         
-        embed = discord.Embed(description=f"✅ Дані збережено: {self.user_input.value}", color=0x2ecc71)
+        embed = discord.Embed(description=f"✅ Збережено: {self.user_input.value}", color=0x2ecc71)
         embed.set_footer(text="Silent Concierge", icon_url=self.cog.bot.user.display_avatar.url)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # --- ВІКНО ПИТАННЯ В DM ---
+
 class PollResponseView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.select(
-        placeholder="Скільки босів плануєте пройти?",
-        options=[discord.SelectOption(label=f"{i} бос(ів)", value=str(i)) for i in range(1, 6)],
-        custom_id="shrine_boss_select"
-    )
-    async def select_bosses(self, interaction: discord.Interaction, select: discord.ui.Select):
-        await interaction.response.send_message(f"👌 Записано: {select.values[0]} босів.", ephemeral=True)
-
-    @discord.ui.button(label="Мій GS", style=discord.ButtonStyle.primary, emoji="⚔️", custom_id="dm_set_gs")
+    @discord.ui.button(label="Мій GS", style=discord.ButtonStyle.primary, emoji="⚔️", custom_id="dm_gs")
     async def set_gs(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DetailsModal("Гір Скор", "Введіть ваш GS", "Наприклад: 720", "gs", self.cog))
+        await interaction.response.send_modal(GSModal(self.cog))
 
-    @discord.ui.button(label="Мій графік", style=discord.ButtonStyle.secondary, emoji="⏳", custom_id="dm_set_sched")
+    @discord.ui.button(label="Графік", style=discord.ButtonStyle.secondary, emoji="⏳", custom_id="dm_sched")
     async def set_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DetailsModal("Графік", "Коли ви в грі?", "Наприклад: 10:00 - 23:00", "schedule", self.cog))
+        await interaction.response.send_modal(DetailsModal("Мій графік", "Вкажіть час (декілька варіантів)", "Напр: 10:00-12:00, 19:00-22:00", "schedule", self.cog))
+
+    @discord.ui.button(label="Пропуск дня", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="dm_skip")
+    async def skip_day(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(description="✅ Записано. Сьогодні повідомлень більше не буде.", color=0xe74c3c)
+        embed.set_footer(text="Silent Concierge", icon_url=self.cog.bot.user.display_avatar.url)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Відпустка", style=discord.ButtonStyle.gray, emoji="🌴", custom_id="dm_vac")
+    async def set_vacation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DetailsModal("Відпустка", "Період", "Наприклад: 15.02 - 20.02", "vacation", self.cog))
+
+    @discord.ui.button(label="Відмова (Боси)", style=discord.ButtonStyle.gray, emoji="🛑", custom_id="dm_refuse")
+    async def refuse(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BossModal(self.cog))
 
 # --- ВІКНО КЕРУВАННЯ РЕЙДОМ ---
+
 class ShrinePartyView(discord.ui.View):
     def __init__(self, leader_id, boss, count, ts, cog):
         super().__init__(timeout=None)
@@ -68,6 +114,8 @@ class ShrinePartyView(discord.ui.View):
         if interaction.user.id not in self.members and len(self.members) < 5:
             self.members.append(interaction.user.id)
             await self.update_embed(interaction)
+        else:
+            await interaction.response.send_message("Ви вже у групі або вона заповнена!", ephemeral=True)
 
     @discord.ui.button(label="Вийти", style=discord.ButtonStyle.red, custom_id="shrine_leave")
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -89,6 +137,8 @@ class ShrinePartyView(discord.ui.View):
                 try: await interaction.message.thread.delete()
                 except: pass
             await interaction.message.delete()
+        else:
+            await interaction.response.send_message("Тільки лідер може завершити!", ephemeral=True)
 
     async def update_embed(self, interaction):
         embed = interaction.message.embeds[0].copy()
@@ -100,6 +150,7 @@ class ShrinePartyView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 # --- ОСНОВНИЙ COG ---
+
 class ShrineCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -140,7 +191,7 @@ class ShrineCog(commands.Cog):
             if m.bot or str(m.id) in vacations or weekly.get(str(m.id), 0) >= 5: continue
             try:
                 embed = discord.Embed(title="Вітаю! Нагадування Black Shrine", 
-                                    description=f"GS: **{gs_data.get(str(m.id), '??')}**\nЗалишилось: **{5-weekly.get(str(m.id), 0)}**", color=0x2ecc71)
+                                    description=f"Ваш GS: **{gs_data.get(str(m.id), '??')}**\nЗалишилось: **{5-weekly.get(str(m.id), 0)}**", color=0x2ecc71)
                 embed.set_image(url="https://github.com/Myxa83/silentconcierge/blob/main/assets/backgrounds/PolosBir.gif?raw=true")
                 embed.set_footer(text="Silent Concierge", icon_url=self.bot.user.display_avatar.url)
                 await m.send(embed=embed, view=PollResponseView(self))
