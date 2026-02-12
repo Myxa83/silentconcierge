@@ -63,7 +63,6 @@ class ShrinePartyView(discord.ui.View):
         if interaction.user.id not in self.members:
             return await interaction.response.send_message("Вас немає у цій групі.", ephemeral=True)
 
-        # Якщо лідер виходить і він не один - змушуємо передати ПЛ
         if interaction.user.id == self.leader_id and len(self.members) > 1:
             return await interaction.response.send_message(
                 "Спочатку передайте лідерство іншому учаснику через кнопку '👑 Передати ПЛ'.", 
@@ -76,7 +75,8 @@ class ShrinePartyView(discord.ui.View):
             if interaction.message.thread:
                 try: await interaction.message.thread.delete()
                 except: pass
-            await interaction.message.delete()
+            try: await interaction.message.delete()
+            except: pass
             return
 
         await self.update_embed(interaction)
@@ -98,13 +98,16 @@ class ShrinePartyView(discord.ui.View):
         if interaction.user.id != self.leader_id:
             return await interaction.response.send_message("Тільки лідер може завершити рейд!", ephemeral=True)
         
-        # Можна додати ConfirmProgressView тут, якщо потрібно
         if interaction.message.thread:
             try: await interaction.message.thread.delete()
             except: pass
-        await interaction.message.delete()
+        try: await interaction.message.delete()
+        except: pass
 
     async def update_embed(self, interaction):
+        if not interaction.message.embeds: return
+        embed = interaction.message.embeds[0].copy()
+        
         gs_data = self.cog.load_json(GS_PATH)
         weekly = self.cog.load_json(WEEKLY_PATH)
         
@@ -113,9 +116,8 @@ class ShrinePartyView(discord.ui.View):
             prefix = "👑 " if m_id == self.leader_id else "⚔️ "
             m_gs = gs_data.get(str(m_id), "??")
             m_done = weekly.get(str(m_id), 0)
-            member_list.append(f"{prefix}<@{m_id}> [GS: **{m_gs}** | Зал: **{5-m_done}**]")
+            member_list.append(f"{prefix}<@{m_id}> [GS: **{m_gs}** | Зал: **{max(0, 5-m_done)}**]")
 
-        embed = interaction.message.embeds[0]
         embed.description = f"Лідер: <@{self.leader_id}>\nБосів: **{self.count}**\nЧас: <t:{self.ts}:t> (<t:{self.ts}:R>)"
         embed.set_field_at(0, name=f"Учасники ({len(self.members)}/5)", value="\n".join(member_list), inline=False)
         
@@ -126,7 +128,13 @@ class ShrineCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.role_id = 1406569206815658077
-        self.scheduler.start()
+
+    async def cog_load(self):
+        if not self.scheduler.is_running():
+            self.scheduler.start()
+
+    def cog_unload(self):
+        self.scheduler.cancel()
 
     def load_json(self, path):
         if path.exists():
@@ -142,17 +150,22 @@ class ShrineCog(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def scheduler(self):
-        # Логіка scheduler...
+        # Логіка scheduler (наприклад, перевірка часу або розсилка в 09:00)
         pass
 
     @app_commands.command(name="shrine_create", description="Створити нову пачку")
     @app_commands.describe(time_hhmm="Час цифрами (наприклад 1900)")
     async def shrine_create(self, interaction: discord.Interaction, boss: str, count: int, time_hhmm: int):
-        now = datetime.now()
-        h, m = time_hhmm // 100, time_hhmm % 100
-        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if target < now: target += timedelta(days=1)
-        ts = int(time_module.mktime(target.timetuple()))
+        try:
+            now = datetime.now()
+            h, m = time_hhmm // 100, time_hhmm % 100
+            if not (0 <= h < 24 and 0 <= m < 60): raise ValueError
+            
+            target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if target < now: target += timedelta(days=1)
+            ts = int(time_module.mktime(target.timetuple()))
+        except:
+            return await interaction.response.send_message("❌ Невірний формат часу! Використовуйте ГГММ (наприклад, 1930).", ephemeral=True)
 
         gs_data = self.load_json(GS_PATH)
         weekly = self.load_json(WEEKLY_PATH)
@@ -164,7 +177,7 @@ class ShrineCog(commands.Cog):
         embed.description = f"Лідер: {interaction.user.mention}\nБосів: **{count}**\nЧас: <t:{ts}:t> (<t:{ts}:R>)"
         embed.add_field(
             name="Учасники (1/5)", 
-            value=f"👑 {interaction.user.mention} [GS: **{my_gs}** | Зал: **{my_left}**]", 
+            value=f"👑 {interaction.user.mention} [GS: **{my_gs}** | Зал: **{max(0, my_left)}**]", 
             inline=False
         )
         embed.set_footer(text="Silent Concierge", icon_url=self.bot.user.display_avatar.url)
@@ -173,7 +186,10 @@ class ShrineCog(commands.Cog):
         await interaction.response.send_message(embed=embed, view=view)
         
         msg = await interaction.original_response()
-        await msg.create_thread(name=f"Рейд {boss}", auto_archive_duration=60)
+        try:
+            await msg.create_thread(name=f"Рейд {boss}", auto_archive_duration=60)
+        except:
+            pass
 
 async def setup(bot):
     await bot.add_cog(ShrineCog(bot))
