@@ -16,15 +16,12 @@ class LeaderSelect(discord.ui.Select):
     def __init__(self, members, view, bot):
         self.party_view = view
         self.bot = bot
-        
         options = []
         for m_id in members:
-            if m_id == view.leader_id:
-                continue
+            if m_id == view.leader_id: continue
             user = bot.get_user(m_id)
             name = user.display_name if user else f"ID: {m_id}"
             options.append(discord.SelectOption(label=name, value=str(m_id), emoji="👑"))
-        
         super().__init__(placeholder="Оберіть нового лідера...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
@@ -34,13 +31,14 @@ class LeaderSelect(discord.ui.Select):
         new_leader_id = int(self.values[0])
         self.party_view.leader_id = new_leader_id
         
+        # Оновлюємо ембед через в'ю рейду
         await self.party_view.update_embed(interaction)
-        await interaction.response.send_message(f"✅ Ви призначили <@{new_leader_id}> новим лідером.", ephemeral=True)
+        await interaction.followup.send(f"✅ Новим лідером призначено <@{new_leader_id}>", ephemeral=True)
 
 # --- ВІКНО КЕРУВАННЯ РЕЙДОМ ---
 class ShrinePartyView(discord.ui.View):
     def __init__(self, leader_id, boss, count, ts, cog):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None) # Щоб кнопки не вимикалися по таймеру
         self.leader_id = leader_id
         self.members = [leader_id]
         self.boss = boss
@@ -48,7 +46,7 @@ class ShrinePartyView(discord.ui.View):
         self.ts = ts
         self.cog = cog
 
-    @discord.ui.button(label="Приєднатися", style=discord.ButtonStyle.blurple)
+    @discord.ui.button(label="Приєднатися", style=discord.ButtonStyle.blurple, custom_id="shrine_join")
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id in self.members:
             return await interaction.response.send_message("Ви вже у групі!", ephemeral=True)
@@ -58,7 +56,7 @@ class ShrinePartyView(discord.ui.View):
         self.members.append(interaction.user.id)
         await self.update_embed(interaction)
 
-    @discord.ui.button(label="Вийти", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="Вийти", style=discord.ButtonStyle.red, custom_id="shrine_leave")
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in self.members:
             return await interaction.response.send_message("Вас немає у цій групі.", ephemeral=True)
@@ -81,7 +79,7 @@ class ShrinePartyView(discord.ui.View):
 
         await self.update_embed(interaction)
 
-    @discord.ui.button(label="Передати ПЛ", style=discord.ButtonStyle.gray, emoji="👑")
+    @discord.ui.button(label="Передати ПЛ", style=discord.ButtonStyle.gray, emoji="👑", custom_id="shrine_delegate")
     async def delegate(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.leader_id:
             return await interaction.response.send_message("Тільки лідер може передати права!", ephemeral=True)
@@ -93,7 +91,7 @@ class ShrinePartyView(discord.ui.View):
         select_view.add_item(LeaderSelect(self.members, self, self.cog.bot))
         await interaction.response.send_message("Кому передати корону?", view=select_view, ephemeral=True)
 
-    @discord.ui.button(label="✅ Завершити", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="✅ Завершити", style=discord.ButtonStyle.green, custom_id="shrine_finish")
     async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.leader_id:
             return await interaction.response.send_message("Тільки лідер може завершити рейд!", ephemeral=True)
@@ -121,7 +119,11 @@ class ShrinePartyView(discord.ui.View):
         embed.description = f"Лідер: <@{self.leader_id}>\nБосів: **{self.count}**\nЧас: <t:{self.ts}:t> (<t:{self.ts}:R>)"
         embed.set_field_at(0, name=f"Учасники ({len(self.members)}/5)", value="\n".join(member_list), inline=False)
         
-        await interaction.response.edit_message(embed=embed, view=self)
+        # Виправлення для випадків, коли на взаємодію вже відповіли (через Followup)
+        if interaction.response.is_done():
+            await interaction.message.edit(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
 
 # --- ОСНОВНИЙ COG ---
 class ShrineCog(commands.Cog):
@@ -150,7 +152,6 @@ class ShrineCog(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def scheduler(self):
-        # Логіка scheduler (наприклад, перевірка часу або розсилка в 09:00)
         pass
 
     @app_commands.command(name="shrine_create", description="Створити нову пачку")
@@ -188,8 +189,7 @@ class ShrineCog(commands.Cog):
         msg = await interaction.original_response()
         try:
             await msg.create_thread(name=f"Рейд {boss}", auto_archive_duration=60)
-        except:
-            pass
+        except: pass
 
 async def setup(bot):
     await bot.add_cog(ShrineCog(bot))
