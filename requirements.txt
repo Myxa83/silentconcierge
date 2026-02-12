@@ -5,3 +5,4 @@ Pillow==10.2.0
 requests==2.31.0
 pytz==2023.3
 yt-dlp==2025.1.26
+selenium
