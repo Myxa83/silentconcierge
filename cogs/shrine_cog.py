@@ -16,24 +16,23 @@ SCHEDULE_PATH = Path("data/schedule.json")
 class DetailsModal(discord.ui.Modal):
     def __init__(self, title, label, placeholder, key, cog):
         super().__init__(title=title)
-        self.key = key
-        self.cog = cog
+        self.key, self.cog = key, cog
         self.user_input = discord.ui.TextInput(
-            label=label,
-            placeholder=placeholder,
-            min_length=1,
-            max_length=50
+            label=label, placeholder=placeholder,
+            style=discord.TextStyle.paragraph if key == "schedule" else discord.TextStyle.short,
+            min_length=1, max_length=100
         )
         self.add_item(self.user_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         paths = {"gs": GS_PATH, "schedule": SCHEDULE_PATH, "vacation": VACATION_PATH}
-        path = paths.get(self.key, GS_PATH)
-        
-        data = self.cog.load_json(path)
+        data = self.cog.load_json(paths.get(self.key, GS_PATH))
         data[str(interaction.user.id)] = self.user_input.value
-        self.cog.save_json(data, path)
-        await interaction.response.send_message(f"✅ Дані збережено: {self.user_input.value}", ephemeral=True)
+        self.cog.save_json(data, paths.get(self.key, GS_PATH))
+        
+        embed = discord.Embed(description=f"✅ Дані збережено: {self.user_input.value}", color=0x2ecc71)
+        embed.set_footer(text="Silent Concierge", icon_url=self.cog.bot.user.display_avatar.url)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # --- ВІКНО ПИТАННЯ В DM ---
 class PollResponseView(discord.ui.View):
@@ -47,7 +46,6 @@ class PollResponseView(discord.ui.View):
         custom_id="shrine_boss_select"
     )
     async def select_bosses(self, interaction: discord.Interaction, select: discord.ui.Select):
-        # Оновлюємо кількість босів у щотижневій базі (наприклад, як план)
         await interaction.response.send_message(f"👌 Записано: {select.values[0]} босів.", ephemeral=True)
 
     @discord.ui.button(label="Мій GS", style=discord.ButtonStyle.primary, emoji="⚔️", custom_id="dm_set_gs")
@@ -58,114 +56,61 @@ class PollResponseView(discord.ui.View):
     async def set_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(DetailsModal("Графік", "Коли ви в грі?", "Наприклад: 10:00 - 23:00", "schedule", self.cog))
 
-    @discord.ui.button(label="Відпустка", style=discord.ButtonStyle.gray, emoji="🌴", custom_id="dm_set_vac")
-    async def set_vacation(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DetailsModal("Відпустка", "Період", "Наприклад: 15.02 - 20.02", "vacation", self.cog))
-
-# --- СЕЛЕКТ ДЛЯ ПЕРЕДАЧІ ЛІДЕРА ---
-class LeaderSelect(discord.ui.Select):
-    def __init__(self, members, view, bot):
-        self.party_view = view
-        self.bot = bot
-        options = []
-        for m_id in members:
-            if m_id == view.leader_id: continue
-            user = bot.get_user(m_id)
-            name = user.display_name if user else f"ID: {m_id}"
-            options.append(discord.SelectOption(label=name, value=str(m_id), emoji="👑"))
-        super().__init__(placeholder="Оберіть нового лідера...", options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.party_view.leader_id:
-            return await interaction.response.send_message("Тільки лідер може це зробити!", ephemeral=True)
-        self.party_view.leader_id = int(self.values[0])
-        await self.party_view.update_embed(interaction)
-        await interaction.followup.send(f"✅ Новим лідером призначено <@{self.party_view.leader_id}>", ephemeral=True)
-
 # --- ВІКНО КЕРУВАННЯ РЕЙДОМ ---
 class ShrinePartyView(discord.ui.View):
     def __init__(self, leader_id, boss, count, ts, cog):
         super().__init__(timeout=None)
-        self.leader_id = leader_id
+        self.leader_id, self.boss, self.count, self.ts, self.cog = leader_id, boss, count, ts, cog
         self.members = [leader_id]
-        self.boss = boss
-        self.count = count
-        self.ts = ts
-        self.cog = cog
 
     @discord.ui.button(label="Приєднатися", style=discord.ButtonStyle.blurple, custom_id="shrine_join")
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id in self.members: return
-        if len(self.members) >= 5: return
-        self.members.append(interaction.user.id)
-        await self.update_embed(interaction)
+        if interaction.user.id not in self.members and len(self.members) < 5:
+            self.members.append(interaction.user.id)
+            await self.update_embed(interaction)
 
     @discord.ui.button(label="Вийти", style=discord.ButtonStyle.red, custom_id="shrine_leave")
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in self.members: return
-        if interaction.user.id == self.leader_id and len(self.members) > 1:
-            return await interaction.response.send_message("Передайте ПЛ перед виходом!", ephemeral=True)
-        self.members.remove(interaction.user.id)
-        if not self.members:
+        if interaction.user.id in self.members:
+            if interaction.user.id == self.leader_id and len(self.members) > 1:
+                return await interaction.response.send_message("Передайте ПЛ перед виходом!", ephemeral=True)
+            self.members.remove(interaction.user.id)
+            if not self.members:
+                if interaction.message.thread:
+                    try: await interaction.message.thread.delete()
+                    except: pass
+                return await interaction.message.delete()
+            await self.update_embed(interaction)
+
+    @discord.ui.button(label="✅ Завершити", style=discord.ButtonStyle.green, custom_id="shrine_finish")
+    async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id == self.leader_id:
             if interaction.message.thread:
                 try: await interaction.message.thread.delete()
                 except: pass
             await interaction.message.delete()
-            return
-        await self.update_embed(interaction)
-
-    @discord.ui.button(label="Передати ПЛ", style=discord.ButtonStyle.gray, emoji="👑", custom_id="shrine_delegate")
-    async def delegate(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.leader_id: return
-        if len(self.members) < 2: return
-        view = discord.ui.View(timeout=60)
-        view.add_item(LeaderSelect(self.members, self, self.cog.bot))
-        await interaction.response.send_message("Оберіть нового лідера:", view=view, ephemeral=True)
-
-    @discord.ui.button(label="✅ Завершити", style=discord.ButtonStyle.green, custom_id="shrine_finish")
-    async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.leader_id: return
-        if interaction.message.thread:
-            try: await interaction.message.thread.delete()
-            except: pass
-        await interaction.message.delete()
 
     async def update_embed(self, interaction):
-        if not interaction.message.embeds: return
         embed = interaction.message.embeds[0].copy()
-        gs_data = self.cog.load_json(GS_PATH)
-        weekly = self.cog.load_json(WEEKLY_PATH)
-        
-        member_list = []
-        for m_id in self.members:
-            prefix = "👑 " if m_id == self.leader_id else "⚔️ "
-            m_gs = gs_data.get(str(m_id), "??")
-            m_left = 5 - weekly.get(str(m_id), 0)
-            member_list.append(f"{prefix}<@{m_id}> [GS: **{m_gs}** | Зал: **{max(0, m_left)}**]")
-
+        gs_data, weekly = self.cog.load_json(GS_PATH), self.cog.load_json(WEEKLY_PATH)
+        m_list = [f"{'👑' if m == self.leader_id else '⚔️'} <@{m}> [GS: **{gs_data.get(str(m), '??')}** | Зал: **{max(0, 5-weekly.get(str(m), 0))}**]" for m in self.members]
         embed.description = f"Лідер: <@{self.leader_id}>\nБосів: **{self.count}**\nЧас: <t:{self.ts}:t> (<t:{self.ts}:R>)"
-        embed.set_field_at(0, name=f"Учасники ({len(self.members)}/5)", value="\n".join(member_list), inline=False)
-        
-        if interaction.response.is_done():
-            await interaction.message.edit(embed=embed, view=self)
-        else:
-            await interaction.response.edit_message(embed=embed, view=self)
+        embed.set_field_at(0, name=f"Учасники ({len(self.members)}/5)", value="\n".join(m_list), inline=False)
+        embed.set_footer(text="Silent Concierge", icon_url=self.cog.bot.user.display_avatar.url)
+        await interaction.response.edit_message(embed=embed, view=self)
 
 # --- ОСНОВНИЙ COG ---
 class ShrineCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.guild_id = 1323454227816906802
         self.role_id = 1406569206815658077
         self.mod_role_id = 1375070910138028044
-        self.report_channel_id = 1421625193134166200
-        self.guild_id = 1335930065090641971
+        self.main_report_channel = 1421625193134166200
+        self.test_report_channel = 1370522199873814528
 
     async def cog_load(self):
-        if not self.scheduler.is_running():
-            self.scheduler.start()
-
-    def cog_unload(self):
-        self.scheduler.cancel()
+        if not self.scheduler.is_running(): self.scheduler.start()
 
     def load_json(self, path):
         if path.exists():
@@ -182,123 +127,77 @@ class ShrineCog(commands.Cog):
     @tasks.loop(minutes=1)
     async def scheduler(self):
         now = datetime.now().strftime("%H:%M")
-        
-        # Ранкова розсилка о 09:00
-        if now == "09:00":
-            await self.run_dm_polling()
+        if now == "09:00": await self.run_dm_polling()
+        if now in ["15:00", "15:15"]: await self.send_report_to_channel(self.main_report_channel)
 
-        # Звіт у канал о 15:00 та о 15:15
-        if now in ["15:00", "15:15"]:
-            await self.send_daily_report()
-
-    async def run_dm_polling(self):
+    async def run_dm_polling(self, target=None):
         guild = self.bot.get_guild(self.guild_id)
         role = guild.get_role(self.role_id) if guild else None
         if not role: return
-
-        weekly = self.load_json(WEEKLY_PATH)
-        gs_data = self.load_json(GS_PATH)
-        vacations = self.load_json(VACATION_PATH)
-
-        for member in role.members:
-            uid = str(member.id)
-            if member.bot or uid in vacations or weekly.get(uid, 0) >= 5: continue
-            
+        weekly, gs_data, vacations = self.load_json(WEEKLY_PATH), self.load_json(GS_PATH), self.load_json(VACATION_PATH)
+        members = [target] if target else role.members
+        for m in members:
+            if m.bot or str(m.id) in vacations or weekly.get(str(m.id), 0) >= 5: continue
             try:
-                embed = discord.Embed(
-                    title="Вітаю Вас! Нагадую за босів Black Shrine!",
-                    description=f"Ваш GS: **{gs_data.get(uid, '??')}**\nНе пройдено: **{5 - weekly.get(uid, 0)}**\n\nОберіть ваші плани:",
-                    color=0x2ecc71
-                )
+                embed = discord.Embed(title="Вітаю! Нагадування Black Shrine", 
+                                    description=f"GS: **{gs_data.get(str(m.id), '??')}**\nЗалишилось: **{5-weekly.get(str(m.id), 0)}**", color=0x2ecc71)
                 embed.set_image(url="https://github.com/Myxa83/silentconcierge/blob/main/assets/backgrounds/PolosBir.gif?raw=true")
                 embed.set_footer(text="Silent Concierge", icon_url=self.bot.user.display_avatar.url)
-                await member.send(embed=embed, view=PollResponseView(self))
-            except discord.Forbidden:
-                pass
+                await m.send(embed=embed, view=PollResponseView(self))
+            except: pass
 
-    async def send_daily_report(self):
-        channel = self.bot.get_channel(self.report_channel_id)
+    async def send_report_to_channel(self, channel_id):
+        channel = self.bot.get_channel(channel_id)
         if not channel: return
-
-        weekly = self.load_json(WEEKLY_PATH)
-        gs_data = self.load_json(GS_PATH)
-        sched_data = self.load_json(SCHEDULE_PATH)
+        weekly, gs_data, sched_data = self.load_json(WEEKLY_PATH), self.load_json(GS_PATH), self.load_json(SCHEDULE_PATH)
         guild = self.bot.get_guild(self.guild_id)
         role = guild.get_role(self.role_id) if guild else None
-        
         if not role: return
+        
+        lines = []
+        for m in role.members:
+            if m.bot: continue
+            uid = str(m.id)
+            status = "✅" if weekly.get(uid, 0) >= 5 else "⏳"
+            lines.append(f"{status} **{m.display_name}** | GS: `{gs_data.get(uid, '??')}` | Боси: `{weekly.get(uid, 0)}/5` | Графік: *{sched_data.get(uid, 'Не вказано')}*")
+        
+        embed = discord.Embed(title="📊 Звіт Black Shrine", description="\n".join(lines) if lines else "Порожньо", color=0x3498db)
+        embed.set_footer(text="Silent Concierge", icon_url=self.bot.user.display_avatar.url)
+        await channel.send(embed=embed)
 
-        report = "📊 **Звіт про статус Black Shrine:**\n\n"
-        for member in role.members:
-            if member.bot: continue
-            uid = str(member.id)
-            done = weekly.get(uid, 0)
-            gs = gs_data.get(uid, "??")
-            sched = sched_data.get(uid, "Не вказано")
-            
-            status_icon = "✅" if done >= 5 else "⏳"
-            report += f"{status_icon} **{member.display_name}** | GS: `{gs}` | Боси: `{done}/5` | Графік: *{sched}*\n"
-
-        await channel.send(report)
-
-    # --- КОМАНДА ТЕСТУВАННЯ ---
-    @app_commands.command(name="shrine_test", description="Тест розсилки та звітів (Тільки Модератор)")
+    @app_commands.command(name="shrine_test", description="Тестування (тільки тестовий канал)")
     @app_commands.choices(action=[
         app_commands.Choice(name="Тест DM (на себе)", value="dm"),
-        app_commands.Choice(name="Тест Списків (у канал)", value="report")
+        app_commands.Choice(name="Тест Списків (ТЕСТОВИЙ КАНАЛ)", value="report")
     ])
     async def shrine_test(self, interaction: discord.Interaction, action: str):
-        # Перевірка ролі Модератор
         if not any(r.id == self.mod_role_id for r in interaction.user.roles):
-            return await interaction.response.send_message("❌ Ця команда тільки для Модераторів!", ephemeral=True)
-
+            return await interaction.response.send_message("❌ Немає прав!", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
-
         if action == "dm":
-            # Відправляємо тест тільки тому, хто викликав команду
-            uid = str(interaction.user.id)
-            gs_data = self.load_json(GS_PATH)
-            weekly = self.load_json(WEEKLY_PATH)
-            
-            embed = discord.Embed(
-                title="ТЕСТ: Нагадування Black Shrine",
-                description=f"Ваш GS: **{gs_data.get(uid, '??')}**\nЗалишилось босів: **{5 - weekly.get(uid, 0)}**",
-                color=0x2ecc71
-            )
-            embed.set_image(url="https://github.com/Myxa83/silentconcierge/blob/main/assets/backgrounds/PolosBir.gif?raw=true")
-            try:
-                await interaction.user.send(embed=embed, view=PollResponseView(self))
-                await interaction.followup.send("✅ Тестове повідомлення надіслано в особисті.")
-            except discord.Forbidden:
-                await interaction.followup.send("❌ Не вдалося надіслати DM (закритий профіль).")
-
-        elif action == "report":
-            await self.send_daily_report()
-            await interaction.followup.send("✅ Тестовий звіт надіслано в канал.")
+            await self.run_dm_polling(target=interaction.user)
+            await interaction.followup.send("✅ Перевірте DM.")
+        else:
+            await self.send_report_to_channel(self.test_report_channel)
+            await interaction.followup.send(f"✅ Звіт надіслано в <#{self.test_report_channel}>")
 
     @app_commands.command(name="shrine_create", description="Створити рейд")
     async def shrine_create(self, interaction: discord.Interaction, boss: str, count: int, time_hhmm: int):
         try:
-            now = datetime.now()
             h, m = time_hhmm // 100, time_hhmm % 100
-            target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            if target < now: target += timedelta(days=1)
+            target = datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
+            if target < datetime.now(): target += timedelta(days=1)
             ts = int(time_module.mktime(target.timetuple()))
-        except:
-            return await interaction.response.send_message("❌ Невірний час!", ephemeral=True)
-
-        gs_data = self.load_json(GS_PATH)
-        weekly = self.load_json(WEEKLY_PATH)
-        my_gs = gs_data.get(str(interaction.user.id), "??")
-        my_left = 5 - weekly.get(str(interaction.user.id), 0)
-
+        except: return await interaction.response.send_message("❌ Формат часу: 1900", ephemeral=True)
+        
+        gs = self.load_json(GS_PATH).get(str(interaction.user.id), "??")
+        left = 5 - self.load_json(WEEKLY_PATH).get(str(interaction.user.id), 0)
         embed = discord.Embed(title=f"⚔️ Black Shrine: {boss}", color=0x2ecc71)
         embed.description = f"Лідер: {interaction.user.mention}\nБосів: **{count}**\nЧас: <t:{ts}:t> (<t:{ts}:R>)"
-        embed.add_field(name="Учасники (1/5)", value=f"👑 {interaction.user.mention} [GS: **{my_gs}** | Зал: **{max(0, my_left)}**]", inline=False)
+        embed.add_field(name="Учасники (1/5)", value=f"👑 {interaction.user.mention} [GS: **{gs}** | Зал: **{max(0, left)}**]", inline=False)
+        embed.set_footer(text="Silent Concierge", icon_url=self.bot.user.display_avatar.url)
         
-        view = ShrinePartyView(interaction.user.id, boss, count, ts, self)
-        await interaction.response.send_message(embed=embed, view=view)
-        
+        await interaction.response.send_message(embed=embed, view=ShrinePartyView(interaction.user.id, boss, count, ts, self))
         msg = await interaction.original_response()
         try: await msg.create_thread(name=f"Рейд {boss}")
         except: pass
