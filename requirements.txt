@@ -7,3 +7,5 @@ pytz==2023.3
 yt-dlp==2025.1.26
 selenium
 webdriver-manager
+aiohttp
+cloudscraper
