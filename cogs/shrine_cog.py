@@ -3,7 +3,8 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import json
 import asyncio
-from datetime import datetime
+import time as time_module
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Шляхи до файлів
@@ -78,7 +79,7 @@ class ConfirmProgressView(discord.ui.View):
         self.cog.save_json(weekly, WEEKLY_PATH)
         await interaction.response.edit_message(content=f"✅ Прогрес оновлено! ({weekly[uid]}/5)", view=None)
 
-# --- КЕРУВАННЯ РЕЙДОМ (ShrinePartyView) ---
+# --- КЕРУВАННЯ РЕЙДОМ ---
 class ShrinePartyView(discord.ui.View):
     def __init__(self, leader_id, boss, count, cog):
         super().__init__(timeout=None)
@@ -114,12 +115,21 @@ class ShrinePartyView(discord.ui.View):
             except: continue
         if interaction.message.thread: await interaction.message.thread.delete()
         await interaction.message.edit(view=None)
-        await interaction.response.send_message("Рейд завершено, запити надіслано!", ephemeral=True)
+        await interaction.response.send_message("Рейд завершено!", ephemeral=True)
 
     async def update_embed(self, interaction):
         embed = interaction.message.embeds[0]
-        mentions = [f"<@{m}>" for m in self.members]
-        embed.set_field_at(0, name=f"Учасники ({len(self.members)}/5)", value="\n".join(mentions))
+        gs_data = self.cog.load_json(GS_PATH)
+        weekly = self.cog.load_json(WEEKLY_PATH)
+        
+        member_list = []
+        for m_id in self.members:
+            uid = str(m_id)
+            m_gs = gs_data.get(uid, "??")
+            m_left = 5 - weekly.get(uid, 0)
+            member_list.append(f"<@{m_id}> [GS: **{m_gs}** | Залишилось: **{m_left}**]")
+            
+        embed.set_field_at(0, name=f"Учасники ({len(self.members)}/5)", value="\n".join(member_list), inline=False)
         await interaction.response.edit_message(embed=embed, view=self)
 
 # --- ОСНОВНИЙ COG ---
@@ -174,16 +184,34 @@ class ShrineCog(commands.Cog):
             except: continue
 
     @app_commands.command(name="shrine_create", description="Створити нову пачку")
-    async def shrine_create(self, interaction: discord.Interaction, boss: str, count: int, time: str):
+    @app_commands.describe(time_hhmm="Час цифрами (наприклад 1900)")
+    async def shrine_create(self, interaction: discord.Interaction, boss: str, count: int, time_hhmm: int):
+        # Динамічний час
+        now = datetime.now()
+        h, m = time_hhmm // 100, time_hhmm % 100
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if target < now: target += timedelta(days=1)
+        ts = int(time_module.mktime(target.timetuple()))
+
+        gs_data = self.load_json(GS_PATH)
+        weekly = self.load_json(WEEKLY_PATH)
+        uid = str(interaction.user.id)
+        my_gs = gs_data.get(uid, "??")
+        my_left = 5 - weekly.get(uid, 0)
+
         embed = discord.Embed(
             title=f"⚔️ Black Shrine: {boss}",
-            description=f"Лідер: {interaction.user.mention}\nБосів: **{count}**\nЧас: **{time}**",
+            description=f"Лідер: {interaction.user.mention}\nБосів: **{count}**\nЧас: <t:{ts}:t> (<t:{ts}:R>)",
             color=0x2ecc71
         )
-        embed.add_field(name="Учасники (1/5)", value=interaction.user.mention)
+        embed.add_field(
+            name="Учасники (1/5)", 
+            value=f"{interaction.user.mention} [GS: **{my_gs}** | Залишилось: **{my_left}**]", 
+            inline=False
+        )
         embed.set_footer(text="Silent Concierge", icon_url=self.bot.user.display_avatar.url)
-        view = ShrinePartyView(interaction.user.id, boss, count, self)
-        await interaction.response.send_message(embed=embed, view=view)
+
+        await interaction.response.send_message(embed=embed, view=ShrinePartyView(interaction.user.id, boss, count, self))
         msg = await interaction.original_response()
         await msg.create_thread(name=f"Рейд {boss}", auto_archive_duration=60)
 
