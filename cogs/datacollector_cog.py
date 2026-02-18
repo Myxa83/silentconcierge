@@ -114,5 +114,6 @@ class DataCollector(commands.Cog):
         await interaction.response.defer() # Бот "думає", бо збір займає час
         await self.run_full_collect_process(interaction)
 
-async setup(bot):
+# Ось тут було виправлено: додано "def"
+async def setup(bot):
     await bot.add_cog(DataCollector(bot))
