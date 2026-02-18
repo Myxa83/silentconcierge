@@ -6,7 +6,7 @@ import json
 import re
 import datetime
 import subprocess
-import aiohttp
+import asyncio
 from bs4 import BeautifulSoup
 
 class DataCollector(commands.Cog):
@@ -23,33 +23,47 @@ class DataCollector(commands.Cog):
         await self.run_full_collect_process()
 
     async def get_stats(self, url):
-        """Парсинг через aiohttp (легше для Oracle, ніж Playwright)"""
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        try:
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=15) as response:
-                    if response.status != 200:
-                        return None
-                    
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Шукаємо блоки зі статистикою
-                    stats_container = soup.find('div', class_=re.compile(r'grid-cols-4'))
-                    if stats_container:
-                        values = stats_container.find_all('p', class_=re.compile(r'text-2xl'))
-                        if len(values) >= 4:
-                            return {
-                                "AP": values[0].get_text(strip=True),
-                                "AAP": values[1].get_text(strip=True),
-                                "DP": values[2].get_text(strip=True),
-                                "GS": values[3].get_text(strip=True),
-                                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                            }
-        except Exception as e:
-            print(f"Помилка збору: {e}")
+        """Парсинг через Playwright (емуляція браузера для обходу Cloudflare)"""
+        from playwright.async_api import async_playwright
+        
+        async with async_playwright() as p:
+            print(f"[{datetime.datetime.now()}] Запуск браузера для: {url}")
+            # Запускаємо headless-браузер
+            browser = await p.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+
+                # Перехід на сторінку
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                
+                # Чекаємо саме на цифри (клас text-2xl у блоці grid-cols-4)
+                await page.wait_for_selector('.grid-cols-4 .text-2xl', timeout=20000)
+                
+                # Коротка пауза для рендеру цифр
+                await asyncio.sleep(1)
+                
+                content = await page.content()
+                soup = BeautifulSoup(content, 'html.parser')
+                
+                stats_container = soup.find('div', class_='grid-cols-4')
+                
+                if stats_container:
+                    values = stats_container.find_all('p', class_='text-2xl')
+                    if len(values) >= 4:
+                        return {
+                            "AP": values[0].get_text(strip=True),
+                            "AAP": values[1].get_text(strip=True),
+                            "DP": values[2].get_text(strip=True),
+                            "GS": values[3].get_text(strip=True),
+                            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                        }
+            except Exception as e:
+                print(f"Помилка Playwright: {e}")
+            finally:
+                await browser.close()
         return None
 
     async def find_url_in_thread(self):
@@ -82,12 +96,11 @@ class DataCollector(commands.Cog):
         """Основний процес збору"""
         url = await self.find_url_in_thread()
         if not url:
-            if interaction: await interaction.followup.send("❌ Не знайдено посилання на Garmoth.")
+            if interaction: await interaction.followup.send("❌ Не знайдено посилання на Garmoth у гілці.")
             return
 
         stats = await self.get_stats(url)
         if stats:
-            # Читаємо та оновлюємо локальний файл
             all_data = []
             try:
                 with open(self.data_file, "r", encoding="utf-8") as f:
@@ -106,14 +119,13 @@ class DataCollector(commands.Cog):
                 await interaction.followup.send(f"✅ Дані зібрано (GS: {stats['GS']}) та відправлено на GitHub.")
         else:
             if interaction:
-                await interaction.followup.send("❌ Не вдалося отримати дані з сайту (можливо, Garmoth захищений Cloudflare).")
+                await interaction.followup.send("❌ Не вдалося отримати дані. Playwright не зміг знайти статси.")
 
     @app_commands.command(name="collect", description="Зібрати дані з Garmoth вручну")
     async def collect(self, interaction: discord.Interaction):
         """Слеш-команда /collect"""
-        await interaction.response.defer() # Бот "думає", бо збір займає час
+        await interaction.response.defer()
         await self.run_full_collect_process(interaction)
 
-# Ось тут було виправлено: додано "def"
 async def setup(bot):
     await bot.add_cog(DataCollector(bot))
