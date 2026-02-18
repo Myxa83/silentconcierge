@@ -28,7 +28,6 @@ class DataCollector(commands.Cog):
         
         async with async_playwright() as p:
             print(f"[{datetime.datetime.now()}] Запуск браузера для: {url}")
-            # Запускаємо headless-браузер
             browser = await p.chromium.launch(headless=True)
             try:
                 context = await browser.new_context(
@@ -39,11 +38,9 @@ class DataCollector(commands.Cog):
                 # Перехід на сторінку
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 
-                # Чекаємо саме на цифри (клас text-2xl у блоці grid-cols-4)
+                # Чекаємо на селектор цифр (клас text-2xl у блоці grid-cols-4)
                 await page.wait_for_selector('.grid-cols-4 .text-2xl', timeout=20000)
-                
-                # Коротка пауза для рендеру цифр
-                await asyncio.sleep(1)
+                await asyncio.sleep(1) # Час на фінальний рендер
                 
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
@@ -93,7 +90,7 @@ class DataCollector(commands.Cog):
             print(f"Помилка Git: {e}")
 
     async def run_full_collect_process(self, interaction=None):
-        """Основний процес збору"""
+        """Основний процес збору та збереження даних"""
         url = await self.find_url_in_thread()
         if not url:
             if interaction: await interaction.followup.send("❌ Не знайдено посилання на Garmoth у гілці.")
@@ -101,25 +98,40 @@ class DataCollector(commands.Cog):
 
         stats = await self.get_stats(url)
         if stats:
+            # Створюємо повідомлення для Discord
+            display_message = (
+                f"✅ **Дані зібрано!**\n"
+                f"⚔️ **AP:** {stats['AP']} | **AAP:** {stats['AAP']}\n"
+                f"🛡️ **DP:** {stats['DP']}\n"
+                f"🌟 **Total GS:** {stats['GS']}\n"
+                f"🚀 Результати відправлено на GitHub."
+            )
+
+            # Читаємо існуючі дані
             all_data = []
             try:
                 with open(self.data_file, "r", encoding="utf-8") as f:
-                    all_data = json.load(f)
-            except:
-                pass
+                    content = f.read()
+                    if content:
+                        all_data = json.loads(content)
+            except (FileNotFoundError, json.JSONDecodeError):
+                print(f"Створюємо новий файл історії: {self.data_file}")
 
+            # Додаємо нові статси в список
             all_data.append(stats)
 
+            # Записуємо оновлений список у файл
             with open(self.data_file, "w", encoding="utf-8") as f:
                 json.dump(all_data, f, indent=4, ensure_ascii=False)
             
+            # Синхронізація з GitHub
             self.push_to_github()
 
             if interaction:
-                await interaction.followup.send(f"✅ Дані зібрано (GS: {stats['GS']}) та відправлено на GitHub.")
+                await interaction.followup.send(display_message)
         else:
             if interaction:
-                await interaction.followup.send("❌ Не вдалося отримати дані. Playwright не зміг знайти статси.")
+                await interaction.followup.send("❌ Не вдалося витягнути дані (можливо, структура сайту змінилася).")
 
     @app_commands.command(name="collect", description="Зібрати дані з Garmoth вручну")
     async def collect(self, interaction: discord.Interaction):
