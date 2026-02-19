@@ -2,7 +2,9 @@
 # cogs/roles_panel_cog.py
 
 from __future__ import annotations
+import json
 import discord
+from pathlib import Path
 from discord.ext import commands
 from discord import app_commands
 
@@ -38,6 +40,7 @@ RSL = "<a:RSL:1447204908494225529>"
 BULLET = "<a:bulletpoint:1447549436137046099>"
 DEFF = "<:Deff:1448272177848913951>"
 DIVIDER = DEFF * 16
+GIF_URL = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/PolosBir.gif"
 
 # ========================= UI =========================
 class RoleSelect(discord.ui.Select):
@@ -60,11 +63,44 @@ class RoleSelect(discord.ui.Select):
 
         member = interaction.user
         guild = interaction.guild
+        user_id = str(member.id)
 
+        # 1. Перевірка на роль Світоч
         if not any(r.id == ROLE_SVITOCH for r in member.roles):
             return await interaction.response.send_message(f"Доступно лише для ролі <@&{ROLE_SVITOCH}>.", ephemeral=True)
 
-        selected_ids = {int(v) for v in self.values}
+        selected_values = self.values
+        
+        # 2. ПЕРЕВІРКА ГІРУ ДЛЯ "СТРАЖДУЩІ" (290+ AP)
+        if str(ROLE_SUFFERING) in selected_values:
+            history_path = Path("data/garmoth_history.json")
+            has_gear = False
+            current_ap = 0
+            
+            if history_path.exists():
+                try:
+                    with open(history_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        user_history = data.get(user_id, [])
+                        if user_history and isinstance(user_history, list):
+                            last_entry = user_history[-1] # Останній запис
+                            current_ap = last_entry.get("ap", 0)
+                            if current_ap >= 290:
+                                has_gear = True
+                except Exception:
+                    pass
+
+            if not has_gear:
+                msg = (
+                    f"❌ **Твій АП ({current_ap}) недостатній для ролі Страждущі (потрібно 290+).**\n\n"
+                    "Онови дані на [Garmoth](https://garmoth.com/) та надай скріншот у цьому каналі:\n"
+                    "https://discord.com/channels/1323454227816906802/1358443998603120824 \n\n"
+                    "Після оновлення даних у системі ти зможеш взяти цю роль."
+                )
+                return await interaction.response.send_message(msg, ephemeral=True)
+
+        # 3. Оновлення ролей
+        selected_ids = {int(v) for v in selected_values}
         manageable = set(DROPDOWN_ROLES.values())
         current_roles = {r.id for r in member.roles if r.id in manageable}
 
@@ -96,37 +132,33 @@ class RolesPanelCog(commands.Cog):
         if not any(r.id in ALLOWED_POST_ROLES for r in interaction.user.roles):
             return await interaction.response.send_message("Нема доступу.", ephemeral=True)
 
-        # Твій новий детальний опис
         desc_main = (
-            f"{ASL}```Обери ролі та зроби Discord зручним для себе```{RSL}\n\n"
+            f"{ASL} **Обери ролі та зроби Discord зручним для себе** {RSL}\n\n"
             "У нашому Discord багато каналів, подій і напрямів. Це зроблено не для хаосу, а щоб кожен міг знайти своє місце.\n\n"
             f"{DIVIDER}\n\n"
             "**Обираючи ролі, ти:**\n"
             f"{BULLET} бачиш лише ті канали, які відповідають твоїм інтересам\n"
             f"{BULLET} не губишся в зайвій інформації\n"
-            f"{BULLET} швидше знаходиш людей зі схожим стилем гри\n"
-            f"{BULLET} допомагаєш нам підтримувати порядок і комфорт для всіх\n\n"
-            "Ролі не зобов'язують і не обмежують. Вони існують лише для зручності, навігації та атмосфери.\n\n"
+            f"{BULLET} швидше знаходиш людей зі схожим стилем гри\n\n"
+            "Ролі не зобов'язують і не обмежують. Вони існують лише для зручності.\n\n"
             "**Ти можеш:**\n"
             f"{BULLET} обрати одну або кілька ролей\n"
-            f"{BULLET} змінити їх у будь-який момент\n"
-            f"{BULLET} додати ролі пізніше, навіть якщо ти вже давно в гільдії\n\n"
-            "**Хто може обирати ролі:**\n\n"
+            f"{BULLET} змінити їх у будь-який момент\n\n"
+            "**Хто може обирати ролі:**\n"
             f"{BULLET} Лише роль <@&{ROLE_SVITOCH}>\n\n"
             f"{DIVIDER}\n\n"
             "**Стандартні ролі**\n\n"
-            f"{BULLET} <@&{ROLE_BEE}> - ти обожнюєш трудитись, і всі твої активності це шчупання травки після вирощування грибів, щоб ботім використати це в епічній алхімці XD. Загалом ця роль поєднує всі лайфскільні професії, тому якщо тобі потрібні гайди по відповідній тематиці, або хочеш отримати пораду від свого однодумця, обирай цюроль!\n"
-            f"{BULLET} <@&{ROLE_SALTY_EARS}> - роль для морячків, які хочуть побудувати корабель і піти тягати вела за тентаклю. Роль тегється під час морських квестів і рейду на морського боса Велла.\n"
-            f"{BULLET} <@&{ROLE_RIDER}> - якщо ти хочеш зібрати ітемки на апгрейт Т10 конів, треба раз на тиждень рбити квести Джейтини на скачки. Обирайте роль, якщо хочете прискорити отримання Т10 коня.\n"
-            f"{BULLET} <@&{ROLE_COOKIE_EATER}> - щоб для тебе був відкритий канал з кодами, за якіти отримаєш смачності - бери цю роль.\n"
-            f"{BULLET} <@&{ROLE_MARILYN}> - тобі подобається скринитись чи зніматись в відео, ти шукаєш нові емоції, виконуєш квести на них, та крайфтиш спеціальні костюми та їжу з хімкою.\n"
-            f"{BULLET} <@&{ROLE_FOREMAN}> - тобі цікаво крафтити ітемки в манор чи резиденцію, вчитися їх розставляти.\n"
-            f"{BULLET} <@&{ROLE_SUFFERING}> - якщо ти хочеш як умога раныше почати ходити на босів Black Shrine, оберай цю роль, але маю попередити, якщо твый гыр не буде пыдходити, я не дозволю тобы це зробити.\n\n"
-            # Посилання на гіфку в кінці тексту
-            "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/PolosBir.gif"
+            f"{BULLET} <@&{ROLE_BEE}> - лайфскільні професії та алхімія.\n"
+            f"{BULLET} <@&{ROLE_SALTY_EARS}> - роль для морячків (Велл, морські квести).\n"
+            f"{BULLET} <@&{ROLE_RIDER}> - квести Джейтини на Т10 коней.\n"
+            f"{BULLET} <@&{ROLE_COOKIE_EATER}> - відкриває канал з промокодами.\n"
+            f"{BULLET} <@&{ROLE_MARILYN}> - для тих, хто любить скріни, відео та костюми.\n"
+            f"{BULLET} <@&{ROLE_FOREMAN}> - крафт ітемок у манор чи резиденцію.\n"
+            f"{BULLET} <@&{ROLE_SUFFERING}> - **Black Shrine (потрібно 290+ AP)**. Я перевірю твій гір перед видачею!\n"
         )
         
         embed = discord.Embed(description=desc_main, color=0x05B2B4)
+        embed.set_image(url=GIF_URL)
 
         await interaction.response.send_message("Панель опубліковано.", ephemeral=True)
         await interaction.channel.send(embed=embed, view=RoleSelectView())
