@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -9,6 +10,7 @@ from discord.ext import commands
 from discord import app_commands
 
 # ========================= PATHS =========================
+# Використовуємо єдиний шлях для синхронізації з іншими когами
 DATA_PATH = Path("data/timezones.json")
 
 # ========================= ROLES =========================
@@ -48,16 +50,16 @@ def load_data() -> dict:
         return {}
     try:
         with open(DATA_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            content = f.read().strip()
+            return json.loads(content) if content else {}
     except Exception as e:
-        print(f"[ERROR] Помилка читання: {e}")
+        print(f"[ERROR] Помилка читання JSON: {e}")
         return {}
 
 def save_data(data: dict) -> None:
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(DATA_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"[SYSTEM] Дані збережено на диск Render. Записів: {len(data)}")
 
 # ========================= UI =========================
 class TZSelect(discord.ui.Select):
@@ -82,8 +84,9 @@ class TZSelect(discord.ui.Select):
             )
 
         cog = interaction.client.get_cog("TimezoneCog")
-        ok, msg = await cog.apply_country(interaction.user.id, self.values[0])
-        await interaction.response.send_message(msg, ephemeral=True)
+        if cog:
+            ok, msg = await cog.apply_country(interaction.user, self.values[0])
+            await interaction.response.send_message(msg, ephemeral=True)
 
 class TZView(discord.ui.View):
     def __init__(self):
@@ -94,23 +97,26 @@ class TZView(discord.ui.View):
 class TimezoneCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.data = load_data()
 
-    async def apply_country(self, user_id: int, key: str) -> tuple[bool, str]:
+    async def apply_country(self, user: discord.Member, key: str) -> tuple[bool, str]:
         if key not in COUNTRIES:
             return False, "Невірний вибір."
 
         label, flag, tz = COUNTRIES[key]
         
-        # Актуалізуємо дані з диска, щоб не затерти людей, що додалися в іншому процесі
-        self.data = load_data()
-        self.data[str(user_id)] = {
+        # Актуалізуємо дані перед записом
+        current_data = load_data()
+        
+        # Записуємо дані, прив'язуючись до ID
+        current_data[str(user.id)] = {
+            "name": user.display_name,
             "country_key": key,
             "country_label": label,
             "timezone": tz,
-            "updated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }
-        save_data(self.data)
+        
+        save_data(current_data)
 
         now_time = datetime.now(ZoneInfo(tz)).strftime("%H:%M")
         return True, f"✅ {flag} **{label}** збережено!\n🕒 Ваш поточний час: **{now_time}**"
@@ -142,12 +148,12 @@ class TimezoneCog(commands.Cog):
     @app_commands.command(name="tz_check_db", description="Адмін: Скільки людей у базі?")
     @app_commands.checks.has_permissions(administrator=True)
     async def tz_check_db(self, interaction: discord.Interaction):
-        # Команда, щоб ви бачили реальну кількість людей на Render
         db = load_data()
         await interaction.response.send_message(
-            f"📊 На диску Render зараз записів: **{len(db)}**", ephemeral=True
+            f"📊 У базі таймзон зараз записів: **{len(db)}**", ephemeral=True
         )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TimezoneCog(bot))
+    # Реєструємо view для постійної роботи кнопок після перезапуску
     bot.add_view(TZView())
