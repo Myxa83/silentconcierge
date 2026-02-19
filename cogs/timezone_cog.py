@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 import json
 import os
+import subprocess
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
 from zoneinfo import ZoneInfo
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 
 # ========================= PATHS =========================
-# Використовуємо єдиний шлях для синхронізації з іншими когами
 DATA_PATH = Path("data/timezones.json")
 
 # ========================= ROLES =========================
@@ -77,7 +77,6 @@ class TZSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        # Перевірка ролей
         if not any(r.id in ALLOWED_TZ_ROLES for r in interaction.user.roles):
             return await interaction.response.send_message(
                 f"Це доступно лише для <@&{ROLE_SVITOCH}> та <@&{ROLE_FRIEND}>.", ephemeral=True
@@ -97,17 +96,42 @@ class TZView(discord.ui.View):
 class TimezoneCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.github_backup.start()  # Запускаємо цикл бекапу
+
+    def cog_unload(self):
+        self.github_backup.cancel()
+
+    # --- АВТОМАТИЧНИЙ БЕКАП НА GITHUB ---
+    @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
+    async def github_backup(self):
+        if not DATA_PATH.exists():
+            return
+
+        try:
+            # Виконуємо Git команди
+            subprocess.run(["git", "add", str(DATA_PATH)], check=True)
+            
+            # Перевіряємо чи є зміни перед комітом
+            result = subprocess.run(
+                ["git", "commit", "-m", "Auto-update: timezones.json daily backup"],
+                capture_output=True, text=True
+            )
+            
+            if "nothing to commit" not in result.stdout:
+                subprocess.run(["git", "push"], check=True)
+                print("[SYSTEM] Таймзони синхронізовано з GitHub.")
+            else:
+                print("[SYSTEM] Змін у таймзонах немає, бекап пропущено.")
+        except Exception as e:
+            print(f"[ERROR] Авто-бекап таймзон не вдався: {e}")
 
     async def apply_country(self, user: discord.Member, key: str) -> tuple[bool, str]:
         if key not in COUNTRIES:
             return False, "Невірний вибір."
 
         label, flag, tz = COUNTRIES[key]
-        
-        # Актуалізуємо дані перед записом
         current_data = load_data()
         
-        # Записуємо дані, прив'язуючись до ID
         current_data[str(user.id)] = {
             "name": user.display_name,
             "country_key": key,
@@ -117,7 +141,6 @@ class TimezoneCog(commands.Cog):
         }
         
         save_data(current_data)
-
         now_time = datetime.now(ZoneInfo(tz)).strftime("%H:%M")
         return True, f"✅ {flag} **{label}** збережено!\n🕒 Ваш поточний час: **{now_time}**"
 
@@ -155,5 +178,4 @@ class TimezoneCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TimezoneCog(bot))
-    # Реєструємо view для постійної роботи кнопок після перезапуску
     bot.add_view(TZView())
