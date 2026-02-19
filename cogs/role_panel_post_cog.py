@@ -38,7 +38,6 @@ RSL = "<a:RSL:1447204908494225529>"
 BULLET = "<a:bulletpoint:1447549436137046099>"
 DEFF = "<:Deff:1448272177848913951>"
 DIVIDER = DEFF * 16
-BOTTOM_IMAGE_URL = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/PolosBir.gif"
 
 # ========================= UI =========================
 class RoleSelect(discord.ui.Select):
@@ -97,21 +96,37 @@ class RolesPanelCog(commands.Cog):
         if not any(r.id in ALLOWED_POST_ROLES for r in interaction.user.roles):
             return await interaction.response.send_message("Нема доступу.", ephemeral=True)
 
+        # Твій новий детальний опис
         desc_main = (
-            f"{ASL}**Обери ролі та зроби Discord зручним для себе**{RSL}\n\n"
-            "Обираючи ролі, ти бачиш лише ті канали, які відповідають твоїм інтересам.\n\n"
-            f"{BULLET} <@&{ROLE_BEE}> - Лайфскіл та алхімія\n"
-            f"{BULLET} <@&{ROLE_SALTY_EARS}> - Море та Велл\n"
-            f"{BULLET} <@&{ROLE_RIDER}> - Квести на Т10 коней\n"
-            f"{BULLET} <@&{ROLE_COOKIE_EATER}> - Канал з кодами\n"
-            f"{BULLET} <@&{ROLE_MARILYN}> - Скріншоти та емоції\n"
-            f"{BULLET} <@&{ROLE_FOREMAN}> - Крафт у манор\n"
-            f"{BULLET} <@&{ROLE_SUFFERING}> - Паті боси (Чорний Храм)\n\n"
-            f"Хто може обирати ролі: <@&{ROLE_SVITOCH}>\n"
-            f"{DIVIDER}"
+            f"{ASL}```Обери ролі та зроби Discord зручним для себе```{RSL}\n\n"
+            "У нашому Discord багато каналів, подій і напрямів. Це зроблено не для хаосу, а щоб кожен міг знайти своє місце.\n\n"
+            f"{DIVIDER}\n\n"
+            "**Обираючи ролі, ти:**\n"
+            f"{BULLET} бачиш лише ті канали, які відповідають твоїм інтересам\n"
+            f"{BULLET} не губишся в зайвій інформації\n"
+            f"{BULLET} швидше знаходиш людей зі схожим стилем гри\n"
+            f"{BULLET} допомагаєш нам підтримувати порядок і комфорт для всіх\n\n"
+            "Ролі не зобов'язують і не обмежують. Вони існують лише для зручності, навігації та атмосфери.\n\n"
+            "**Ти можеш:**\n"
+            f"{BULLET} обрати одну або кілька ролей\n"
+            f"{BULLET} змінити їх у будь-який момент\n"
+            f"{BULLET} додати ролі пізніше, навіть якщо ти вже давно в гільдії\n\n"
+            "**Хто може обирати ролі:**\n\n"
+            f"{BULLET} Лише роль <@&{ROLE_SVITOCH}>\n\n"
+            f"{DIVIDER}\n\n"
+            "**Стандартні ролі**\n\n"
+            f"{BULLET} <@&{ROLE_BEE}> - ти обожнюєш трудитись, і всі твої активності це шчупання травки після вирощування грибів, щоб ботім використати це в епічній алхімці XD. Загалом ця роль поєднує всі лайфскільні професії, тому якщо тобі потрібні гайди по відповідній тематиці, або хочеш отримати пораду від свого однодумця, обирай цюроль!\n"
+            f"{BULLET} <@&{ROLE_SALTY_EARS}> - роль для морячків, які хочуть побудувати корабель і піти тягати вела за тентаклю. Роль тегється під час морських квестів і рейду на морського боса Велла.\n"
+            f"{BULLET} <@&{ROLE_RIDER}> - якщо ти хочеш зібрати ітемки на апгрейт Т10 конів, треба раз на тиждень рбити квести Джейтини на скачки. Обирайте роль, якщо хочете прискорити отримання Т10 коня.\n"
+            f"{BULLET} <@&{ROLE_COOKIE_EATER}> - щоб для тебе був відкритий канал з кодами, за якіти отримаєш смачності - бери цю роль.\n"
+            f"{BULLET} <@&{ROLE_MARILYN}> - тобі подобається скринитись чи зніматись в відео, ти шукаєш нові емоції, виконуєш квести на них, та крайфтиш спеціальні костюми та їжу з хімкою.\n"
+            f"{BULLET} <@&{ROLE_FOREMAN}> - тобі цікаво крафтити ітемки в манор чи резиденцію, вчитися їх розставляти.\n"
+            f"{BULLET} <@&{ROLE_SUFFERING}> - якщо ти хочеш як умога раныше почати ходити на босів Black Shrine, оберай цю роль, але маю попередити, якщо твый гыр не буде пыдходити, я не дозволю тобы це зробити.\n\n"
+            # Посилання на гіфку в кінці тексту
+            "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/PolosBir.gif"
         )
+        
         embed = discord.Embed(description=desc_main, color=0x05B2B4)
-        embed.set_image(url=BOTTOM_IMAGE_URL)
 
         await interaction.response.send_message("Панель опубліковано.", ephemeral=True)
         await interaction.channel.send(embed=embed, view=RoleSelectView())
