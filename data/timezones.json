@@ -1,2 +1,30 @@
-{}
-
+{
+  "279395551198445568": {
+    "name": "[𝑅𝒞] 𝒨𝓎𝓍𝒶 | 𝑮𝒂𝒍𝒚𝒂",
+    "country_key": "ukraine",
+    "country_label": "Ukraine",
+    "timezone": "Europe/Kyiv",
+    "updated_at": "2026-02-19T21:34:30.359185+00:00"
+  },
+  "515844224504037376": {
+    "name": "[SC] GYNOECIUM | Влад",
+    "country_key": "ukraine",
+    "country_label": "Ukraine",
+    "timezone": "Europe/Kyiv",
+    "updated_at": "2026-02-19T17:20:53.109847+00:00"
+  },
+  "1398404811161862158": {
+    "name": "[SC] BoneSnap | Галя",
+    "country_key": "united_kingdom",
+    "country_label": "United Kingdom",
+    "timezone": "Europe/London",
+    "updated_at": "2026-02-19T22:05:11.612435+00:00"
+  },
+  "608338529776304140": {
+    "name": "[SC] Empmit | Аня",
+    "country_key": "europe",
+    "country_label": "Europe (Berlin time)",
+    "timezone": "Europe/Berlin",
+    "updated_at": "2026-02-19T22:10:57.904083+00:00"
+  }
+}
