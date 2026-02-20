@@ -74,6 +74,11 @@ def log_tb(stage: str, interaction: Optional[Interaction], err: BaseException) -
 async def download_and_round(url: str) -> Tuple[Optional[discord.File], Optional[str], str]:
     if not url:
         return None, None, "empty_url"
+    
+    # ПЕРЕВІРКА НА GIF: якщо це гіфка, ми її не обробляємо, щоб не вбити анімацію
+    if url.lower().split('?')[0].endswith('.gif'):
+        return None, url, "ok_gif"
+
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT)) as session:
             async with session.get(url) as r:
@@ -283,7 +288,6 @@ class PostCog(commands.Cog):
         if msg.author.id != self.bot.user.id:
             return await interaction.response.send_message("❌ Це не мій пост.", ephemeral=True)
 
-        # Парсимо старий ембед
         title, text, anon, foot, has_img = None, "", True, False, False
         if msg.embeds:
             emb = msg.embeds[0]
@@ -323,18 +327,24 @@ class PostCog(commands.Cog):
                 if f:
                     embed.set_image(url=url)
                     await msg.edit(embed=embed, attachments=[f])
+                else: # Це випадок для GIF або якщо завантаження не потрібне
+                    embed.set_image(url=url)
+                    await msg.edit(embed=embed, attachments=[])
             else:
                 await msg.edit(embed=embed)
             return await interaction.followup.send("✅ Оновлено.", ephemeral=True)
 
         # Створення
         f_send = None
+        url_to_set = None
         if session.image_url:
-            f_send, url, _ = await download_and_round(session.image_url)
-            if f_send: embed.set_image(url=url)
+            f_send, url_to_set, _ = await download_and_round(session.image_url)
+            if url_to_set: embed.set_image(url=url_to_set)
 
-        if f_send: await interaction.channel.send(embed=embed, file=f_send)
-        else: await interaction.channel.send(embed=embed)
+        if f_send: 
+            await interaction.channel.send(embed=embed, file=f_send)
+        else: 
+            await interaction.channel.send(embed=embed)
         
         await interaction.followup.send("✅ Готово.", ephemeral=True)
 
