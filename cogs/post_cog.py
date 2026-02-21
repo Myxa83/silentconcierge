@@ -75,8 +75,9 @@ async def download_and_round(url: str) -> Tuple[Optional[discord.File], Optional
     if not url:
         return None, None, "empty_url"
     
-    # ПЕРЕВІРКА НА GIF: якщо це гіфка, ми її не обробляємо, щоб не вбити анімацію
-    if url.lower().split('?')[0].endswith('.gif'):
+    # ПЕРЕВІРКА НА GIF: якщо в посиланні є .gif (до знаку питання), повертаємо як є
+    clean_url = url.split('?')[0].lower()
+    if clean_url.endswith('.gif'):
         return None, url, "ok_gif"
 
     try:
@@ -102,7 +103,8 @@ async def download_and_round(url: str) -> Tuple[Optional[discord.File], Optional
 
         return discord.File(buf, filename="image.png"), "attachment://image.png", "ok"
     except Exception as e:
-        return None, None, f"err_{type(e).__name__}:{e}"
+        # Якщо це не гіфка, але сталася помилка — відправляємо пряме посилання як запасний варіант
+        return None, url, f"err_{type(e).__name__}"
 
 def parse_message_link(link: str) -> Optional[Tuple[int, int, int]]:
     m = re.search(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)", link or "")
@@ -288,6 +290,7 @@ class PostCog(commands.Cog):
         if msg.author.id != self.bot.user.id:
             return await interaction.response.send_message("❌ Це не мій пост.", ephemeral=True)
 
+        # Парсимо старий ембед
         title, text, anon, foot, has_img = None, "", True, False, False
         if msg.embeds:
             emb = msg.embeds[0]
@@ -327,7 +330,7 @@ class PostCog(commands.Cog):
                 if f:
                     embed.set_image(url=url)
                     await msg.edit(embed=embed, attachments=[f])
-                else: # Це випадок для GIF або якщо завантаження не потрібне
+                else:
                     embed.set_image(url=url)
                     await msg.edit(embed=embed, attachments=[])
             else:
@@ -336,14 +339,15 @@ class PostCog(commands.Cog):
 
         # Створення
         f_send = None
-        url_to_set = None
+        img_url = None
         if session.image_url:
-            f_send, url_to_set, _ = await download_and_round(session.image_url)
-            if url_to_set: embed.set_image(url=url_to_set)
+            f_send, img_url, _ = await download_and_round(session.image_url)
+            if img_url:
+                embed.set_image(url=img_url)
 
-        if f_send: 
+        if f_send:
             await interaction.channel.send(embed=embed, file=f_send)
-        else: 
+        else:
             await interaction.channel.send(embed=embed)
         
         await interaction.followup.send("✅ Готово.", ephemeral=True)
