@@ -26,5 +26,12 @@
     "country_label": "Europe (Berlin time)",
     "timezone": "Europe/Berlin",
     "updated_at": "2026-02-19T22:10:57.904083+00:00"
+  },
+  "534465705635086338": {
+    "name": "[RC] Powered  | Діма",
+    "country_key": "ukraine",
+    "country_label": "Ukraine",
+    "timezone": "Europe/Kyiv",
+    "updated_at": "2026-02-22T13:29:20.322878+00:00"
   }
 }
