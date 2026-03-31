@@ -1,4 +1,6 @@
 # bot_main.py
+# -*- coding: utf-8 -*-
+
 import asyncio
 import json
 import os
@@ -41,21 +43,23 @@ def _append_runtime_log(entry: dict) -> None:
                 data = []
 
         data.append(entry)
-        RUNTIME_LOG.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        RUNTIME_LOG.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
     except Exception:
         pass
 
 
-class Bot(commands.Bot):
-    def __init__(self):
+class SilentBot(commands.Bot):
+    def __init__(self) -> None:
         super().__init__(
             command_prefix="!",
             intents=INTENTS,
             help_command=None,
         )
 
-    async def setup_hook(self):
-        # ---------- BOOT DIAGNOSTICS ----------
+    async def setup_hook(self) -> None:
         print("[BOOT] bot_main.py started")
         print("[BOOT] CWD:", os.getcwd())
 
@@ -65,7 +69,6 @@ class Bot(commands.Bot):
             root_files = [f"[ERR] {type(e).__name__}: {e}"]
         print("[BOOT] ROOT FILES:", root_files)
 
-        cogs_files = []
         if os.path.isdir("cogs"):
             try:
                 cogs_files = sorted(os.listdir("cogs"))
@@ -75,9 +78,8 @@ class Bot(commands.Bot):
         else:
             print("[BOOT][WARN] cogs/ directory NOT FOUND")
 
-        # ---------- AUTO LOAD COGS ----------
-        loaded_ext = []
-        failed_ext = []
+        loaded_ext: list[str] = []
+        failed_ext: list[dict] = []
 
         if os.path.isdir("cogs"):
             for file in sorted(os.listdir("cogs")):
@@ -89,6 +91,7 @@ class Bot(commands.Bot):
                     continue
 
                 ext = f"cogs.{file[:-3]}"
+
                 try:
                     await self.load_extension(ext)
                     print(f"[COG][OK] Loaded {ext}")
@@ -97,7 +100,11 @@ class Bot(commands.Bot):
                     msg = f"{type(e).__name__}: {e}"
                     print(f"[COG][FAIL] {ext}: {msg}")
                     traceback.print_exc()
-                    failed_ext.append({"ext": ext, "error": msg, "traceback": traceback.format_exc()})
+                    failed_ext.append({
+                        "ext": ext,
+                        "error": msg,
+                        "traceback": traceback.format_exc(),
+                    })
 
         print(f"[BOOT] COG LOAD RESULT: ok={len(loaded_ext)}, fail={len(failed_ext)}")
 
@@ -109,7 +116,10 @@ class Bot(commands.Bot):
             "failed": failed_ext,
         })
 
-        # ---------- SYNC COMMANDS (ЖОРСТКИЙ РЕЖИМ) ----------
+        await self._sync_application_commands()
+        self.tree.on_error = self.on_app_command_error
+
+    async def _sync_application_commands(self) -> None:
         try:
             gid = None
             try:
@@ -119,35 +129,40 @@ class Bot(commands.Bot):
 
             if gid:
                 guild_obj = discord.Object(id=gid)
-                # 1. Видаляємо привиди старих команд
-                self.tree.clear_commands(guild=guild_obj)
-                # 2. Копіюємо нові команди з когів у дерево сервера
-                self.tree.copy_global_to(guild=guild_obj)
-                # 3. Синхронізуємо
+
                 synced = await self.tree.sync(guild=guild_obj)
-                
-                print(f"[SYNC] Force synced to guild {gid}. Count: {len(synced)}")
-                for c in synced: print(f"  - /{c.name}")
-                
+
+                print(f"[SYNC] Guild sync successful. Guild: {gid}. Count: {len(synced)}")
+                for c in synced:
+                    print(f"  - /{c.name}")
+
                 _append_runtime_log({
                     "time": _utc_now(),
                     "event": "sync",
-                    "mode": "guild_force",
+                    "mode": "guild",
                     "guild_id": gid,
                     "count": len(synced),
+                    "commands": [c.name for c in synced],
                 })
             else:
                 synced = await self.tree.sync()
+
                 print(f"[SYNC] Global sync successful. Count: {len(synced)}")
+                for c in synced:
+                    print(f"  - /{c.name}")
+
                 _append_runtime_log({
                     "time": _utc_now(),
                     "event": "sync",
                     "mode": "global",
                     "count": len(synced),
+                    "commands": [c.name for c in synced],
                 })
+
         except Exception as e:
             print(f"[SYNC][FAIL] {type(e).__name__}: {e}")
             traceback.print_exc()
+
             _append_runtime_log({
                 "time": _utc_now(),
                 "event": "sync_fail",
@@ -156,79 +171,137 @@ class Bot(commands.Bot):
                 "traceback": traceback.format_exc(),
             })
 
-        # ---------- GLOBAL APP COMMAND ERROR HANDLER ----------
-        @self.tree.error
-        async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-            tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-
-            cmd_name = None
-            try:
-                if interaction.command:
-                    cmd_name = interaction.command.qualified_name
-            except Exception:
-                cmd_name = None
-
-            print(f"[APP_CMD_ERROR] cmd={cmd_name} user={getattr(interaction.user,'id',None)} guild={getattr(interaction.guild,'id',None)}")
-            print(tb)
-
-            _append_runtime_log({
-                "time": _utc_now(),
-                "event": "app_cmd_error",
-                "cmd": cmd_name,
-                "user_id": getattr(interaction.user, "id", None),
-                "guild_id": getattr(interaction.guild, "id", None),
-                "error_type": type(error).__name__,
-                "error": str(error),
-                "traceback": tb,
-            })
-
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(f"❌ Помилка: `{type(error).__name__}`", ephemeral=True)
-                else:
-                    await interaction.response.send_message(f"❌ Помилка: `{type(error).__name__}`", ephemeral=True)
-            except Exception:
-                pass
-
-    async def on_ready(self):
+    async def on_ready(self) -> None:
         print(f"[READY] Logged in as {self.user} ({self.user.id})")
+
         _append_runtime_log({
             "time": _utc_now(),
             "event": "ready",
             "user_id": getattr(self.user, "id", None),
         })
 
-    # ---------- ТЕКСТОВА КОМАНДА ДЛЯ ПРИМУСОВОЇ СИНХРОНІЗАЦІЇ ----------
-    @commands.command(name="force_sync")
-    @commands.is_owner()
-    async def force_sync(self, ctx: commands.Context):
-        """Текстова команда !force_sync для виправлення слеш-команд"""
-        msg = await ctx.send("⏳ Починаю жорстку синхронізацію команд...")
+    async def on_app_command_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
+        tb = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+
+        cmd_name = None
+        try:
+            if interaction.command:
+                cmd_name = interaction.command.qualified_name
+        except Exception:
+            cmd_name = None
+
+        print(
+            f"[APP_CMD_ERROR] cmd={cmd_name} "
+            f"user={getattr(interaction.user, 'id', None)} "
+            f"guild={getattr(interaction.guild, 'id', None)}"
+        )
+        print(tb)
+
+        _append_runtime_log({
+            "time": _utc_now(),
+            "event": "app_cmd_error",
+            "cmd": cmd_name,
+            "user_id": getattr(interaction.user, "id", None),
+            "guild_id": getattr(interaction.guild, "id", None),
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "traceback": tb,
+        })
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    f"❌ Помилка: `{type(error).__name__}`",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    f"❌ Помилка: `{type(error).__name__}`",
+                    ephemeral=True,
+                )
+        except Exception:
+            pass
+
+
+bot = SilentBot()
+
+
+@bot.command(name="force_sync")
+@commands.is_owner()
+async def force_sync(ctx: commands.Context) -> None:
+    msg = await ctx.send("⏳ Починаю синхронізацію команд...")
+
+    try:
+        gid = None
         try:
             gid = int(GUILD_ID) if GUILD_ID else None
-            if gid:
-                guild_obj = discord.Object(id=gid)
-                self.tree.clear_commands(guild=guild_obj)
-                self.tree.copy_global_to(guild=guild_obj)
-                synced = await self.tree.sync(guild=guild_obj)
-                await msg.edit(content=f"✅ Готово! Команди сервера `{gid}` оновлено: **{len(synced)}**.\nПерезавантаж Discord (Ctrl+R).")
-            else:
-                synced = await self.tree.sync()
-                await msg.edit(content=f"🌍 Глобальна синхронізація успішна: **{len(synced)}** команд.\nПерезавантаж Discord (Ctrl+R).")
-        except Exception as e:
-            await msg.edit(content=f"❌ Помилка при синхронізації: `{e}`")
-            traceback.print_exc()
+        except Exception:
+            gid = None
+
+        if gid:
+            guild_obj = discord.Object(id=gid)
+            synced = await bot.tree.sync(guild=guild_obj)
+
+            await msg.edit(
+                content=(
+                    f"✅ Готово! Команди сервера `{gid}` оновлено: **{len(synced)}**.\n"
+                    "Перезавантаж Discord через Ctrl+R."
+                )
+            )
+
+            _append_runtime_log({
+                "time": _utc_now(),
+                "event": "force_sync",
+                "mode": "guild",
+                "guild_id": gid,
+                "count": len(synced),
+                "author_id": ctx.author.id,
+            })
+        else:
+            synced = await bot.tree.sync()
+
+            await msg.edit(
+                content=(
+                    f"🌍 Глобальна синхронізація успішна: **{len(synced)}** команд.\n"
+                    "Перезавантаж Discord через Ctrl+R."
+                )
+            )
+
+            _append_runtime_log({
+                "time": _utc_now(),
+                "event": "force_sync",
+                "mode": "global",
+                "count": len(synced),
+                "author_id": ctx.author.id,
+            })
+
+    except Exception as e:
+        await msg.edit(content=f"❌ Помилка при синхронізації: `{type(e).__name__}: {e}`")
+        traceback.print_exc()
+
+        _append_runtime_log({
+            "time": _utc_now(),
+            "event": "force_sync_fail",
+            "author_id": ctx.author.id,
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        })
 
 
-async def main():
+async def main() -> None:
     if not DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is missing")
 
-    bot = Bot()
     async with bot:
         await bot.start(DISCORD_TOKEN)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
