@@ -1,3 +1,4 @@
+🔧 2. Перевір вміст (важливо)
 services:
   - type: web
     name: silentconcierge
@@ -8,5 +9,3 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.10
-      - key: DISCORD_TOKEN
-        sync: false
