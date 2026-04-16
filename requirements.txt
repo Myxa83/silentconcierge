@@ -8,3 +8,5 @@ yt-dlp==2025.1.26
 selenium
 webdriver-manager
 cloudscraper
+setuptools<70
+wheel
