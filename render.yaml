@@ -1,7 +1,12 @@
 services:
-  - type: worker
+  - type: web
     name: silentconcierge
     env: python
-    plan: starter
+    plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "bash start.sh"
+    startCommand: "python bot_main.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: DISCORD_TOKEN
+        sync: false
