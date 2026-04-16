@@ -8,6 +8,11 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+# Важливо для Render/Python 3.14:
+# вимикаємо voice-частину discord.py до імпорту discord,
+# щоб не падати на audioop
+os.environ["DISCORD_DISABLE_VOICE"] = "1"
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -62,6 +67,7 @@ class SilentBot(commands.Bot):
     async def setup_hook(self) -> None:
         print("[BOOT] bot_main.py started")
         print("[BOOT] CWD:", os.getcwd())
+        print("[BOOT] DISCORD_DISABLE_VOICE:", os.getenv("DISCORD_DISABLE_VOICE"))
 
         try:
             root_files = sorted(os.listdir("."))
@@ -129,7 +135,6 @@ class SilentBot(commands.Bot):
 
             if gid:
                 guild_obj = discord.Object(id=gid)
-
                 synced = await self.tree.sync(guild=guild_obj)
 
                 print(f"[SYNC] Guild sync successful. Guild: {gid}. Count: {len(synced)}")
