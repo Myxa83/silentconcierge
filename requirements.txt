@@ -10,3 +10,4 @@ webdriver-manager
 cloudscraper
 setuptools<70
 wheel
+aiocron
