@@ -24,20 +24,22 @@ except Exception:
 """
 Stream Cog - ПОВНИЙ КОД
 
-ОНОВЛЕНО:
-- Виявлення НОВИХ ВІДЕО (не стріми) на YouTube через RSS і на Twitch через Helix Videos API.
-- Окремі анонси для live та для звичайних відео.
-- Кеш останніх оголошених відео, щоб не дублювати анонси.
-- Канал анонсів тепер через ID, а не по назві.
-- Усі JSON-файли тепер лежать у config/.
+ЩО ВИПРАВЛЕНО:
+- Усі JSON-файли лежать у config/
+- Канал анонсів тепер через ID, а не по назві
+- YouTube більше не шле фейкові live-анонси з 404
+- Twitch live лишився
+- YouTube нові відео через RSS лишилися
+- Twitch uploads лишилися
+- Додані debug print-и для шляху до файлів
 
-ЗБЕРЕЖЕНО:
-- Існуюча логіка live-перевірок через decapi.me.
-- Візуальна структура ембедів і тест-команда.
+ВАЖЛИВО:
+- YouTube live тут вимкнений свідомо, бо стара логіка була побудована на username як video_id,
+  а в тебе зберігається канал / handle. Через це й був 404 Page Not Found.
 """
 
 # ==== НАЛАШТУВАННЯ ====
-GUILD_ID = int(os.getenv("GUILD_ID", 1323454227816906802))
+GUILD_ID = int(os.getenv("GUILD_ID", "1323454227816906802"))
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
@@ -64,11 +66,11 @@ STREAM_COLORS = [
     0xFF0040,
 ]
 
-# Платформені іконки (fallback картинки)
+# Платформені іконки
 TWITCH_ICON_IMG = "https://i.imgur.com/5Us8X2r.png"
 YOUTUBE_ICON_IMG = "https://i.imgur.com/xD7czCG.png"
 
-# Емодзі/іконки для текстових рядків
+# Емодзі для текстових рядків
 TWITCH_EMOJI = "<:twitch_icon:1403350256271364268>"
 YOUTUBE_EMOJI = "<:youtube_icon:1403350209630699652>"
 
@@ -81,7 +83,7 @@ TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 _TWITCH_TOKEN: Optional[str] = None
 _TWITCH_TOKEN_EXP = 0
 
-# Рандомні фрази
+# Рандомні фрази для live-анонсів
 ANNOUNCE_LINES = [
     "Наш спеціальний агент {mention} працює у [небезпечних умовах]({url})",
     "Агент {mention} уже в ефірі - дивись [тут]({url})",
@@ -106,13 +108,11 @@ except ZoneInfoNotFoundError:
 
 
 def format_ua_datetime(dt: datetime) -> str:
-    """Напр.: 9 серпня 2025 р. 05:16"""
     m = _UA_MONTHS_GEN[dt.month]
     return f"{dt.day} {m} {dt.year} р. {dt.hour:02d}:{dt.minute:02d}"
 
 
 def discord_ts(dt: datetime, style: str = "f") -> str:
-    """Discord localized timestamp."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     ts = int(dt.timestamp())
@@ -120,7 +120,6 @@ def discord_ts(dt: datetime, style: str = "f") -> str:
 
 
 async def _get_twitch_headers(session: aiohttp.ClientSession) -> Optional[dict]:
-    """Отримати/оновити токен Helix і повернути headers, або None."""
     global _TWITCH_TOKEN, _TWITCH_TOKEN_EXP
 
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
@@ -157,7 +156,6 @@ class StreamCog(commands.Cog):
         avatar_url: str,
         size: int = 96
     ) -> Optional[discord.File]:
-        """Скачує аватар і повертає його як круглий PNG."""
         if not _PIL_OK:
             return None
         try:
@@ -188,8 +186,8 @@ class StreamCog(commands.Cog):
         try:
             async with session.get(url) as r:
                 b = await r.read()
-            img = Image.open(BytesIO(b)).convert("RGBA").resize((size, size), Image.LANCZOS)
 
+            img = Image.open(BytesIO(b)).convert("RGBA").resize((size, size), Image.LANCZOS)
             out = BytesIO()
             img.save(out, format="PNG")
             out.seek(0)
@@ -216,10 +214,15 @@ class StreamCog(commands.Cog):
 
     # ---- files ----
     def load_streamers(self):
+        print(f"[STREAM_COG] loading streamers from: {STREAMERS_FILE}")
+        print(f"[STREAM_COG] absolute streamers path: {os.path.abspath(STREAMERS_FILE)}")
+
         if os.path.exists(STREAMERS_FILE):
             with open(STREAMERS_FILE, "r", encoding="utf-8") as f:
                 try:
                     self.streamers = json.load(f)
+                    if not isinstance(self.streamers, list):
+                        self.streamers = []
                 except Exception:
                     self.streamers = []
         else:
@@ -253,6 +256,8 @@ class StreamCog(commands.Cog):
             try:
                 with open(LAST_SEEN_FILE, "r", encoding="utf-8") as f:
                     self.last_seen = json.load(f)
+                    if not isinstance(self.last_seen, dict):
+                        self.last_seen = {"youtube": {}, "twitch": {}}
             except Exception:
                 self.last_seen = {"youtube": {}, "twitch": {}}
         else:
@@ -301,7 +306,6 @@ class StreamCog(commands.Cog):
         return (TWITCH_ICON_IMG, TWITCH_EMOJI) if platform == "twitch" else (YOUTUBE_ICON_IMG, YOUTUBE_EMOJI)
 
     async def _yt_resolve_channel_id(self, session: aiohttp.ClientSession, identifier: str) -> Optional[str]:
-        """Повертає channel_id (UC...), приймає @handle / user / channel / video id."""
         try:
             async with session.get(f"https://decapi.me/youtube/channelid?search={identifier}") as r:
                 cid = (await r.text()).strip()
@@ -324,7 +328,6 @@ class StreamCog(commands.Cog):
         return None
 
     async def _twitch_latest_upload(self, session: aiohttp.ClientSession, login: str) -> Optional[Dict[str, Any]]:
-        """Останнє ЗВИЧАЙНЕ ВІДЕО (type=upload)."""
         headers = await _get_twitch_headers(session)
         if not headers:
             return None
@@ -355,7 +358,6 @@ class StreamCog(commands.Cog):
         session: aiohttp.ClientSession,
         channel_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Парсить RSS каналу і повертає {video_id, title, published, link, thumb}."""
         try:
             rss = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
             async with session.get(rss) as r:
@@ -371,7 +373,9 @@ class StreamCog(commands.Cog):
             if entry is None:
                 return None
 
-            title = (entry.find("atom:title", ns).text or "").strip()
+            title_el = entry.find("atom:title", ns)
+            title = (title_el.text or "").strip() if title_el is not None else "Відео"
+
             link_el = entry.find("atom:link", ns)
             link = link_el.get("href") if link_el is not None else ""
 
@@ -381,10 +385,10 @@ class StreamCog(commands.Cog):
             pub_el = entry.find("atom:published", ns)
             published = pub_el.text if pub_el is not None else None
 
-            thumb = f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg" if video_id else None
-
             if not video_id:
                 return None
+
+            thumb = f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
 
             return {
                 "video_id": video_id,
@@ -395,39 +399,6 @@ class StreamCog(commands.Cog):
             }
         except Exception:
             return None
-
-    async def _fetch_twitch_game_icon(
-        self,
-        session: aiohttp.ClientSession,
-        username: str
-    ) -> Tuple[Optional[str], Optional[str]]:
-        """Повертає (game_name, box_art_64_url) або (None, None) для LIVE."""
-        headers = await _get_twitch_headers(session)
-        if not headers:
-            return None, None
-
-        async with session.get(f"https://api.twitch.tv/helix/streams?user_login={username}", headers=headers) as r:
-            jd = await r.json()
-
-        items = jd.get("data", []) if isinstance(jd, dict) else []
-        if not items:
-            return None, None
-
-        game_id = items[0].get("game_id")
-        game_name = items[0].get("game_name")
-        if not game_id:
-            return game_name, None
-
-        async with session.get(f"https://api.twitch.tv/helix/games?id={game_id}", headers=headers) as r2:
-            jd2 = await r2.json()
-
-        items2 = jd2.get("data", []) if isinstance(jd2, dict) else []
-        if not items2:
-            return game_name, None
-
-        box = items2[0].get("box_art_url")
-        icon_url = box.replace("{width}", "64").replace("{height}", "64") if box else None
-        return game_name, icon_url
 
     # ---- slash-команди ----
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -451,20 +422,19 @@ class StreamCog(commands.Cog):
         try:
             plat = платформа.value
             username = self.extract_username(plat, посилання)
+
             if not username:
                 await interaction.response.send_message("❌ Не вдалося визначити ідентифікатор", ephemeral=True)
                 return
 
             extra: Dict[str, Any] = {}
 
-            # Для YouTube відразу пробуємо резолвнути channel_id
             if plat == "youtube":
                 async with aiohttp.ClientSession() as session:
                     ch_id = await self._yt_resolve_channel_id(session, username)
                 if ch_id:
                     extra["yt_channel_id"] = ch_id
 
-            # перевірка дубля
             for s in self.streamers:
                 if (
                     s.get("platform") == plat
@@ -482,11 +452,12 @@ class StreamCog(commands.Cog):
             item.update(extra)
 
             self.streamers.append(item)
+            self.save_streamers()
 
-            try:
-                self.save_streamers()
-            except Exception as se:
-                print(f"[STREAM_COG] save_streamers error: {se}")
+            print(f"[STREAM_COG] saved item: {item}")
+            print(f"[STREAM_COG] streamers file: {STREAMERS_FILE}")
+            print(f"[STREAM_COG] absolute path: {os.path.abspath(STREAMERS_FILE)}")
+            print(f"[STREAM_COG] current streamers: {self.streamers}")
 
             await interaction.response.send_message(
                 f"✅ Додано: **{username}** ({користувач.mention}) на **{plat}**",
@@ -545,24 +516,18 @@ class StreamCog(commands.Cog):
         if mode == "live":
             title = "Rick Astley - Never Gonna Give You Up (LIVE)"
             viewers_line = "**Зараз дивляться:** 123"
-            status_line = None
         else:
             title = "Rick Astley - Never Gonna Give You Up (ВІДЕО)"
             viewers_line = None
-            status_line = None
 
         embed = discord.Embed(title="Стрімери 𝗦𝗶𝗹𝗲𝗻𝘁 𝗖𝗼𝘃𝗲", color=color)
         stream_line = f"[**{title}**]({test_url})"
 
         parts = [f"**{date_line}**", f"{platform_title_line} • {stream_line}"]
-        game_line = f"{GAME_EMOJI or '🎮'} Black Desert"
-
         if mode == "live":
-            parts.append(game_line)
+            parts.append(f"{GAME_EMOJI or '🎮'} Black Desert")
         if viewers_line:
             parts.append(viewers_line)
-        if status_line:
-            parts.append(status_line)
 
         embed.description = "\n\n".join(parts)
 
@@ -574,8 +539,6 @@ class StreamCog(commands.Cog):
         )
 
         files: list[discord.File] = []
-        icon_file: Optional[discord.File] = None
-        avatar_file: Optional[discord.File] = None
 
         async with aiohttp.ClientSession() as session:
             avatar_file = await self._circle_avatar_file(session, avatar_url)
@@ -622,30 +585,35 @@ class StreamCog(commands.Cog):
                 if not platform or not username or not discord_id:
                     continue
 
-                # 1) LIVE-перевірка
-                try:
-                    if platform == "twitch":
+                # 1) LIVE-перевірка тільки для Twitch
+                if platform == "twitch":
+                    try:
                         url_uptime = f"https://decapi.me/twitch/uptime/{username}"
+                        async with session.get(url_uptime) as resp:
+                            text = (await resp.text()).lower().strip()
+                    except Exception:
+                        text = "offline"
+
+                    if (
+                        "offline" in text
+                        or "not live" in text
+                        or "404" in text
+                        or "page not found" in text
+                        or "error" in text
+                        or "not found" in text
+                    ):
+                        self._checked_live.discard((platform, username))
                     else:
-                        url_uptime = f"https://decapi.me/youtube/uptime?id={username}"
+                        if (platform, username) not in self._checked_live:
+                            await self.announce_stream(session, platform, username, discord_id)
+                            self._checked_live.add((platform, username))
+                        continue
 
-                    async with session.get(url_uptime) as resp:
-                        text = (await resp.text()).lower().strip()
-                except Exception:
-                    text = "offline"
-
-                if ("offline" in text) or ("not live" in text):
-                    self._checked_live.discard((platform, username))
-                else:
-                    if (platform, username) not in self._checked_live:
-                        await self.announce_stream(session, platform, username, discord_id)
-                        self._checked_live.add((platform, username))
-                    continue
-
-                # 2) Перевірка нових ВІДЕО
+                # 2) Перевірка нових відео
                 try:
                     if platform == "youtube":
                         ch_id = s.get("yt_channel_id")
+
                         if not ch_id:
                             ch_id = await self._yt_resolve_channel_id(session, username)
                             if ch_id:
@@ -668,7 +636,8 @@ class StreamCog(commands.Cog):
 
         pub_ts = None
         try:
-            pub_ts = datetime.fromisoformat(latest["published"].replace("Z", "+00:00"))
+            if latest["published"]:
+                pub_ts = datetime.fromisoformat(latest["published"].replace("Z", "+00:00"))
         except Exception:
             pass
 
@@ -719,7 +688,6 @@ class StreamCog(commands.Cog):
         )
 
     async def announce_video(self, platform: str, title: str, url: str, preview: Optional[str], discord_id: int):
-        """Анонс ДЛЯ ЗВИЧАЙНОГО ВІДЕО (НЕ стрім)."""
         plat_icon_url, plat_emoji = self.platform_assets(platform)
         now_utc = datetime.now(timezone.utc)
         date_line = discord_ts(now_utc, "f")
@@ -765,29 +733,27 @@ class StreamCog(commands.Cog):
 
         channel = self.get_announce_channel()
         if channel:
-            content = f"Нове відео на каналі <@{discord_id}> - дивись [тут]({url})!"
-            await channel.send(content=content, embed=embed, files=files)
+            await channel.send(
+                content=f"Нове відео на каналі <@{discord_id}> - дивись [тут]({url})!",
+                embed=embed,
+                files=files
+            )
 
     async def announce_stream(self, session: aiohttp.ClientSession, platform: str, username: str, discord_id: int):
-        if platform == "twitch":
-            stream_url = f"https://www.twitch.tv/{username}"
-            viewers_url = f"https://decapi.me/twitch/viewercount/{username}"
-            title_url = f"https://decapi.me/twitch/status/{username}"
-            preview = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{username}-640x360.jpg"
-            plat_emoji = TWITCH_EMOJI
-            plat_icon_url = TWITCH_ICON_IMG
-            try:
-                async with session.get(f"https://decapi.me/twitch/game/{username}") as g:
-                    game_name = (await g.text()).strip()
-            except Exception:
-                game_name = ""
-        else:
-            stream_url = f"https://youtube.com/watch?v={username}"
-            viewers_url = f"https://decapi.me/youtube/viewercount?id={username}"
-            title_url = f"https://decapi.me/youtube/title?id={username}"
-            preview = f"https://img.youtube.com/vi/{username}/mqdefault.jpg"
-            plat_emoji = YOUTUBE_EMOJI
-            plat_icon_url = YOUTUBE_ICON_IMG
+        if platform != "twitch":
+            return
+
+        stream_url = f"https://www.twitch.tv/{username}"
+        viewers_url = f"https://decapi.me/twitch/viewercount/{username}"
+        title_url = f"https://decapi.me/twitch/status/{username}"
+        preview = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{username}-640x360.jpg"
+        plat_emoji = TWITCH_EMOJI
+        plat_icon_url = TWITCH_ICON_IMG
+
+        try:
+            async with session.get(f"https://decapi.me/twitch/game/{username}") as g:
+                game_name = (await g.text()).strip()
+        except Exception:
             game_name = ""
 
         try:
@@ -804,7 +770,7 @@ class StreamCog(commands.Cog):
 
         now_utc = datetime.now(timezone.utc)
         date_line = discord_ts(now_utc, "f")
-        platform_title_line = f"{plat_emoji} {('Twitch' if platform == 'twitch' else 'YouTube')}"
+        platform_title_line = f"{plat_emoji} Twitch"
         stream_line = f"[**{title}**]({stream_url})"
 
         game_display = game_name if game_name else ""
@@ -849,11 +815,14 @@ class StreamCog(commands.Cog):
 
         channel = self.get_announce_channel()
         if channel:
-            content = random.choice(ANNOUNCE_LINES).format(
-                mention=f"<@{discord_id}>",
-                url=stream_url
+            await channel.send(
+                content=random.choice(ANNOUNCE_LINES).format(
+                    mention=f"<@{discord_id}>",
+                    url=stream_url
+                ),
+                embed=embed,
+                files=files
             )
-            await channel.send(content=content, embed=embed, files=files)
 
     @check_streams.before_loop
     async def before_loop(self):
