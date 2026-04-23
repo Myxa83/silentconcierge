@@ -1,11 +1,8 @@
-# bot_main.py
-# -*- coding: utf-8 -*-
-
 import asyncio
 import json
 import os
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Важливо для Render/Python 3.14:
@@ -31,7 +28,7 @@ RUNTIME_LOG = LOG_DIR / "runtime_logs.json"
 
 
 def _utc_now() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _append_runtime_log(entry: dict) -> None:
