@@ -1,3 +1,12 @@
+# -*- coding: utf-8 -*-
+# bot_main.py
+#
+# ВАЖЛИВО:
+# Для музичного бота НЕ можна ставити DISCORD_DISABLE_VOICE=1.
+# Цей прапорець вимикає voice-частину discord.py, тому бот не може зайти у voice.
+# Якщо Render/Python падає через audioop, краще використати Python 3.13 або встановити PyNaCl,
+# але не вимикати voice.
+
 import asyncio
 import json
 import os
@@ -5,10 +14,8 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Важливо для Render/Python 3.14:
-# вимикаємо voice-частину discord.py до імпорту discord,
-# щоб не падати на audioop
-os.environ["DISCORD_DISABLE_VOICE"] = "1"
+# НЕ ВМИКАТИ ДЛЯ МУЗИКИ:
+# os.environ["DISCORD_DISABLE_VOICE"] = "1"
 
 import discord
 from discord import app_commands
@@ -47,10 +54,17 @@ def _append_runtime_log(entry: dict) -> None:
         data.append(entry)
         RUNTIME_LOG.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8"
+            encoding="utf-8",
         )
     except Exception:
         pass
+
+
+def _format_real_error(error: BaseException) -> tuple[str, str]:
+    real_error = getattr(error, "original", error)
+    err_type = type(real_error).__name__
+    err_text = str(real_error) or str(error) or "Unknown error"
+    return err_type, err_text
 
 
 class SilentBot(commands.Bot):
@@ -115,6 +129,7 @@ class SilentBot(commands.Bot):
             "time": _utc_now(),
             "event": "cogs_loaded",
             "cwd": os.getcwd(),
+            "disable_voice": os.getenv("DISCORD_DISABLE_VOICE"),
             "loaded": loaded_ext,
             "failed": failed_ext,
         })
@@ -180,6 +195,7 @@ class SilentBot(commands.Bot):
             "time": _utc_now(),
             "event": "ready",
             "user_id": getattr(self.user, "id", None),
+            "disable_voice": os.getenv("DISCORD_DISABLE_VOICE"),
         })
 
     async def on_app_command_error(
@@ -187,8 +203,12 @@ class SilentBot(commands.Bot):
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
+        real_error = getattr(error, "original", error)
+        err_type = type(real_error).__name__
+        err_text = str(real_error) or str(error) or "Unknown error"
+
         tb = "".join(
-            traceback.format_exception(type(error), error, error.__traceback__)
+            traceback.format_exception(type(real_error), real_error, real_error.__traceback__)
         )
 
         cmd_name = None
@@ -201,7 +221,8 @@ class SilentBot(commands.Bot):
         print(
             f"[APP_CMD_ERROR] cmd={cmd_name} "
             f"user={getattr(interaction.user, 'id', None)} "
-            f"guild={getattr(interaction.guild, 'id', None)}"
+            f"guild={getattr(interaction.guild, 'id', None)} "
+            f"error={err_type}: {err_text}"
         )
         print(tb)
 
@@ -211,22 +232,18 @@ class SilentBot(commands.Bot):
             "cmd": cmd_name,
             "user_id": getattr(interaction.user, "id", None),
             "guild_id": getattr(interaction.guild, "id", None),
-            "error_type": type(error).__name__,
-            "error": str(error),
+            "error_type": err_type,
+            "error": err_text,
             "traceback": tb,
         })
 
+        msg = f"❌ Помилка: `{err_type}`\n```txt\n{err_text[:1500]}\n```"
+
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(
-                    f"❌ Помилка: `{type(error).__name__}`",
-                    ephemeral=True,
-                )
+                await interaction.followup.send(msg, ephemeral=True)
             else:
-                await interaction.response.send_message(
-                    f"❌ Помилка: `{type(error).__name__}`",
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(msg, ephemeral=True)
         except Exception:
             pass
 
