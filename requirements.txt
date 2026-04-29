@@ -11,3 +11,5 @@ cloudscraper
 setuptools<70
 wheel
 aiocron
+PyNaCl
+yt-dlp
