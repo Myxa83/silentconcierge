@@ -3,11 +3,20 @@
 #
 # Slash command names: lowercase latin letters, digits, underscore.
 # Ukrainian text is used in descriptions and button labels.
+#
+# Fixed version:
+# - does not crash silently on ffmpeg / yt-dlp / voice errors
+# - shows real error text to the user when possible
+# - logs full traceback to console / Render logs
+# - keeps all original features: play, queue, search, playlists, buttons, gifs, auto leave
+# - makes query optional so /hrai mode:pl_play playlist:name does not demand query
 
 import asyncio
 import json
 import hashlib
 import re
+import shutil
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -29,7 +38,7 @@ PLAYLISTS_PATH = Path("data/music_playlists.json")
 
 AUTO_LEAVE_SECONDS = 15 * 60  # 15 хв
 
-# Your gifs (rotate per track)
+# Your gifs, rotate per track
 MUSIC_GIFS = [
     "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/music/muz01.gif",
     "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/music/muz02.gif",
@@ -56,6 +65,15 @@ FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 FFMPEG_OPTS = "-vn -af loudnorm=I=-16:LRA=11:TP=-1.5"
 
 URL_RE = re.compile(r"(https?://\S+)", re.IGNORECASE)
+
+
+def log_music_error(place: str, error: BaseException) -> None:
+    print(f"[MusicCog ERROR] {place}: {repr(error)}")
+    traceback.print_exception(type(error), error, error.__traceback__)
+
+
+def ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
 
 
 def _fmt_dur(sec: Optional[int]) -> str:
@@ -87,8 +105,13 @@ def _ensure_playlists_file() -> None:
 def _load_playlists() -> Dict[str, Any]:
     _ensure_playlists_file()
     try:
-        return json.loads(PLAYLISTS_PATH.read_text(encoding="utf-8"))
-    except Exception:
+        data = json.loads(PLAYLISTS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"users": {}}
+        data.setdefault("users", {})
+        return data
+    except Exception as e:
+        log_music_error("_load_playlists", e)
         return {"users": {}}
 
 
@@ -115,7 +138,7 @@ def _detect_link_type(url: str) -> Optional[str]:
     return None
 
 
-def _pretty_type(t: str) -> str:
+def _pretty_type(t: Optional[str]) -> str:
     return "YouTube" if t == "youtube" else "SoundCloud" if t == "soundcloud" else "Невідомо"
 
 
@@ -137,13 +160,24 @@ def _yt_available() -> bool:
     return yt_dlp is not None
 
 
-async def ytdl_extract(url_or_query: str) -> Tuple[List["Track"], bool, str]:
+@dataclass
+class Track:
+    title: str
+    webpage_url: str
+    stream_url: str
+    duration: Optional[int] = None
+    thumbnail: Optional[str] = None
+    requester_id: Optional[int] = None
+    source: str = "Unknown"  # YouTube, SoundCloud, Search
+
+
+async def ytdl_extract(url_or_query: str) -> Tuple[List[Track], bool, str]:
     """
-    Returns: (tracks, is_playlist, source_label)
+    Returns: tracks, is_playlist, source_label
     Supports:
-    - YouTube links (video, playlist)
-    - SoundCloud links (track, set)
-    - Search text (ytsearch)
+    - YouTube links, video, playlist
+    - SoundCloud links, track, set
+    - Search text, ytsearch / scsearch
     """
     if yt_dlp is None:
         return [], False, "Missing"
@@ -178,12 +212,17 @@ async def ytdl_extract(url_or_query: str) -> Tuple[List["Track"], bool, str]:
             stream_url = entry.get("url")
             webpage = entry.get("webpage_url") or entry.get("original_url") or url_or_query
 
-            # resolve url entries
+            # Resolve url entries
             if not entry.get("formats") and entry.get("_type") in ("url", "url_transparent") and entry.get("url"):
                 def _resolve():
                     return ytdl.extract_info(entry["url"], download=False)
 
-                resolved = await loop.run_in_executor(None, _resolve)
+                try:
+                    resolved = await loop.run_in_executor(None, _resolve)
+                except Exception as e:
+                    log_music_error("ytdl_extract resolve playlist entry", e)
+                    continue
+
                 if not resolved:
                     continue
                 entry = resolved
@@ -191,7 +230,11 @@ async def ytdl_extract(url_or_query: str) -> Tuple[List["Track"], bool, str]:
                 webpage = entry.get("webpage_url") or entry.get("original_url") or url_or_query
 
             if not stream_url and entry.get("formats"):
-                stream_url = entry["formats"][-1].get("url")
+                formats = entry.get("formats") or []
+                for fmt in reversed(formats):
+                    if fmt.get("url"):
+                        stream_url = fmt.get("url")
+                        break
 
             if not stream_url:
                 continue
@@ -211,14 +254,18 @@ async def ytdl_extract(url_or_query: str) -> Tuple[List["Track"], bool, str]:
         src_label = detect_source(info.get("webpage_url") or url_or_query)
         return tracks, True, src_label
 
-    # Single
+    # Single track
     if not isinstance(info, dict):
         return [], False, "Unknown"
 
     webpage = info.get("webpage_url") or info.get("original_url") or url_or_query
     stream_url = info.get("url")
     if not stream_url and info.get("formats"):
-        stream_url = info["formats"][-1].get("url")
+        formats = info.get("formats") or []
+        for fmt in reversed(formats):
+            if fmt.get("url"):
+                stream_url = fmt.get("url")
+                break
 
     if stream_url:
         src_label = detect_source(webpage)
@@ -235,17 +282,6 @@ async def ytdl_extract(url_or_query: str) -> Tuple[List["Track"], bool, str]:
 
     src_label = detect_source(webpage)
     return tracks, False, src_label
-
-
-@dataclass
-class Track:
-    title: str
-    webpage_url: str
-    stream_url: str
-    duration: Optional[int] = None
-    thumbnail: Optional[str] = None
-    requester_id: Optional[int] = None
-    source: str = "Unknown"  # YouTube, SoundCloud, Search
 
 
 class GuildPlayer:
@@ -282,28 +318,61 @@ class GuildPlayer:
             if track:
                 self.history.append(track)
 
-            src = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(
-                    track.stream_url,
-                    before_options=FFMPEG_BEFORE_OPTS,
-                    options=FFMPEG_OPTS,
-                ),
-                volume=self.volume,
-            )
+            try:
+                if not ffmpeg_available():
+                    raise RuntimeError("ffmpeg не знайдений на сервері. На Render треба встановити ffmpeg у Build Command або через Docker.")
+
+                src = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(
+                        track.stream_url,
+                        before_options=FFMPEG_BEFORE_OPTS,
+                        options=FFMPEG_OPTS,
+                    ),
+                    volume=self.volume,
+                )
+            except Exception as e:
+                log_music_error("create FFmpeg audio source", e)
+                self.current = None
+                cog = bot.get_cog("MusicCog")
+                if cog:
+                    try:
+                        await cog._send_music_error_to_channel(guild, str(e))
+                    except Exception as send_error:
+                        log_music_error("send ffmpeg error to channel", send_error)
+                await asyncio.sleep(0.5)
+                if self.queue.empty():
+                    break
+                continue
 
             done = asyncio.Event()
 
-            def _after(_: Optional[Exception]):
+            def _after(error: Optional[Exception]):
+                if error:
+                    log_music_error("voice client after playback", error)
                 bot.loop.call_soon_threadsafe(done.set)
 
-            vc.play(src, after=_after)
+            try:
+                vc.play(src, after=_after)
+            except Exception as e:
+                log_music_error("vc.play", e)
+                self.current = None
+                cog = bot.get_cog("MusicCog")
+                if cog:
+                    try:
+                        await cog._send_music_error_to_channel(guild, str(e))
+                    except Exception as send_error:
+                        log_music_error("send vc.play error to channel", send_error)
+                await asyncio.sleep(0.5)
+                if self.queue.empty():
+                    break
+                continue
 
             cog = bot.get_cog("MusicCog")
             if cog:
                 try:
                     await cog._post_or_update_nowplaying(guild)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_music_error("_post_or_update_nowplaying", e)
 
             await done.wait()
 
@@ -358,17 +427,17 @@ class NowPlayingView(discord.ui.View):
             await interaction.response.send_message("Нема попереднього треку.", ephemeral=True)
             return
 
-        _current_started = p.history.pop()
+        p.history.pop()
         prev = p.history.pop()
 
         try:
             p.queue._queue.appendleft(prev)  # type: ignore[attr-defined]
         except Exception:
-            items = list(p.queue._queue)
-            p.queue._queue.clear()
-            p.queue._queue.append(prev)
+            items = list(p.queue._queue)  # type: ignore[attr-defined]
+            p.queue._queue.clear()  # type: ignore[attr-defined]
+            p.queue._queue.append(prev)  # type: ignore[attr-defined]
             for t in items:
-                p.queue._queue.append(t)
+                p.queue._queue.append(t)  # type: ignore[attr-defined]
 
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
@@ -425,7 +494,10 @@ class NowPlayingView(discord.ui.View):
         p.current = None
 
         if vc and vc.is_connected():
-            vc.stop()
+            try:
+                vc.stop()
+            except Exception:
+                pass
             await vc.disconnect()
 
         await interaction.response.send_message("Зупинено.", ephemeral=True)
@@ -464,6 +536,23 @@ class MusicCog(commands.Cog, name="MusicCog"):
         text = user.name if user else "Music"
         return {"text": text, "icon_url": icon} if icon else {"text": text}
 
+    async def _safe_reply_error(self, interaction: discord.Interaction, message: str, ephemeral: bool = True) -> None:
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=ephemeral)
+            else:
+                await interaction.response.send_message(message, ephemeral=ephemeral)
+        except Exception as e:
+            log_music_error("_safe_reply_error", e)
+
+    async def _send_music_error_to_channel(self, guild: discord.Guild, message: str) -> None:
+        text = f"Помилка музики: {message}"
+        channel = guild.system_channel
+        if not channel or not channel.permissions_for(guild.me).send_messages:
+            channel = next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
+        if channel:
+            await channel.send(text[:1900])
+
     async def ensure_voice(self, interaction: discord.Interaction) -> discord.VoiceClient:
         if not interaction.guild:
             raise app_commands.AppCommandError("Тільки на сервері.")
@@ -475,7 +564,14 @@ class MusicCog(commands.Cog, name="MusicCog"):
         vc = interaction.guild.voice_client
         if vc and vc.is_connected():
             return vc
-        return await member.voice.channel.connect()
+
+        try:
+            return await member.voice.channel.connect()
+        except Exception as e:
+            log_music_error("connect to voice", e)
+            raise app_commands.AppCommandError(
+                "Не можу зайти у voice. Перевір PyNaCl, права бота і чи voice канал доступний."
+            ) from e
 
     # Auto leave logic
     def _humans_in_vc(self, vc: discord.VoiceClient) -> int:
@@ -522,8 +618,8 @@ class MusicCog(commands.Cog, name="MusicCog"):
             pass
         try:
             await vc.disconnect()
-        except Exception:
-            pass
+        except Exception as e:
+            log_music_error("autoleave disconnect", e)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -588,8 +684,8 @@ class MusicCog(commands.Cog, name="MusicCog"):
         e.set_footer(**self.footer_kwargs())
         return e
 
-    def build_queue_embed(self, guild: discord.Guild, player: GuildPlayer) -> discord.Embed:
-        items = list(player.queue._queue)
+    def build_queue_embed(self, guild: Optional[discord.Guild], player: GuildPlayer) -> discord.Embed:
+        items = list(player.queue._queue)  # type: ignore[attr-defined]
         per_page = 10
         total_pages = max(1, (len(items) + per_page - 1) // per_page)
 
@@ -629,7 +725,8 @@ class MusicCog(commands.Cog, name="MusicCog"):
         if gif:
             e.set_image(url=gif)
 
-        e.set_footer(text=footer_line, icon_url=self.bot.user.display_avatar.url if self.bot.user else None)
+        icon_url = self.bot.user.display_avatar.url if self.bot.user else None
+        e.set_footer(text=footer_line, icon_url=icon_url)
         return e
 
     async def _post_or_update_nowplaying(self, guild: discord.Guild):
@@ -655,8 +752,9 @@ class MusicCog(commands.Cog, name="MusicCog"):
         msg = await channel.send(embed=embed, view=view)
         player.nowplaying_message_id = msg.id
 
-    async def _send_queue(self, interaction: discord.Interaction, guild_id: int):
-        if not interaction.guild:
+    async def _send_queue(self, interaction: discord.Interaction, guild_id: Optional[int]):
+        if not interaction.guild or not guild_id:
+            await self._safe_reply_error(interaction, "Ця команда працює тільки на сервері.")
             return
         player = self.get_player(guild_id)
         embed = self.build_queue_embed(interaction.guild, player)
@@ -664,33 +762,55 @@ class MusicCog(commands.Cog, name="MusicCog"):
         await interaction.response.send_message(embed=embed, view=view)
 
     async def _music_unavailable(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "Музика недоступна на цьому хості. Встанови залежності yt-dlp і PyNaCl, і додай ffmpeg на сервер.",
-            ephemeral=True,
-        )
+        missing = []
+        if yt_dlp is None:
+            missing.append("yt-dlp")
+        if not ffmpeg_available():
+            missing.append("ffmpeg")
+        text = "Музика недоступна на цьому хості."
+        if missing:
+            text += " Немає: " + ", ".join(missing) + "."
+        text += " Встанови yt-dlp, PyNaCl і ffmpeg."
+        await self._safe_reply_error(interaction, text)
 
     # Core add function
     async def _add_to_queue(self, interaction: discord.Interaction, query: str):
+        if not query or not query.strip():
+            await self._safe_reply_error(interaction, "Потрібен query: лінк або текст пошуку.")
+            return
+
         if not _yt_available():
             await self._music_unavailable(interaction)
             return
 
-        await interaction.response.defer(thinking=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
 
-        vc = await self.ensure_voice(interaction)
-        if self._humans_in_vc(vc) > 0:
+        try:
+            vc = await self.ensure_voice(interaction)
+        except Exception as e:
+            real_error = getattr(e, "original", e)
+            await interaction.followup.send(str(real_error), ephemeral=True)
+            return
+
+        if interaction.guild_id and self._humans_in_vc(vc) > 0:
             self._cancel_autoleave(interaction.guild_id)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("Ця команда працює тільки на сервері.", ephemeral=True)
+            return
 
         player = self.get_player(interaction.guild_id)
 
         try:
-            tracks, is_playlist, _src = await ytdl_extract(query)
-        except Exception:
-            await interaction.followup.send("Не вдалося витягнути аудіо.", ephemeral=True)
+            tracks, is_playlist, _src = await ytdl_extract(query.strip())
+        except Exception as e:
+            log_music_error("ytdl_extract", e)
+            await interaction.followup.send(f"Не вдалося витягнути аудіо: {str(e)[:1500]}", ephemeral=True)
             return
 
         if not tracks:
-            await interaction.followup.send("Не вдалося витягнути аудіо.", ephemeral=True)
+            await interaction.followup.send("Не вдалося витягнути аудіо. Можливо, YouTube заблокував лінк або yt-dlp треба оновити.", ephemeral=True)
             return
 
         for t in tracks:
@@ -703,14 +823,17 @@ class MusicCog(commands.Cog, name="MusicCog"):
         await interaction.followup.send(embed=embed)
 
         if interaction.guild:
-            await self._post_or_update_nowplaying(interaction.guild)
+            try:
+                await self._post_or_update_nowplaying(interaction.guild)
+            except Exception as e:
+                log_music_error("post nowplaying after add", e)
 
     # Commands: ONLY 3
     @app_commands.command(name="hrai", description="Грай. Лінк або пошук. Також керує плейлистами.")
     @app_commands.describe(
         mode="Режим: play, pl_create, pl_add, pl_play",
-        query="Для play: лінк або текст. Для плейлистів: встав посилання(я) YouTube або SoundCloud.",
-        playlist="Назва плейлиста (для режимів плейлистів)",
+        query="Для play: лінк або текст. Для плейлистів: посилання YouTube або SoundCloud.",
+        playlist="Назва плейлиста для режимів плейлистів",
         overwrite="Для pl_create: перезаписати, якщо плейлист вже є",
     )
     @app_commands.choices(mode=[
@@ -723,163 +846,183 @@ class MusicCog(commands.Cog, name="MusicCog"):
         self,
         interaction: discord.Interaction,
         mode: app_commands.Choice[str],
-        query: str,
+        query: Optional[str] = None,
         playlist: Optional[str] = None,
         overwrite: Optional[bool] = False,
     ):
-        m = mode.value
+        try:
+            m = mode.value
 
-        if m == "play":
-            await self._add_to_queue(interaction, query)
-            return
-
-        # playlist operations need name
-        if not playlist or not playlist.strip():
-            await interaction.response.send_message("Потрібна назва плейлиста.", ephemeral=True)
-            return
-        pl_name = playlist.strip()
-
-        data = _load_playlists()
-        user_bucket = _pl_get_user(data, interaction.user.id)
-        pls = _pl_list(user_bucket)
-
-        # pl_play: add saved urls to queue
-        if m == "pl_play":
-            meta = pls.get(pl_name)
-            if not meta or not isinstance(meta, dict) or not meta.get("items"):
-                await interaction.response.send_message("Нема такого плейлиста або він порожній.", ephemeral=True)
+            if m == "play":
+                await self._add_to_queue(interaction, query or "")
                 return
 
-            urls = meta.get("items", [])
-            if not isinstance(urls, list) or not urls:
-                await interaction.response.send_message("Нема такого плейлиста або він порожній.", ephemeral=True)
+            # Playlist operations need name
+            if not playlist or not playlist.strip():
+                await interaction.response.send_message("Потрібна назва плейлиста.", ephemeral=True)
                 return
+            pl_name = playlist.strip()
 
-            await interaction.response.defer(thinking=True)
+            data = _load_playlists()
+            user_bucket = _pl_get_user(data, interaction.user.id)
+            pls = _pl_list(user_bucket)
 
-            vc = await self.ensure_voice(interaction)
-            if self._humans_in_vc(vc) > 0:
-                self._cancel_autoleave(interaction.guild_id)
+            # pl_play: add saved urls to queue
+            if m == "pl_play":
+                meta = pls.get(pl_name)
+                if not meta or not isinstance(meta, dict) or not meta.get("items"):
+                    await interaction.response.send_message("Нема такого плейлиста або він порожній.", ephemeral=True)
+                    return
 
-            player = self.get_player(interaction.guild_id)
+                urls = meta.get("items", [])
+                if not isinstance(urls, list) or not urls:
+                    await interaction.response.send_message("Нема такого плейлиста або він порожній.", ephemeral=True)
+                    return
 
-            added = 0
-            first_track: Optional[Track] = None
+                if yt_dlp is None:
+                    await self._music_unavailable(interaction)
+                    return
 
-            if yt_dlp is None:
-                await interaction.followup.send(
-                    "Музика недоступна на цьому хості. Встанови yt-dlp і PyNaCl, і додай ffmpeg.",
-                    ephemeral=True,
-                )
-                return
+                await interaction.response.defer(thinking=True)
 
-            for u in urls:
                 try:
-                    tracks, _is_pl, _src = await ytdl_extract(u)
-                except Exception:
-                    continue
-                if not tracks:
-                    continue
-                for t in tracks:
-                    t.requester_id = interaction.user.id
-                    await player.queue.put(t)
-                    added += 1
-                    if not first_track:
-                        first_track = t
+                    vc = await self.ensure_voice(interaction)
+                except Exception as e:
+                    real_error = getattr(e, "original", e)
+                    await interaction.followup.send(str(real_error), ephemeral=True)
+                    return
 
-            if added == 0:
-                await interaction.followup.send("Не вдалося додати треки з плейлиста.", ephemeral=True)
+                if interaction.guild_id and self._humans_in_vc(vc) > 0:
+                    self._cancel_autoleave(interaction.guild_id)
+
+                if not interaction.guild_id:
+                    await interaction.followup.send("Ця команда працює тільки на сервері.", ephemeral=True)
+                    return
+
+                player = self.get_player(interaction.guild_id)
+
+                added = 0
+                first_track: Optional[Track] = None
+
+                for u in urls:
+                    try:
+                        tracks, _is_pl, _src = await ytdl_extract(u)
+                    except Exception as e:
+                        log_music_error(f"pl_play extract {u}", e)
+                        continue
+                    if not tracks:
+                        continue
+                    for t in tracks:
+                        t.requester_id = interaction.user.id
+                        await player.queue.put(t)
+                        added += 1
+                        if not first_track:
+                            first_track = t
+
+                if added == 0:
+                    await interaction.followup.send("Не вдалося додати треки з плейлиста.", ephemeral=True)
+                    return
+
+                player.ensure_task(self.bot, interaction.guild_id)
+
+                e = discord.Embed(title="Додано плейлист", description=f"Треків додано: {added}", color=TEAL)
+                if first_track and first_track.thumbnail:
+                    e.set_thumbnail(url=first_track.thumbnail)
+                if first_track:
+                    gif = pick_music_gif(first_track.webpage_url)
+                    if gif:
+                        e.set_image(url=gif)
+                e.set_footer(**self.footer_kwargs())
+                await interaction.followup.send(embed=e)
+
+                if interaction.guild:
+                    try:
+                        await self._post_or_update_nowplaying(interaction.guild)
+                    except Exception as e2:
+                        log_music_error("post nowplaying after pl_play", e2)
                 return
 
-            player.ensure_task(self.bot, interaction.guild_id)
+            # pl_create / pl_add require urls
+            urls = _extract_urls(query or "")
+            if not urls:
+                await interaction.response.send_message("Не бачу посилань. Встав лінки YouTube або SoundCloud у query.", ephemeral=True)
+                return
 
-            e = discord.Embed(title="Додано плейлист", description=f"Треків додано: {added}", color=TEAL)
-            if first_track and first_track.thumbnail:
-                e.set_thumbnail(url=first_track.thumbnail)
-            if first_track:
-                gif = pick_music_gif(first_track.webpage_url)
-                if gif:
-                    e.set_image(url=gif)
-            e.set_footer(**self.footer_kwargs())
-            await interaction.followup.send(embed=e)
+            types = [_detect_link_type(u) for u in urls]
+            if any(t is None for t in types):
+                await interaction.response.send_message("Дозволені тільки YouTube або SoundCloud посилання.", ephemeral=True)
+                return
 
-            if interaction.guild:
-                await self._post_or_update_nowplaying(interaction.guild)
-            return
+            only_type = types[0]
+            if any(t != only_type for t in types):
+                await interaction.response.send_message("Не можна змішувати YouTube і SoundCloud в одному плейлисті.", ephemeral=True)
+                return
 
-        # pl_create / pl_add require urls
-        urls = _extract_urls(query)
-        if not urls:
-            await interaction.response.send_message("Не бачу посилань. Встав лінки YouTube або SoundCloud.", ephemeral=True)
-            return
+            # pl_create
+            if m == "pl_create":
+                exists = pl_name in pls
+                if exists and not overwrite:
+                    await interaction.response.send_message(
+                        "Такий плейлист вже існує. Якщо хочеш перезаписати, постав overwrite.",
+                        ephemeral=True,
+                    )
+                    return
 
-        types = [_detect_link_type(u) for u in urls]
-        if any(t is None for t in types):
-            await interaction.response.send_message("Дозволені тільки YouTube або SoundCloud посилання.", ephemeral=True)
-            return
+                # Limit: 2 playlists per user, creating new only
+                if not exists and len(pls.keys()) >= 2:
+                    await interaction.response.send_message("Ліміт: максимум 2 плейлисти на людину.", ephemeral=True)
+                    return
 
-        only_type = types[0]
-        if any(t != only_type for t in types):
-            await interaction.response.send_message("Не можна змішувати YouTube і SoundCloud в одному плейлисті.", ephemeral=True)
-            return
+                pls[pl_name] = {"type": only_type, "items": urls}
+                user_bucket["playlists"] = pls
+                _save_playlists(data)
 
-        # pl_create
-        if m == "pl_create":
-            exists = pl_name in pls
-            if exists and not overwrite:
                 await interaction.response.send_message(
-                    "Такий плейлист вже існує. Якщо хочеш перезаписати, постав overwrite.",
+                    f"Плейлист збережено: {pl_name}\nТип: {_pretty_type(only_type)}\nПосилань: {len(urls)}",
                     ephemeral=True,
                 )
                 return
 
-            # limit: 2 playlists per user (creating new only)
-            if not exists and len(pls.keys()) >= 2:
-                await interaction.response.send_message("Ліміт: максимум 2 плейлисти на людину.", ephemeral=True)
+            # pl_add
+            if m == "pl_add":
+                meta = pls.get(pl_name)
+                if not meta or not isinstance(meta, dict):
+                    await interaction.response.send_message("Нема такого плейлиста.", ephemeral=True)
+                    return
+
+                pl_type = meta.get("type")
+                if pl_type != only_type:
+                    await interaction.response.send_message(
+                        f"Не можна змішувати джерела. Плейлист типу: {_pretty_type(pl_type)}",
+                        ephemeral=True,
+                    )
+                    return
+
+                meta.setdefault("items", [])
+                if not isinstance(meta["items"], list):
+                    meta["items"] = []
+                meta["items"].extend(urls)
+
+                pls[pl_name] = meta
+                user_bucket["playlists"] = pls
+                _save_playlists(data)
+
+                await interaction.response.send_message(f"Додано посилань: {len(urls)}", ephemeral=True)
                 return
 
-            pls[pl_name] = {"type": only_type, "items": urls}
-            user_bucket["playlists"] = pls
-            _save_playlists(data)
+            await interaction.response.send_message("Невідомий режим.", ephemeral=True)
 
-            await interaction.response.send_message(
-                f"Плейлист збережено: {pl_name}\nТип: {_pretty_type(only_type)}\nПосилань: {len(urls)}",
-                ephemeral=True,
-            )
-            return
-
-        # pl_add
-        if m == "pl_add":
-            meta = pls.get(pl_name)
-            if not meta or not isinstance(meta, dict):
-                await interaction.response.send_message("Нема такого плейлиста.", ephemeral=True)
-                return
-
-            pl_type = meta.get("type")
-            if pl_type != only_type:
-                await interaction.response.send_message(
-                    f"Не можна змішувати джерела. Плейлист типу: {_pretty_type(pl_type)}",
-                    ephemeral=True,
-                )
-                return
-
-            meta.setdefault("items", [])
-            if not isinstance(meta["items"], list):
-                meta["items"] = []
-            meta["items"].extend(urls)
-
-            pls[pl_name] = meta
-            user_bucket["playlists"] = pls
-            _save_playlists(data)
-
-            await interaction.response.send_message(f"Додано посилань: {len(urls)}", ephemeral=True)
-            return
-
-        await interaction.response.send_message("Невідомий режим.", ephemeral=True)
+        except Exception as e:
+            log_music_error("cmd_hrai", e)
+            await self._safe_reply_error(interaction, f"Помилка: {str(e)[:1500]}")
 
     @app_commands.command(name="cherha", description="Показати чергу.")
     async def cmd_queue(self, interaction: discord.Interaction):
-        await self._send_queue(interaction, interaction.guild_id)
+        try:
+            await self._send_queue(interaction, interaction.guild_id)
+        except Exception as e:
+            log_music_error("cmd_queue", e)
+            await self._safe_reply_error(interaction, f"Помилка: {str(e)[:1500]}")
 
     @app_commands.command(name="poshuk", description="Пошук: YouTube, SoundCloud або по твоїх плейлистах.")
     @app_commands.describe(
@@ -897,41 +1040,46 @@ class MusicCog(commands.Cog, name="MusicCog"):
         where: app_commands.Choice[str],
         text: str,
     ):
-        w = where.value
+        try:
+            w = where.value
 
-        if w == "playlists":
-            data = _load_playlists()
-            user_bucket = _pl_get_user(data, interaction.user.id)
-            pls = _pl_list(user_bucket)
+            if w == "playlists":
+                data = _load_playlists()
+                user_bucket = _pl_get_user(data, interaction.user.id)
+                pls = _pl_list(user_bucket)
 
-            if not pls:
-                await interaction.response.send_message("У тебе нема плейлистів.", ephemeral=True)
+                if not pls:
+                    await interaction.response.send_message("У тебе нема плейлистів.", ephemeral=True)
+                    return
+
+                q = (text or "").strip().lower()
+                hits: List[str] = []
+                for name, meta in pls.items():
+                    if q in name.lower():
+                        t = meta.get("type", "unknown") if isinstance(meta, dict) else "unknown"
+                        cnt = len(meta.get("items", [])) if isinstance(meta, dict) and isinstance(meta.get("items"), list) else 0
+                        hits.append(f"{name} | {_pretty_type(t)} | {cnt}")
+
+                if not hits:
+                    await interaction.response.send_message("Збігів не знайдено.", ephemeral=True)
+                    return
+
+                e = discord.Embed(title="Плейлисти", description="\n".join(hits[:25]), color=TEAL)
+                e.set_footer(**self.footer_kwargs())
+                await interaction.response.send_message(embed=e, ephemeral=True)
                 return
 
-            q = (text or "").strip().lower()
-            hits: List[str] = []
-            for name, meta in pls.items():
-                if q in name.lower():
-                    t = meta.get("type", "unknown")
-                    cnt = len(meta.get("items", [])) if isinstance(meta.get("items"), list) else 0
-                    hits.append(f"{name} | {_pretty_type(t)} | {cnt}")
-
-            if not hits:
-                await interaction.response.send_message("Збігів не знайдено.", ephemeral=True)
+            # yt/sc search: add first result to queue
+            if not _yt_available():
+                await self._music_unavailable(interaction)
                 return
 
-            e = discord.Embed(title="Плейлисти", description="\n".join(hits[:25]), color=TEAL)
-            e.set_footer(**self.footer_kwargs())
-            await interaction.response.send_message(embed=e, ephemeral=True)
-            return
+            prefix = "ytsearch:" if w == "yt" else "scsearch:"
+            await self._add_to_queue(interaction, f"{prefix}{text}")
 
-        # yt/sc search: add first result to queue
-        if not _yt_available():
-            await self._music_unavailable(interaction)
-            return
-
-        prefix = "ytsearch:" if w == "yt" else "scsearch:"
-        await self._add_to_queue(interaction, f"{prefix}{text}")
+        except Exception as e:
+            log_music_error("cmd_poshuk", e)
+            await self._safe_reply_error(interaction, f"Помилка: {str(e)[:1500]}")
 
 
 async def setup(bot: commands.Bot):
