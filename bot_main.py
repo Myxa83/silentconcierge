@@ -8,9 +8,6 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Для музики НЕ вмикати:
-# os.environ["DISCORD_DISABLE_VOICE"] = "1"
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -46,6 +43,7 @@ def _append_runtime_log(entry: dict) -> None:
                 data = []
 
         data.append(entry)
+
         RUNTIME_LOG.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -71,6 +69,7 @@ class SilentBot(commands.Bot):
             root_files = sorted(os.listdir("."))
         except Exception as e:
             root_files = [f"[ERR] {type(e).__name__}: {e}"]
+
         print("[BOOT] ROOT FILES:", root_files)
 
         if os.path.isdir("cogs"):
@@ -82,15 +81,17 @@ class SilentBot(commands.Bot):
         else:
             print("[BOOT][WARN] cogs/ directory NOT FOUND")
 
-        loaded_ext: list[str] = []
-        failed_ext: list[dict] = []
+        loaded_ext = []
+        failed_ext = []
 
         if os.path.isdir("cogs"):
             for file in sorted(os.listdir("cogs")):
                 if not file.endswith(".py"):
                     continue
+
                 if file.startswith("_"):
                     continue
+
                 if file == "__init__.py":
                     continue
 
@@ -104,6 +105,7 @@ class SilentBot(commands.Bot):
                     msg = f"{type(e).__name__}: {e}"
                     print(f"[COG][FAIL] {ext}: {msg}")
                     traceback.print_exc()
+
                     failed_ext.append({
                         "ext": ext,
                         "error": msg,
@@ -127,6 +129,7 @@ class SilentBot(commands.Bot):
     async def _sync_application_commands(self) -> None:
         try:
             gid = None
+
             try:
                 gid = int(GUILD_ID) if GUILD_ID else None
             except Exception:
@@ -137,8 +140,9 @@ class SilentBot(commands.Bot):
                 synced = await self.tree.sync(guild=guild_obj)
 
                 print(f"[SYNC] Guild sync successful. Guild: {gid}. Count: {len(synced)}")
-                for c in synced:
-                    print(f"  - /{c.name}")
+
+                for command in synced:
+                    print(f"  - /{command.name}")
 
                 _append_runtime_log({
                     "time": _utc_now(),
@@ -146,21 +150,22 @@ class SilentBot(commands.Bot):
                     "mode": "guild",
                     "guild_id": gid,
                     "count": len(synced),
-                    "commands": [c.name for c in synced],
+                    "commands": [command.name for command in synced],
                 })
             else:
                 synced = await self.tree.sync()
 
                 print(f"[SYNC] Global sync successful. Count: {len(synced)}")
-                for c in synced:
-                    print(f"  - /{c.name}")
+
+                for command in synced:
+                    print(f"  - /{command.name}")
 
                 _append_runtime_log({
                     "time": _utc_now(),
                     "event": "sync",
                     "mode": "global",
                     "count": len(synced),
-                    "commands": [c.name for c in synced],
+                    "commands": [command.name for command in synced],
                 })
 
         except Exception as e:
@@ -203,6 +208,7 @@ class SilentBot(commands.Bot):
         )
 
         cmd_name = None
+
         try:
             if interaction.command:
                 cmd_name = interaction.command.qualified_name
@@ -228,7 +234,7 @@ class SilentBot(commands.Bot):
             "traceback": tb,
         })
 
-        msg = f"❌ Помилка: `{err_type}`\n```txt\n{err_text[:1500]}\n```"
+        msg = f"Помилка: `{err_type}`\n```txt\n{err_text[:1500]}\n```"
 
         try:
             if interaction.response.is_done():
@@ -245,10 +251,11 @@ bot = SilentBot()
 @bot.command(name="force_sync")
 @commands.is_owner()
 async def force_sync(ctx: commands.Context) -> None:
-    msg = await ctx.send("⏳ Починаю синхронізацію команд...")
+    msg = await ctx.send("Починаю синхронізацію команд...")
 
     try:
         gid = None
+
         try:
             gid = int(GUILD_ID) if GUILD_ID else None
         except Exception:
@@ -260,7 +267,7 @@ async def force_sync(ctx: commands.Context) -> None:
 
             await msg.edit(
                 content=(
-                    f"✅ Готово! Команди сервера `{gid}` оновлено: **{len(synced)}**.\n"
+                    f"Готово. Команди сервера `{gid}` оновлено: **{len(synced)}**.\n"
                     "Перезавантаж Discord через Ctrl+R."
                 )
             )
@@ -278,7 +285,7 @@ async def force_sync(ctx: commands.Context) -> None:
 
             await msg.edit(
                 content=(
-                    f"🌍 Глобальна синхронізація успішна: **{len(synced)}** команд.\n"
+                    f"Глобальна синхронізація успішна: **{len(synced)}** команд.\n"
                     "Перезавантаж Discord через Ctrl+R."
                 )
             )
@@ -292,7 +299,7 @@ async def force_sync(ctx: commands.Context) -> None:
             })
 
     except Exception as e:
-        await msg.edit(content=f"❌ Помилка при синхронізації: `{type(e).__name__}: {e}`")
+        await msg.edit(content=f"Помилка при синхронізації: `{type(e).__name__}: {e}`")
         traceback.print_exc()
 
         _append_runtime_log({
