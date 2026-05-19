@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 # bbf_cog.py
-# Реєстрація на BBF з вейтинг листом, системою очок, гілками та нагадуваннями
 
 import json
 import random
@@ -20,17 +19,15 @@ THREAD_PARENT_CHANNEL_ID = 1486067779177152523
 VOICE_CHANNEL_ID         = 1486420425188839495
 BBF_ROLE_ID              = 1470790564718055434
 
-# Часи в UTC (CEST = UTC+2)
-# 19:30 CEST = 17:30 UTC
-REMINDER_HOUR_UTC   = 17
-REMINDER_MINUTE_UTC = 30
-# 19:45 CEST = 17:45 UTC
-INVITE_HOUR_UTC     = 17
-INVITE_MINUTE_UTC   = 45
-# BBF 20:00 CEST = 18:00 UTC
-BBF_START_HOUR_UTC  = 18
+# UTC часи (CEST = UTC+2)
+REMINDER_HOUR_UTC    = 17   # 19:30 CEST
+REMINDER_MINUTE_UTC  = 30
+INVITE_HOUR_UTC      = 17   # 19:45 CEST
+INVITE_MINUTE_UTC    = 45
+BBF_START_HOUR_UTC   = 18   # 20:00 CEST
 BBF_START_MINUTE_UTC = 0
 
+# weekday(): 0=пн,1=вт,2=ср,3=чт,4=пт,5=сб,6=нд
 DAY_NAMES = {
     0: "Понеділок",
     1: "Вівторок",
@@ -53,6 +50,28 @@ BBF_IMAGES = [
     "assets/backgrounds/3e703842-4873-41c2-9060-20fd9fdc0109.png",
 ]
 
+# ─── Дати тижня ──────────────────────────────────────────────────────────────
+
+def _get_week_dates() -> dict[int, datetime]:
+    """Повертає дати для кожного дня BBF цього тижня (пн-нд)."""
+    now = datetime.now(timezone.utc)
+    # Початок тижня — понеділок
+    monday = now - timedelta(days=now.weekday())
+    dates = {}
+    for day_num in DAY_NAMES.keys():
+        dates[day_num] = monday + timedelta(days=day_num)
+    return dates
+
+
+def _bbf_timestamp(day_date: datetime) -> int:
+    """Unix timestamp початку BBF для конкретної дати."""
+    target = day_date.replace(
+        hour=BBF_START_HOUR_UTC,
+        minute=BBF_START_MINUTE_UTC,
+        second=0, microsecond=0,
+    )
+    return int(target.timestamp())
+
 # ─── Збереження / завантаження ───────────────────────────────────────────────
 
 def _load_data() -> dict:
@@ -61,14 +80,19 @@ def _load_data() -> dict:
             return json.loads(BBF_DATA_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
+    return _empty_data()
+
+
+def _empty_data() -> dict:
     return {
-        "week": {},
-        "points": {},
+        "week": {},            # {"0": day_data, ...}
+        "week_dates": {},      # {"0": "2026-05-20", ...} — дати цього тижня
+        "points": {},          # {"uid": int}
         "channel_id": None,
-        "message_ids": {},
-        "thread_ids": {},
-        "reminder_msg_ids": {},   # {"0": msg_id} — повідомлення з кнопкою підтвердження
-        "confirmed": {},          # {"0": ["uid1", "uid2"]} — хто підтвердив
+        "message_ids": {},     # {"0": msg_id}
+        "thread_ids": {},      # {"0": thread_id}
+        "reminder_msg_ids": {},
+        "confirmed": {},       # {"0": ["uid"]}
         "guild_id": None,
         "used_images": [],
         "day_images": {},
@@ -106,17 +130,6 @@ def _pick_image(data: dict, day_key: str) -> str:
     data.setdefault("used_images", []).append(chosen)
     data.setdefault("day_images", {})[day_key] = chosen
     return chosen
-
-
-def _bbf_timestamp_for_day(day_num: int) -> int:
-    now = datetime.now(timezone.utc)
-    days_ahead = (day_num - now.weekday()) % 7
-    target = now.replace(
-        hour=BBF_START_HOUR_UTC,
-        minute=BBF_START_MINUTE_UTC,
-        second=0, microsecond=0,
-    ) + timedelta(days=days_ahead)
-    return int(target.timestamp())
 
 # ─── Допоміжні функції ───────────────────────────────────────────────────────
 
@@ -193,6 +206,19 @@ async def _check_galley_complete(day_data: dict, guild: discord.Guild) -> list[s
 
 # ─── Побудова ембедів ────────────────────────────────────────────────────────
 
+def _get_ts_for_day(data: dict, day_num: int) -> int:
+    """Бере збережену дату з даних і рахує timestamp."""
+    day_key   = str(day_num)
+    date_str  = data.get("week_dates", {}).get(day_key)
+    if date_str:
+        day_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+    else:
+        # Fallback — рахуємо від поточного тижня
+        week_dates = _get_week_dates()
+        day_date   = week_dates.get(day_num, datetime.now(timezone.utc))
+    return _bbf_timestamp(day_date)
+
+
 def _build_embed(
     day_num: int,
     day_data: dict,
@@ -200,12 +226,21 @@ def _build_embed(
     guild: discord.Guild,
     bot_user: discord.ClientUser,
     image_path: str | None,
+    data: dict,
 ) -> discord.Embed:
     day_name = DAY_NAMES[day_num]
-    ts = _bbf_timestamp_for_day(day_num)
+    day_key  = str(day_num)
+    ts       = _get_ts_for_day(data, day_num)
+
+    # Дата для заголовку
+    date_str = data.get("week_dates", {}).get(day_key, "")
+    date_label = ""
+    if date_str:
+        d = datetime.fromisoformat(date_str)
+        date_label = f" {d.day:02}.{d.month:02}"
 
     embed = discord.Embed(
-        title=f"⚓ BBF — {day_name}",
+        title=f"⚓ BBF — {day_name}{date_label}",
         description=f"🕹️ Початок: <t:{ts}:f>",
         color=discord.Color.from_rgb(45, 60, 110),
     )
@@ -218,8 +253,8 @@ def _build_embed(
     galley_lines = []
     for i, entry in enumerate(galley_main, 1):
         member = guild.get_member(int(entry["uid"]))
-        name = member.display_name if member else f"<@{entry['uid']}>"
-        pts = points.get(entry["uid"], 0)
+        name   = member.display_name if member else f"<@{entry['uid']}>"
+        pts    = points.get(entry["uid"], 0)
         pts_str   = f" `[{pts}🏅]`" if pts > 0 else ""
         auto_mark = " *(авто)*" if entry.get("auto_galley") else ""
         galley_lines.append(f"`{i:02}.` {name}{pts_str}{auto_mark}")
@@ -236,8 +271,8 @@ def _build_embed(
     ship_lines = []
     for i, entry in enumerate(ship_main, 1):
         member = guild.get_member(int(entry["uid"]))
-        name = member.display_name if member else f"<@{entry['uid']}>"
-        pts = points.get(entry["uid"], 0)
+        name   = member.display_name if member else f"<@{entry['uid']}>"
+        pts    = points.get(entry["uid"], 0)
         pts_str = f" `[{pts}🏅]`" if pts > 0 else ""
         ship_lines.append(f"`{i:02}.` {name} — *{entry['team']}*{pts_str}")
 
@@ -260,8 +295,8 @@ def _build_embed(
         wait_lines = []
         for i, entry in enumerate(day_data["waitlist"], 1):
             member = guild.get_member(int(entry["uid"]))
-            name = member.display_name if member else f"<@{entry['uid']}>"
-            pts = points.get(entry["uid"], 0)
+            name   = member.display_name if member else f"<@{entry['uid']}>"
+            pts    = points.get(entry["uid"], 0)
             wait_lines.append(f"`{i}.` {name} — *{entry['team']}* `[{pts}🏅]`")
         embed.add_field(
             name=f"⏳ Вейтинг ліст ({len(day_data['waitlist'])})",
@@ -297,9 +332,9 @@ def _build_reminder_embed(
     confirmed_uids: list,
     guild: discord.Guild,
     bot_user: discord.ClientUser,
+    data: dict,
 ) -> discord.Embed:
-    """Ембед нагадування з переліком хто підтвердив і хто ще ні."""
-    ts = _bbf_timestamp_for_day(day_num)
+    ts = _get_ts_for_day(data, day_num)
     embed = discord.Embed(
         title="⚔️ Морська Битва — Перевірка готовності!",
         description=(
@@ -310,13 +345,13 @@ def _build_reminder_embed(
         color=discord.Color.from_rgb(180, 30, 30),
     )
 
-    main_uids = [e["uid"] for e in day_data["main"]]
-
+    main_uids       = [e["uid"] for e in day_data["main"]]
     confirmed_lines = []
     waiting_lines   = []
+
     for uid in main_uids:
         member = guild.get_member(int(uid))
-        name = member.display_name if member else f"<@{uid}>"
+        name   = member.display_name if member else f"<@{uid}>"
         if uid in confirmed_uids:
             confirmed_lines.append(f"✅ {name}")
         else:
@@ -341,7 +376,7 @@ def _build_reminder_embed(
     )
     return embed
 
-# ─── View підтвердження ──────────────────────────────────────────────────────
+# ─── View підтвердження участі ───────────────────────────────────────────────
 
 def _make_confirm_view(day_num: int) -> discord.ui.View:
 
@@ -360,9 +395,8 @@ def _make_confirm_view(day_num: int) -> discord.ui.View:
             day_key = str(day_num)
             uid     = str(interaction.user.id)
 
-            # Перевіряємо чи людина в основному списку
-            day_data = data.get("week", {}).get(day_key, {})
-            if _get_status(day_data, uid) != "main":
+            day_data = data.get("week", {}).get(day_key)
+            if not day_data or _get_status(day_data, uid) != "main":
                 await interaction.response.send_message(
                     "ℹ️ Ти не в основному списку на цей день.", ephemeral=True
                 )
@@ -385,20 +419,16 @@ def _make_confirm_view(day_num: int) -> discord.ui.View:
             )
 
             # Оновлюємо ембед нагадування
-            guild   = interaction.guild
-            msg_id  = data.get("reminder_msg_ids", {}).get(day_key)
+            guild     = interaction.guild
+            msg_id    = data.get("reminder_msg_ids", {}).get(day_key)
             thread_id = data.get("thread_ids", {}).get(day_key)
             if msg_id and thread_id:
                 try:
                     thread = guild.get_channel(int(thread_id))
                     if thread:
-                        msg_obj = await thread.fetch_message(int(msg_id))
+                        msg_obj   = await thread.fetch_message(int(msg_id))
                         new_embed = _build_reminder_embed(
-                            day_num,
-                            day_data,
-                            confirmed,
-                            guild,
-                            guild.me,
+                            day_num, day_data, confirmed, guild, guild.me, data
                         )
                         await msg_obj.edit(embed=new_embed)
                 except Exception as e:
@@ -413,7 +443,7 @@ class TeamSelectView(discord.ui.View):
         super().__init__(timeout=60)
         self.day_num = day_num
         options = [discord.SelectOption(label=t, value=t) for t in ALL_TEAMS]
-        select = discord.ui.Select(
+        select  = discord.ui.Select(
             placeholder="Обери свою команду...",
             options=options,
             custom_id=f"bbf_team_select_{day_num}",
@@ -439,6 +469,14 @@ def _make_persistent_view(day_num: int) -> discord.ui.View:
             custom_id=f"bbf_can_{day_num}",
         )
         async def btn_can(self, interaction: discord.Interaction, button: discord.ui.Button):
+            # Перевіряємо чи реєстрація активна для цього дня
+            data    = _load_data()
+            day_key = str(day_num)
+            if day_key not in data.get("week", {}):
+                await interaction.response.send_message(
+                    "❌ Реєстрація на цей день недоступна.", ephemeral=True
+                )
+                return
             view = TeamSelectView(day_num)
             await interaction.response.send_message(
                 "⛵ Обери свою команду для BBF:",
@@ -496,6 +534,7 @@ async def _process_registration(
     uid         = str(interaction.user.id)
     prev_status = _get_status(day_data, uid)
 
+    # Оновлення команди якщо вже зареєстрований
     if prev_status == "main":
         for entry in day_data["main"]:
             if entry["uid"] == uid:
@@ -503,7 +542,9 @@ async def _process_registration(
                 if not entry.get("auto_galley"):
                     entry["team"] = chosen_team
         _save_data(data)
-        await interaction.followup.send(f"✅ Твою команду оновлено на **{chosen_team}**.", ephemeral=True)
+        await interaction.followup.send(
+            f"✅ Твою команду оновлено на **{chosen_team}**.", ephemeral=True
+        )
         await _refresh_embed(interaction.guild, data, day_num)
         return
 
@@ -514,7 +555,7 @@ async def _process_registration(
                 entry["team"] = chosen_team
         _save_data(data)
         await interaction.followup.send(
-            f"✅ Твою команду у вейтинг листі оновлено на **{chosen_team}**.", ephemeral=True
+            f"✅ Команду у вейтинг листі оновлено на **{chosen_team}**.", ephemeral=True
         )
         await _refresh_embed(interaction.guild, data, day_num)
         return
@@ -602,16 +643,18 @@ async def _handle_action(
 
     if action == "cancel":
         if prev_status is None:
-            await interaction.followup.send("ℹ️ Ти не зареєстрований на цей день.", ephemeral=True)
+            await interaction.followup.send(
+                "ℹ️ Ти не зареєстрований на цей день.", ephemeral=True
+            )
             return
         _remove_uid(day_data, uid)
         promoted_uid = _promote_from_waitlist(day_data) if prev_status == "main" else None
         _save_data(data)
         msg = f"⚓ Твою участь на **{DAY_NAMES[day_num]}** скасовано. Очки збережено."
         if promoted_uid:
-            m = interaction.guild.get_member(int(promoted_uid))
+            m     = interaction.guild.get_member(int(promoted_uid))
             pname = m.mention if m else f"<@{promoted_uid}>"
-            msg += f"\n🛶 {pname} автоматично переміщено з вейтингу в основний список!"
+            msg  += f"\n🛶 {pname} автоматично переміщено з вейтингу!"
             await _try_send_dm(
                 interaction.guild, promoted_uid,
                 f"🛶 Місце звільнилось! Тебе переведено в основний список BBF на **{DAY_NAMES[day_num]}**. Вдалого бою!"
@@ -625,9 +668,9 @@ async def _handle_action(
         _save_data(data)
         msg = f"⛵ Відмічено як «Не буду» на **{DAY_NAMES[day_num]}**."
         if promoted_uid:
-            m = interaction.guild.get_member(int(promoted_uid))
+            m     = interaction.guild.get_member(int(promoted_uid))
             pname = m.mention if m else f"<@{promoted_uid}>"
-            msg += f"\n🛶 {pname} автоматично переміщено з вейтингу!"
+            msg  += f"\n🛶 {pname} автоматично переміщено з вейтингу!"
             await _try_send_dm(
                 interaction.guild, promoted_uid,
                 f"🛶 Місце звільнилось! Тебе переведено в основний список BBF на **{DAY_NAMES[day_num]}**. Вдалого бою!"
@@ -641,9 +684,9 @@ async def _handle_action(
         _save_data(data)
         msg = f"🛟 Відмічено як «Відпустка» на **{DAY_NAMES[day_num]}**."
         if promoted_uid:
-            m = interaction.guild.get_member(int(promoted_uid))
+            m     = interaction.guild.get_member(int(promoted_uid))
             pname = m.mention if m else f"<@{promoted_uid}>"
-            msg += f"\n🛶 {pname} автоматично переміщено з вейтингу!"
+            msg  += f"\n🛶 {pname} автоматично переміщено з вейтингу!"
             await _try_send_dm(
                 interaction.guild, promoted_uid,
                 f"🛶 Місце звільнилось! Тебе переведено в основний список BBF на **{DAY_NAMES[day_num]}**. Вдалого бою!"
@@ -654,27 +697,24 @@ async def _handle_action(
 
 
 async def _refresh_embed(guild: discord.Guild, data: dict, day_num: int) -> None:
-    day_key    = str(day_num)
-    channel_id = data.get("channel_id")
-    # Оновлюємо в гілці якщо є, інакше в каналі
-    thread_id  = data.get("thread_ids", {}).get(day_key)
-    msg_id     = data.get("message_ids", {}).get(day_key)
+    day_key   = str(day_num)
+    thread_id = data.get("thread_ids", {}).get(day_key)
+    msg_id    = data.get("message_ids", {}).get(day_key)
     if not msg_id:
         return
     try:
         if thread_id:
             channel = guild.get_channel(int(thread_id))
-        elif channel_id:
-            channel = guild.get_channel(int(channel_id))
         else:
-            return
+            channel_id = data.get("channel_id")
+            channel    = guild.get_channel(int(channel_id)) if channel_id else None
         if not channel:
             return
         msg_obj    = await channel.fetch_message(int(msg_id))
         image_path = data.get("day_images", {}).get(day_key)
         embed = _build_embed(
             day_num, data["week"][day_key],
-            data.get("points", {}), guild, guild.me, image_path,
+            data.get("points", {}), guild, guild.me, image_path, data,
         )
         view = _make_persistent_view(day_num)
         if image_path:
@@ -701,6 +741,7 @@ class BBFCog(commands.Cog, name="BBF"):
         self.reminder_task.cancel()
 
     def _register_views(self):
+        """Реєструє всі persistent views при запуску бота."""
         for day_num in DAY_NAMES.keys():
             self.bot.add_view(_make_persistent_view(day_num))
             self.bot.add_view(_make_confirm_view(day_num))
@@ -740,7 +781,7 @@ class BBFCog(commands.Cog, name="BBF"):
         day_data  = data["week"][day_key]
         main_uids = [e["uid"] for e in day_data["main"]]
 
-        # ── О 19:30 CEST — нагадування з кнопкою підтвердження ──
+        # О 19:30 CEST — нагадування з кнопкою підтвердження
         if (
             now.hour == REMINDER_HOUR_UTC
             and now.minute == REMINDER_MINUTE_UTC
@@ -750,16 +791,16 @@ class BBFCog(commands.Cog, name="BBF"):
                 mentions  = " ".join(f"<@{uid}>" for uid in main_uids)
                 confirmed = data.get("confirmed", {}).get(day_key, [])
                 embed = _build_reminder_embed(
-                    weekday, day_data, confirmed, guild, guild.me
+                    weekday, day_data, confirmed, guild, guild.me, data
                 )
-                view     = _make_confirm_view(weekday)
-                msg      = await thread.send(content=mentions, embed=embed, view=view)
+                view = _make_confirm_view(weekday)
+                msg  = await thread.send(content=mentions, embed=embed, view=view)
                 data.setdefault("reminder_msg_ids", {})[day_key] = msg.id
 
             data.setdefault("reminded", {})[day_key] = True
             _save_data(data)
 
-        # ── О 19:45 CEST — запрошення в голосовий ──
+        # О 19:45 CEST — запрошення в голосовий
         if (
             now.hour == INVITE_HOUR_UTC
             and now.minute == INVITE_MINUTE_UTC
@@ -767,7 +808,7 @@ class BBFCog(commands.Cog, name="BBF"):
         ):
             if main_uids:
                 mentions      = " ".join(f"<@{uid}>" for uid in main_uids)
-                ts            = _bbf_timestamp_for_day(weekday)
+                ts            = _get_ts_for_day(data, weekday)
                 voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
                 vc_mention    = voice_channel.mention if voice_channel else f"<#{VOICE_CHANNEL_ID}>"
                 await thread.send(
@@ -794,18 +835,19 @@ class BBFCog(commands.Cog, name="BBF"):
     async def bbf_start(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        data = _load_data()
-        data["guild_id"]        = interaction.guild.id
-        data["channel_id"]      = interaction.channel.id
-        data["week"]            = {}
-        data["message_ids"]     = {}
-        data["thread_ids"]      = {}
-        data["reminder_msg_ids"] = {}
-        data["confirmed"]       = {}
-        data["used_images"]     = []
-        data["day_images"]      = {}
-        data["reminded"]        = {}
-        data["invited"]         = {}
+        # Зберігаємо старі очки, все інше стираємо
+        old_data = _load_data()
+        old_points = old_data.get("points", {})
+
+        data = _empty_data()
+        data["points"]   = old_points
+        data["guild_id"] = interaction.guild.id
+        data["channel_id"] = interaction.channel.id
+
+        # Рахуємо дати цього тижня
+        week_dates = _get_week_dates()
+        for day_num, day_date in week_dates.items():
+            data["week_dates"][str(day_num)] = day_date.strftime("%Y-%m-%d")
 
         role         = interaction.guild.get_role(BBF_ROLE_ID)
         role_mention = role.mention if role else f"<@&{BBF_ROLE_ID}>"
@@ -819,20 +861,23 @@ class BBFCog(commands.Cog, name="BBF"):
             thread_parent = interaction.channel
 
         for day_num, day_name in DAY_NAMES.items():
-            day_key = str(day_num)
+            day_key  = str(day_num)
+            day_date = week_dates[day_num]
+            date_str = f"{day_date.day:02}.{day_date.month:02}"
+
             data["week"][day_key] = _empty_day()
             image_path = _pick_image(data, day_key)
 
             embed = _build_embed(
                 day_num, data["week"][day_key],
-                data.get("points", {}), interaction.guild,
-                self.bot.user, image_path,
+                data["points"], interaction.guild,
+                self.bot.user, image_path, data,
             )
             view = _make_persistent_view(day_num)
 
             try:
                 thread = await thread_parent.create_thread(
-                    name=f"BBF — {day_name}",
+                    name=f"BBF — {day_name} {date_str}",
                     type=discord.ChannelType.public_thread,
                     auto_archive_duration=10080,
                 )
@@ -847,7 +892,7 @@ class BBFCog(commands.Cog, name="BBF"):
                 data["message_ids"][day_key] = msg.id
 
                 await thread.send(
-                    f"{role_mention} 📋 Реєстрація на **{day_name}** відкрита! 🛶"
+                    f"{role_mention} 📋 Реєстрація на **{day_name} {date_str}** відкрита! 🛶"
                 )
 
             except Exception as e:
@@ -953,12 +998,18 @@ class BBFCog(commands.Cog, name="BBF"):
 
         lines = []
         for day_num, day_name in DAY_NAMES.items():
-            day_key = str(day_num)
+            day_key  = str(day_num)
+            day_date = data.get("week_dates", {}).get(day_key, "")
+            date_label = ""
+            if day_date:
+                d = datetime.fromisoformat(day_date)
+                date_label = f" {d.day:02}.{d.month:02}"
+
             if day_key not in week:
                 continue
-            status = _get_status(week[day_key], uid)
-            label  = labels[status]
-            entry  = _get_entry(week[day_key], uid)
+            status   = _get_status(week[day_key], uid)
+            label    = labels[status]
+            entry    = _get_entry(week[day_key], uid)
             team_str = f" — *{entry['team']}*" if entry else ""
             if status == "waitlist":
                 pos = next(
@@ -966,7 +1017,7 @@ class BBFCog(commands.Cog, name="BBF"):
                     "?"
                 )
                 label += f" (#{pos})"
-            lines.append(f"**{day_name}**: {label}{team_str}")
+            lines.append(f"**{day_name}{date_label}**: {label}{team_str}")
 
         pts = data.get("points", {}).get(uid, 0)
         embed = discord.Embed(
