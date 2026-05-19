@@ -852,13 +852,29 @@ class BBFCog(commands.Cog, name="BBF"):
     async def bbf_start(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        # Зберігаємо старі очки, все інше стираємо
-        old_data = _load_data()
+        # Зберігаємо старі очки, видаляємо старі гілки
+        old_data   = _load_data()
         old_points = old_data.get("points", {})
 
+        # Видаляємо старі гілки якщо є
+        old_thread_ids = old_data.get("thread_ids", {})
+        for day_key, tid in old_thread_ids.items():
+            try:
+                old_thread = interaction.guild.get_thread(int(tid))
+                if not old_thread:
+                    try:
+                        old_thread = await interaction.guild.fetch_channel(int(tid))
+                    except Exception:
+                        old_thread = None
+                if old_thread:
+                    await old_thread.delete()
+                    print(f"[BBF] Видалено стару гілку {tid}")
+            except Exception as e:
+                print(f"[BBF] Не вдалось видалити гілку {tid}: {e}")
+
         data = _empty_data()
-        data["points"]   = old_points
-        data["guild_id"] = interaction.guild.id
+        data["points"]     = old_points
+        data["guild_id"]   = interaction.guild.id
         data["channel_id"] = interaction.channel.id
 
         # Рахуємо дати цього тижня
@@ -893,33 +909,44 @@ class BBFCog(commands.Cog, name="BBF"):
             view = _make_persistent_view(day_num)
 
             try:
+                print(f"[BBF] Створюю гілку для {day_name} {date_str}...")
                 thread = await thread_parent.create_thread(
                     name=f"BBF — {day_name} {date_str}",
                     type=discord.ChannelType.public_thread,
                     auto_archive_duration=10080,
                 )
                 data["thread_ids"][day_key] = thread.id
+                print(f"[BBF] Гілку створено: {thread.id}")
 
                 try:
                     file = discord.File(image_path, filename=Path(image_path).name)
                     msg  = await thread.send(file=file, embed=embed, view=view)
-                except Exception:
-                    msg = await thread.send(embed=embed, view=view)
+                    print(f"[BBF] Ембед з картинкою відправлено: {msg.id}")
+                except Exception as e1:
+                    print(f"[BBF] Картинка не відправилась ({e1}), пробую без...")
+                    try:
+                        msg = await thread.send(embed=embed, view=view)
+                        print(f"[BBF] Ембед без картинки відправлено: {msg.id}")
+                    except Exception as e2:
+                        print(f"[BBF] КРИТИЧНА ПОМИЛКА відправки ембеду: {e2}")
+                        raise
 
                 data["message_ids"][day_key] = msg.id
 
                 await thread.send(
                     f"{role_mention} 📋 Реєстрація на **{day_name} {date_str}** відкрита! 🛶"
                 )
+                print(f"[BBF] День {day_name} готово ✅")
 
             except Exception as e:
-                print(f"[BBF] Помилка створення гілки для {day_name}: {e}")
+                print(f"[BBF] ПОМИЛКА створення гілки для {day_name}: {type(e).__name__}: {e}")
                 try:
                     file = discord.File(image_path, filename=Path(image_path).name)
                     msg  = await interaction.channel.send(file=file, embed=embed, view=view)
                 except Exception:
                     msg = await interaction.channel.send(embed=embed, view=view)
                 data["message_ids"][day_key] = msg.id
+                print(f"[BBF] Fallback — ембед відправлено в канал: {msg.id}")
 
         _save_data(data)
         await interaction.followup.send(
