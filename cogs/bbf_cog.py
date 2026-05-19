@@ -53,12 +53,14 @@ BBF_IMAGES = [
 # ─── Дати тижня ──────────────────────────────────────────────────────────────
 
 def _get_week_dates() -> dict[int, datetime]:
-    """Повертає дати для кожного дня BBF цього тижня (пн-нд)."""
-    now = datetime.now(timezone.utc)
-    # Початок тижня — понеділок
-    monday = now - timedelta(days=now.weekday())
-    dates = {}
+    """Повертає дати для кожного дня BBF цього тижня (пн-нд).
+    Неділя (6) — наступна після поточного понеділка, тобто +6 днів від пн.
+    """
+    now    = datetime.now(timezone.utc)
+    monday = now - timedelta(days=now.weekday())  # завжди понеділок цього тижня
+    dates  = {}
     for day_num in DAY_NAMES.keys():
+        # day_num: 0=пн,1=вт,2=ср,3=чт,4=пт,6=нд
         dates[day_num] = monday + timedelta(days=day_num)
     return dates
 
@@ -424,7 +426,12 @@ def _make_confirm_view(day_num: int) -> discord.ui.View:
             thread_id = data.get("thread_ids", {}).get(day_key)
             if msg_id and thread_id:
                 try:
-                    thread = guild.get_channel(int(thread_id))
+                    thread = guild.get_thread(int(thread_id))
+                    if not thread:
+                        try:
+                            thread = await guild.fetch_channel(int(thread_id))
+                        except Exception:
+                            thread = None
                     if thread:
                         msg_obj   = await thread.fetch_message(int(msg_id))
                         new_embed = _build_reminder_embed(
@@ -704,7 +711,12 @@ async def _refresh_embed(guild: discord.Guild, data: dict, day_num: int) -> None
         return
     try:
         if thread_id:
-            channel = guild.get_channel(int(thread_id))
+            channel = guild.get_thread(int(thread_id))
+            if not channel:
+                try:
+                    channel = await guild.fetch_channel(int(thread_id))
+                except Exception:
+                    channel = None
         else:
             channel_id = data.get("channel_id")
             channel    = guild.get_channel(int(channel_id)) if channel_id else None
@@ -774,7 +786,12 @@ class BBFCog(commands.Cog, name="BBF"):
         if not thread_id:
             return
 
-        thread = guild.get_channel(int(thread_id))
+        thread = guild.get_thread(int(thread_id))
+        if not thread:
+            try:
+                thread = await guild.fetch_channel(int(thread_id))
+            except Exception:
+                thread = None
         if not thread:
             return
 
