@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # bbf_cog.py
 
+import asyncio
 import json
 import random
 from datetime import datetime, timezone, timedelta
@@ -850,7 +851,8 @@ class BBFCog(commands.Cog, name="BBF"):
     )
     @app_commands.default_permissions(manage_guild=True)
     async def bbf_start(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        # Відповідаємо Discord ОДРАЗУ щоб уникнути timeout
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         # Зберігаємо старі очки, видаляємо старі гілки
         old_data   = _load_data()
@@ -897,6 +899,7 @@ class BBFCog(commands.Cog, name="BBF"):
             day_key  = str(day_num)
             day_date = week_dates[day_num]
             date_str = f"{day_date.day:02}.{day_date.month:02}"
+            await asyncio.sleep(0.5)  # пауза між гілками щоб не перевантажити API
 
             data["week"][day_key] = _empty_day()
             image_path = _pick_image(data, day_key)
