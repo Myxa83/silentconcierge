@@ -1368,6 +1368,69 @@ class BBFCog(commands.Cog, name="BBF"):
         )
 
 
+    @app_commands.command(
+        name="bbf_оновити_кнопки",
+        description="[Офіцер] Оновити кнопки в існуючих каналах без видалення людей",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def bbf_refresh_buttons(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        data = _load_data()
+
+        if not data.get("week"):
+            await interaction.followup.send("❌ Реєстрація ще не була запущена.", ephemeral=True)
+            return
+
+        updated = 0
+        category = interaction.guild.get_channel(BBF_CATEGORY_ID)
+
+        for day_num in DAY_NAMES.keys():
+            day_key = str(day_num)
+            if day_key not in data.get("week", {}):
+                continue
+
+            msg_id    = data.get("message_ids", {}).get(day_key)
+            thread_id = data.get("thread_ids", {}).get(day_key)
+
+            if not msg_id or not thread_id:
+                continue
+
+            try:
+                channel = interaction.guild.get_channel(int(thread_id))
+                if not channel:
+                    channel = await interaction.guild.fetch_channel(int(thread_id))
+                if not channel:
+                    continue
+
+                msg_obj    = await channel.fetch_message(int(msg_id))
+                image_path = data.get("day_images", {}).get(day_key)
+                embed = _build_embed(
+                    day_num, data["week"][day_key],
+                    data.get("points", {}), interaction.guild,
+                    self.bot.user, image_path, data,
+                )
+                # Новий view з перевіркою ролі
+                view = _make_persistent_view(day_num)
+
+                if image_path and Path(image_path).exists():
+                    try:
+                        file = discord.File(image_path, filename=Path(image_path).name)
+                        await msg_obj.edit(embed=embed, view=view, attachments=[file])
+                    except Exception:
+                        await msg_obj.edit(embed=embed, view=view)
+                else:
+                    await msg_obj.edit(embed=embed, view=view)
+
+                updated += 1
+                print(f"[BBF] Кнопки оновлено для дня {DAY_NAMES[day_num]}")
+            except Exception as e:
+                print(f"[BBF] Помилка оновлення кнопок дня {day_num}: {e}")
+
+        await interaction.followup.send(
+            f"✅ Кнопки оновлено в **{updated}** каналах. Люди збережені!",
+            ephemeral=True,
+        )
+
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
 def _save_backup(data: dict) -> None:
