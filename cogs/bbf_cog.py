@@ -1036,9 +1036,18 @@ class BBFCog(commands.Cog, name="BBF"):
             await interaction.followup.send("❌ Категорію не знайдено.", ephemeral=True)
             return
 
+        today_weekday = datetime.now(timezone.utc).weekday()
+        today_date    = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
         for day_num, day_name in DAY_NAMES.items():
             day_key  = str(day_num)
-            day_date = week_dates[day_num]
+            day_date = week_dates[day_num].replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Пропускаємо дні що вже минули
+            if day_date < today_date:
+                print(f"[BBF] Пропускаємо {day_name} {day_date.day:02}.{day_date.month:02} — вже минув")
+                continue
+
             date_str = f"{day_date.day:02}.{day_date.month:02}"
 
             data["week"][day_key] = _empty_day()
