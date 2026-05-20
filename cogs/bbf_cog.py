@@ -355,7 +355,7 @@ def _build_reminder_embed(
 
     for uid in main_uids:
         member = guild.get_member(int(uid))
-        name   = member.display_name if member else f"<@{uid}>"
+        name   = member.mention if member else f"<@{uid}>"
         if uid in confirmed_uids:
             confirmed_lines.append(f"✅ {name}")
         else:
@@ -969,7 +969,7 @@ class BBFCog(commands.Cog, name="BBF"):
         lines = []
         for uid, pts in sorted_pts:
             member = interaction.guild.get_member(int(uid))
-            name = member.display_name if member else f"<@{uid}>"
+            name = member.mention if member else f"<@{uid}>"
             lines.append(f"**{name}** — {pts} 🏅")
 
         embed = discord.Embed(
