@@ -27,7 +27,12 @@ def _get_db():
             print("[BBF][ERROR] MONGODB_URL не задано!")
         else:
             print(f"[BBF] Підключаємось до MongoDB...")
-        _mongo_client = MongoClient(url, serverSelectionTimeoutMS=5000)
+        _mongo_client = MongoClient(
+            url,
+            serverSelectionTimeoutMS=5000,
+            tls=True,
+            tlsAllowInvalidCertificates=True,
+        )
         _mongo_db = _mongo_client["silentconcierge"]
         print(f"[BBF] MongoDB підключено: {_mongo_db.name}")
     return _mongo_db
@@ -1289,4 +1294,3 @@ async def setup(bot: commands.Bot) -> None:
         print("[BBF] MongoDB ping OK ✅")
     except Exception as e:
         print(f"[BBF][ERROR] MongoDB ping FAIL: {e}")
-                
