@@ -876,9 +876,11 @@ class BBFCog(commands.Cog, name="BBF"):
         self.bot = bot
         self._register_views()
         self.reminder_task.start()
+        self.backup_task.start()
 
     def cog_unload(self):
         self.reminder_task.cancel()
+        self.backup_task.cancel()
 
     def _register_views(self):
         """Реєструє всі persistent views при запуску бота."""
@@ -1243,6 +1245,67 @@ class BBFCog(commands.Cog, name="BBF"):
         await interaction.followup.send("✅ Всі ембеди оновлено.", ephemeral=True)
 
 
+    # ── Таск бекапів ─────────────────────────────────────────────────────────
+
+    @tasks.loop(minutes=15)
+    async def backup_task(self):
+        data = _load_data()
+        if data.get("guild_id"):
+            _save_backup(data)
+
+    @backup_task.before_loop
+    async def before_backup(self):
+        await self.bot.wait_until_ready()
+
+    # ── /bbf_бекапи ──────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="bbf_бекапи",
+        description="[Офіцер] Показати список останніх бекапів",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def bbf_backups_list(self, interaction: discord.Interaction):
+        backups = _list_backups()
+        if not backups:
+            await interaction.response.send_message("ℹ️ Бекапів немає.", ephemeral=True)
+            return
+
+        lines = []
+        for b in backups:
+            ts = b.get("timestamp", b["_id"])
+            try:
+                dt = datetime.fromisoformat(ts)
+                unix = int(dt.timestamp())
+                lines.append(f"`{b['_id']}` — <t:{unix}:f>")
+            except Exception:
+                lines.append(f"`{b['_id']}`")
+
+        embed = discord.Embed(
+            title="💾 Останні бекапи BBF",
+            description="\n".join(lines),
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="Використайте /bbf_відновити <id> щоб відновити")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="bbf_відновити",
+        description="[Офіцер] Відновити дані з бекапу",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(backup_id="ID бекапу (наприклад: 2026-05-20_14-30)")
+    async def bbf_restore(self, interaction: discord.Interaction, backup_id: str):
+        await interaction.response.defer(ephemeral=True)
+        data = _restore_backup(backup_id)
+        if not data:
+            await interaction.followup.send(f"❌ Бекап `{backup_id}` не знайдено.", ephemeral=True)
+            return
+        _save_data(data)
+        await interaction.followup.send(
+            f"✅ Дані відновлено з бекапу `{backup_id}`!\nВикористайте `/bbf_оновити` щоб оновити ембеди.",
+            ephemeral=True,
+        )
+
     @app_commands.command(
         name="bbf_очистити",
         description="[Офіцер] Видалити всі старі BBF гілки з каналу",
@@ -1287,6 +1350,53 @@ class BBFCog(commands.Cog, name="BBF"):
 
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
+
+def _save_backup(data: dict) -> None:
+    """Зберігає бекап даних з міткою часу."""
+    try:
+        db = _get_db()
+        backup = {
+            "_id": datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **data
+        }
+        db["bbf_backups"].replace_one(
+            {"_id": backup["_id"]},
+            backup,
+            upsert=True
+        )
+        # Зберігаємо тільки останні 48 бекапів (12 годин)
+        backups = list(db["bbf_backups"].find({}, {"_id": 1}).sort("_id", -1))
+        if len(backups) > 48:
+            old_ids = [b["_id"] for b in backups[48:]]
+            db["bbf_backups"].delete_many({"_id": {"$in": old_ids}})
+        print(f"[BBF] Бекап збережено: {backup['_id']}")
+    except Exception as e:
+        print(f"[BBF][ERROR] Бекап помилка: {e}")
+
+
+def _list_backups() -> list:
+    """Повертає список останніх бекапів."""
+    try:
+        db = _get_db()
+        return list(db["bbf_backups"].find({}, {"_id": 1, "timestamp": 1}).sort("_id", -1).limit(10))
+    except Exception:
+        return []
+
+
+def _restore_backup(backup_id: str) -> dict | None:
+    """Відновлює бекап за ID."""
+    try:
+        db = _get_db()
+        doc = db["bbf_backups"].find_one({"_id": backup_id})
+        if doc:
+            doc.pop("_id", None)
+            doc.pop("timestamp", None)
+            return doc
+        return None
+    except Exception:
+        return None
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(BBFCog(bot))
