@@ -16,3 +16,4 @@ yt-dlp
 pymongo[srv]
 playwright
 beautifulsoup4
+playwright-stealth
