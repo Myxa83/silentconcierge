@@ -27,12 +27,7 @@ def _get_db():
             print("[BBF][ERROR] MONGODB_URL не задано!")
         else:
             print(f"[BBF] Підключаємось до MongoDB...")
-        _mongo_client = MongoClient(
-            url,
-            serverSelectionTimeoutMS=5000,
-            tls=True,
-            tlsAllowInvalidCertificates=True,
-        )
+        _mongo_client = MongoClient(url, serverSelectionTimeoutMS=10000)
         _mongo_db = _mongo_client["silentconcierge"]
         print(f"[BBF] MongoDB підключено: {_mongo_db.name}")
     return _mongo_db
