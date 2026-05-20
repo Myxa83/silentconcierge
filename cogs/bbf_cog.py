@@ -23,8 +23,13 @@ def _get_db():
     global _mongo_client, _mongo_db
     if _mongo_db is None:
         url = os.environ.get("MONGODB_URL", "")
-        _mongo_client = MongoClient(url)
+        if not url:
+            print("[BBF][ERROR] MONGODB_URL не задано!")
+        else:
+            print(f"[BBF] Підключаємось до MongoDB...")
+        _mongo_client = MongoClient(url, serverSelectionTimeoutMS=5000)
         _mongo_db = _mongo_client["silentconcierge"]
+        print(f"[BBF] MongoDB підключено: {_mongo_db.name}")
     return _mongo_db
 MAX_SPOTS                = 20
 GALLEY_MIN               = 8
@@ -96,9 +101,12 @@ def _load_data() -> dict:
         doc = db["bbf"].find_one({"_id": "main"})
         if doc:
             doc.pop("_id", None)
+            print(f"[BBF] Дані завантажено з MongoDB. Днів: {len(doc.get('week', {}))}")
             return doc
+        else:
+            print("[BBF] MongoDB: даних немає, повертаємо порожні")
     except Exception as e:
-        print(f"[BBF] MongoDB load error: {e}")
+        print(f"[BBF][ERROR] MongoDB load error: {type(e).__name__}: {e}")
     return _empty_data()
 
 
@@ -124,8 +132,9 @@ def _save_data(data: dict) -> None:
     try:
         db = _get_db()
         db["bbf"].replace_one({"_id": "main"}, {"_id": "main", **data}, upsert=True)
+        print(f"[BBF] Дані збережено в MongoDB")
     except Exception as e:
-        print(f"[BBF] MongoDB save error: {e}")
+        print(f"[BBF][ERROR] MongoDB save error: {type(e).__name__}: {e}")
 
 
 def _empty_day() -> dict:
@@ -658,6 +667,7 @@ async def _process_registration(
     day_data    = data["week"][day_key]
     uid         = str(interaction.user.id)
     prev_status = _get_status(day_data, uid)
+    print(f"[BBF] Реєстрація: user={interaction.user} day={day_num} team={chosen_team} prev={prev_status}")
 
     # Оновлення команди якщо вже зареєстрований
     if prev_status == "main":
@@ -990,18 +1000,18 @@ class BBFCog(commands.Cog, name="BBF"):
         old_data   = _load_data()
         old_points = old_data.get("points", {})
 
-        # Видаляємо старі канали
-        old_channel_ids = old_data.get("thread_ids", {})
-        for cid in old_channel_ids.values():
-            try:
-                ch = await interaction.client.fetch_channel(int(cid))
-                await ch.delete()
-                print(f"[BBF] Видалено старий канал {cid}")
-            except discord.NotFound:
-                print(f"[BBF] Канал {cid} вже не існує")
-            except Exception as e:
-                print(f"[BBF] Не вдалось видалити канал {cid}: {e}")
-            await asyncio.sleep(0.5)
+        # Видаляємо ВСІ старі BBF канали з категорії
+        category_to_clean = interaction.guild.get_channel(BBF_CATEGORY_ID)
+        if category_to_clean:
+            for ch in list(category_to_clean.channels):
+                try:
+                    await ch.delete()
+                    print(f"[BBF] Видалено старий канал: {ch.name}")
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    print(f"[BBF] Не вдалось видалити {ch.name}: {e}")
+        else:
+            print("[BBF] Категорію для очистки не знайдено")
 
         data = _empty_data()
         data["points"]     = old_points
@@ -1041,6 +1051,7 @@ class BBFCog(commands.Cog, name="BBF"):
             view = _make_persistent_view(day_num)
 
             try:
+                print(f"[BBF] ── Починаю день {day_name} {date_str} (day_num={day_num}, day_key={day_key}) ──")
                 print(f"[BBF] Створюю канал для {day_name} {date_str}...")
                 channel = await interaction.guild.create_text_channel(
                     name=f"📅-{day_name.lower()}-{date_str}",
@@ -1270,3 +1281,10 @@ class BBFCog(commands.Cog, name="BBF"):
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(BBFCog(bot))
     print("[COG] BBFCog завантажено")
+    # Перевіряємо MongoDB при старті
+    try:
+        db = _get_db()
+        db.command("ping")
+        print("[BBF] MongoDB ping OK ✅")
+    except Exception as e:
+        print(f"[BBF][ERROR] MongoDB ping FAIL: {e}")
