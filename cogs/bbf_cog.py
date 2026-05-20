@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import random
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -10,10 +11,21 @@ from pathlib import Path
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from pymongo import MongoClient
 
 # ─── Налаштування ────────────────────────────────────────────────────────────
 
-BBF_DATA_FILE            = Path("data/bbf_data.json")
+# MongoDB
+_mongo_client = None
+_mongo_db     = None
+
+def _get_db():
+    global _mongo_client, _mongo_db
+    if _mongo_db is None:
+        url = os.environ.get("MONGODB_URL", "")
+        _mongo_client = MongoClient(url)
+        _mongo_db = _mongo_client["silentconcierge"]
+    return _mongo_db
 MAX_SPOTS                = 20
 GALLEY_MIN               = 8
 THREAD_PARENT_CHANNEL_ID = 1486067779177152523  # старий канал для гілок (не використовується)
@@ -79,11 +91,14 @@ def _bbf_timestamp(day_date: datetime) -> int:
 # ─── Збереження / завантаження ───────────────────────────────────────────────
 
 def _load_data() -> dict:
-    if BBF_DATA_FILE.exists():
-        try:
-            return json.loads(BBF_DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    try:
+        db  = _get_db()
+        doc = db["bbf"].find_one({"_id": "main"})
+        if doc:
+            doc.pop("_id", None)
+            return doc
+    except Exception as e:
+        print(f"[BBF] MongoDB load error: {e}")
     return _empty_data()
 
 
@@ -106,11 +121,11 @@ def _empty_data() -> dict:
 
 
 def _save_data(data: dict) -> None:
-    BBF_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BBF_DATA_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    try:
+        db = _get_db()
+        db["bbf"].replace_one({"_id": "main"}, {"_id": "main", **data}, upsert=True)
+    except Exception as e:
+        print(f"[BBF] MongoDB save error: {e}")
 
 
 def _empty_day() -> dict:
@@ -447,6 +462,107 @@ def _make_confirm_view(day_num: int) -> discord.ui.View:
 
 # ─── Persistent view реєстрації ──────────────────────────────────────────────
 
+class VacationModal(discord.ui.Modal, title="🛟 Відпустка"):
+    start_day = discord.ui.TextInput(
+        label="День початку",
+        placeholder="наприклад: 20",
+        min_length=1, max_length=2, required=True,
+    )
+    start_month = discord.ui.TextInput(
+        label="Місяць початку",
+        placeholder="наприклад: 05",
+        min_length=1, max_length=2, required=True,
+    )
+    end_day = discord.ui.TextInput(
+        label="День кінця",
+        placeholder="наприклад: 25",
+        min_length=1, max_length=2, required=True,
+    )
+    end_month = discord.ui.TextInput(
+        label="Місяць кінця",
+        placeholder="наприклад: 05",
+        min_length=1, max_length=2, required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            year = datetime.now(timezone.utc).year
+            start = datetime(year, int(self.start_month.value), int(self.start_day.value), tzinfo=timezone.utc)
+            end   = datetime(year, int(self.end_month.value),   int(self.end_day.value),   tzinfo=timezone.utc)
+
+            # Якщо кінець раніше початку — наступний рік
+            if end < start:
+                end = datetime(year + 1, int(self.end_month.value), int(self.end_day.value), tzinfo=timezone.utc)
+
+            if (end - start).days > 60:
+                await interaction.response.send_message(
+                    "❌ Відпустка не може бути довшою за 60 днів.", ephemeral=True
+                )
+                return
+
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Невірний формат дати. Введіть числа, наприклад день: 20, місяць: 05.",
+                ephemeral=True,
+            )
+            return
+
+        data = _load_data()
+        uid  = str(interaction.user.id)
+
+        # Зберігаємо відпустку
+        vacations = data.setdefault("vacations", {})
+        vacations[uid] = {
+            "start": start.strftime("%Y-%m-%d"),
+            "end":   end.strftime("%Y-%m-%d"),
+        }
+
+        # Відмічаємо у всіх днях тижня що потрапляють у відпустку
+        week = data.get("week", {})
+        week_dates = data.get("week_dates", {})
+        marked_days = []
+
+        for day_key, day_data in week.items():
+            date_str = week_dates.get(day_key)
+            if not date_str:
+                continue
+            day_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+            if start <= day_date <= end:
+                # Прибираємо з усіх списків і додаємо у відпустку
+                _remove_uid(day_data, uid)
+                if uid not in day_data["vacation"]:
+                    day_data["vacation"].append(uid)
+                day_num = int(day_key)
+                marked_days.append(DAY_NAMES.get(day_num, day_key))
+
+        _save_data(data)
+
+        start_str = f"{int(self.start_day.value):02}.{int(self.start_month.value):02}"
+        end_str   = f"{int(self.end_day.value):02}.{int(self.end_month.value):02}"
+
+        if marked_days:
+            days_text = ", ".join(marked_days)
+            msg = (
+                f"🛟 Відпустку зареєстровано: **{start_str} — {end_str}**\nТебе відмічено як відсутнього: {days_text}"
+            )
+        else:
+            msg = (
+                f"🛟 Відпустку зареєстровано: **{start_str} — {end_str}**\nУ цей період немає запланованих BBF."
+            )
+
+        await interaction.response.send_message(msg, ephemeral=True)
+
+        # Оновлюємо ембеди для позначених днів
+        guild = interaction.guild
+        for day_key in week.keys():
+            date_str = week_dates.get(day_key)
+            if not date_str:
+                continue
+            day_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+            if start <= day_date <= end:
+                await _refresh_embed(guild, data, int(day_key))
+
+
 class TeamSelectView(discord.ui.View):
     def __init__(self, day_num: int):
         super().__init__(timeout=60)
@@ -509,7 +625,7 @@ def _make_persistent_view(day_num: int) -> discord.ui.View:
             custom_id=f"bbf_vacation_{day_num}",
         )
         async def btn_vacation(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await _handle_action(interaction, day_num, "vacation")
+            await interaction.response.send_modal(VacationModal())
 
         @discord.ui.button(
             label="Відмінити сьогодні",
@@ -800,14 +916,29 @@ class BBFCog(commands.Cog, name="BBF"):
         day_data  = data["week"][day_key]
         main_uids = [e["uid"] for e in day_data["main"]]
 
+        # Фільтруємо людей у відпустці
+        def _is_on_vacation(uid: str, data: dict, check_date: datetime) -> bool:
+            vac = data.get("vacations", {}).get(uid)
+            if not vac:
+                return False
+            try:
+                start = datetime.fromisoformat(vac["start"]).replace(tzinfo=timezone.utc)
+                end   = datetime.fromisoformat(vac["end"]).replace(tzinfo=timezone.utc)
+                return start <= check_date <= end
+            except Exception:
+                return False
+
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        active_uids = [uid for uid in main_uids if not _is_on_vacation(uid, data, today)]
+
         # О 19:30 CEST — нагадування з кнопкою підтвердження
         if (
             now.hour == REMINDER_HOUR_UTC
             and now.minute == REMINDER_MINUTE_UTC
             and not data.get("reminded", {}).get(day_key)
         ):
-            if main_uids:
-                mentions  = " ".join(f"<@{uid}>" for uid in main_uids)
+            if active_uids:
+                mentions  = " ".join(f"<@{uid}>" for uid in active_uids)
                 confirmed = data.get("confirmed", {}).get(day_key, [])
                 embed = _build_reminder_embed(
                     weekday, day_data, confirmed, guild, guild.me, data
@@ -825,8 +956,8 @@ class BBFCog(commands.Cog, name="BBF"):
             and now.minute == INVITE_MINUTE_UTC
             and not data.get("invited", {}).get(day_key)
         ):
-            if main_uids:
-                mentions      = " ".join(f"<@{uid}>" for uid in main_uids)
+            if active_uids:
+                mentions      = " ".join(f"<@{uid}>" for uid in active_uids)
                 ts            = _get_ts_for_day(data, weekday)
                 voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
                 vc_mention    = voice_channel.mention if voice_channel else f"<#{VOICE_CHANNEL_ID}>"
