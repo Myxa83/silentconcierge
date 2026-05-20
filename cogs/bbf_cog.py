@@ -16,7 +16,8 @@ from discord.ext import commands, tasks
 BBF_DATA_FILE            = Path("data/bbf_data.json")
 MAX_SPOTS                = 20
 GALLEY_MIN               = 8
-THREAD_PARENT_CHANNEL_ID = 1486067779177152523
+THREAD_PARENT_CHANNEL_ID = 1486067779177152523  # старий канал для гілок (не використовується)
+BBF_CATEGORY_ID = 1486067160555065425  # категорія для BBF каналів
 VOICE_CHANNEL_ID         = 1486420425188839495
 BBF_ROLE_ID              = 1470790564718055434
 
@@ -256,7 +257,7 @@ def _build_embed(
     galley_lines = []
     for i, entry in enumerate(galley_main, 1):
         member = guild.get_member(int(entry["uid"]))
-        name   = member.display_name if member else f"<@{entry['uid']}>"
+        name   = member.mention if member else f"<@{entry['uid']}>"
         pts    = points.get(entry["uid"], 0)
         pts_str   = f" `[{pts}🏅]`" if pts > 0 else ""
         auto_mark = " *(авто)*" if entry.get("auto_galley") else ""
@@ -274,7 +275,7 @@ def _build_embed(
     ship_lines = []
     for i, entry in enumerate(ship_main, 1):
         member = guild.get_member(int(entry["uid"]))
-        name   = member.display_name if member else f"<@{entry['uid']}>"
+        name   = member.mention if member else f"<@{entry['uid']}>"
         pts    = points.get(entry["uid"], 0)
         pts_str = f" `[{pts}🏅]`" if pts > 0 else ""
         ship_lines.append(f"`{i:02}.` {name} — *{entry['team']}*{pts_str}")
@@ -298,7 +299,7 @@ def _build_embed(
         wait_lines = []
         for i, entry in enumerate(day_data["waitlist"], 1):
             member = guild.get_member(int(entry["uid"]))
-            name   = member.display_name if member else f"<@{entry['uid']}>"
+            name   = member.mention if member else f"<@{entry['uid']}>"
             pts    = points.get(entry["uid"], 0)
             wait_lines.append(f"`{i}.` {name} — *{entry['team']}* `[{pts}🏅]`")
         embed.add_field(
@@ -312,7 +313,7 @@ def _build_embed(
         vac_names = []
         for uid in day_data["vacation"]:
             member = guild.get_member(int(uid))
-            vac_names.append(member.display_name if member else f"<@{uid}>")
+            vac_names.append(member.mention if member else f"<@{uid}>")
         embed.add_field(
             name=f"🛟 Відпустка ({len(day_data['vacation'])})",
             value="\n".join(vac_names),
@@ -787,7 +788,7 @@ class BBFCog(commands.Cog, name="BBF"):
         if not thread_id:
             return
 
-        thread = guild.get_thread(int(thread_id))
+        thread = guild.get_channel(int(thread_id))
         if not thread:
             try:
                 thread = await guild.fetch_channel(int(thread_id))
@@ -858,21 +859,18 @@ class BBFCog(commands.Cog, name="BBF"):
         old_data   = _load_data()
         old_points = old_data.get("points", {})
 
-        # Видаляємо старі гілки якщо є
-        old_thread_ids = old_data.get("thread_ids", {})
-        for day_key, tid in old_thread_ids.items():
+        # Видаляємо старі канали
+        old_channel_ids = old_data.get("thread_ids", {})
+        for cid in old_channel_ids.values():
             try:
-                old_thread = interaction.guild.get_thread(int(tid))
-                if not old_thread:
-                    try:
-                        old_thread = await interaction.guild.fetch_channel(int(tid))
-                    except Exception:
-                        old_thread = None
-                if old_thread:
-                    await old_thread.delete()
-                    print(f"[BBF] Видалено стару гілку {tid}")
+                ch = await interaction.client.fetch_channel(int(cid))
+                await ch.delete()
+                print(f"[BBF] Видалено старий канал {cid}")
+            except discord.NotFound:
+                print(f"[BBF] Канал {cid} вже не існує")
             except Exception as e:
-                print(f"[BBF] Не вдалось видалити гілку {tid}: {e}")
+                print(f"[BBF] Не вдалось видалити канал {cid}: {e}")
+            await asyncio.sleep(0.5)
 
         data = _empty_data()
         data["points"]     = old_points
@@ -891,15 +889,15 @@ class BBFCog(commands.Cog, name="BBF"):
             f"{role_mention} ⚓ **Реєстрація на BBF цього тижня відкрита!** 🍾"
         )
 
-        thread_parent = interaction.guild.get_channel(THREAD_PARENT_CHANNEL_ID)
-        if not thread_parent:
-            thread_parent = interaction.channel
+        category = interaction.guild.get_channel(BBF_CATEGORY_ID)
+        if not category:
+            await interaction.followup.send("❌ Категорію не знайдено.", ephemeral=True)
+            return
 
         for day_num, day_name in DAY_NAMES.items():
             day_key  = str(day_num)
             day_date = week_dates[day_num]
             date_str = f"{day_date.day:02}.{day_date.month:02}"
-            await asyncio.sleep(0.5)  # пауза між гілками щоб не перевантажити API
 
             data["week"][day_key] = _empty_day()
             image_path = _pick_image(data, day_key)
@@ -912,48 +910,42 @@ class BBFCog(commands.Cog, name="BBF"):
             view = _make_persistent_view(day_num)
 
             try:
-                print(f"[BBF] Створюю гілку для {day_name} {date_str}...")
-                thread = await thread_parent.create_thread(
-                    name=f"BBF — {day_name} {date_str}",
-                    type=discord.ChannelType.public_thread,
-                    auto_archive_duration=10080,
+                print(f"[BBF] Створюю канал для {day_name} {date_str}...")
+                channel = await interaction.guild.create_text_channel(
+                    name=f"📅-{day_name.lower()}-{date_str}",
+                    category=category,
+                    topic=f"BBF реєстрація — {day_name} {date_str}",
                 )
-                data["thread_ids"][day_key] = thread.id
-                print(f"[BBF] Гілку створено: {thread.id}")
+                data["thread_ids"][day_key] = channel.id
+                print(f"[BBF] Канал створено: {channel.id}")
 
-                try:
-                    file = discord.File(image_path, filename=Path(image_path).name)
-                    msg  = await thread.send(file=file, embed=embed, view=view)
-                    print(f"[BBF] Ембед з картинкою відправлено: {msg.id}")
-                except Exception as e1:
-                    print(f"[BBF] Картинка не відправилась ({e1}), пробую без...")
+                img_exists = image_path and Path(image_path).exists()
+                if img_exists:
                     try:
-                        msg = await thread.send(embed=embed, view=view)
-                        print(f"[BBF] Ембед без картинки відправлено: {msg.id}")
-                    except Exception as e2:
-                        print(f"[BBF] КРИТИЧНА ПОМИЛКА відправки ембеду: {e2}")
-                        raise
+                        file = discord.File(image_path, filename=Path(image_path).name)
+                        msg  = await channel.send(file=file, embed=embed, view=view)
+                        print(f"[BBF] Ембед з картинкою: {msg.id}")
+                    except Exception as e1:
+                        print(f"[BBF] Картинка не відправилась ({e1})")
+                        msg = await channel.send(embed=embed, view=view)
+                else:
+                    print(f"[BBF] Картинка не знайдена: {image_path}")
+                    msg = await channel.send(embed=embed, view=view)
 
                 data["message_ids"][day_key] = msg.id
 
-                await thread.send(
+                await channel.send(
                     f"{role_mention} 📋 Реєстрація на **{day_name} {date_str}** відкрита! 🛶"
                 )
                 print(f"[BBF] День {day_name} готово ✅")
+                await asyncio.sleep(0.5)
 
             except Exception as e:
-                print(f"[BBF] ПОМИЛКА створення гілки для {day_name}: {type(e).__name__}: {e}")
-                try:
-                    file = discord.File(image_path, filename=Path(image_path).name)
-                    msg  = await interaction.channel.send(file=file, embed=embed, view=view)
-                except Exception:
-                    msg = await interaction.channel.send(embed=embed, view=view)
-                data["message_ids"][day_key] = msg.id
-                print(f"[BBF] Fallback — ембед відправлено в канал: {msg.id}")
+                print(f"[BBF] ПОМИЛКА створення каналу для {day_name}: {type(e).__name__}: {e}")
 
         _save_data(data)
         await interaction.followup.send(
-            "✅ Реєстрацію на BBF відкрито! Створено 6 гілок з ембедами.",
+            "✅ Реєстрацію на BBF відкрито! Створено 6 каналів з ембедами.",
             ephemeral=True,
         )
 
@@ -1097,6 +1089,49 @@ class BBFCog(commands.Cog, name="BBF"):
             await _refresh_embed(interaction.guild, data, day_num)
 
         await interaction.followup.send("✅ Всі ембеди оновлено.", ephemeral=True)
+
+
+    @app_commands.command(
+        name="bbf_очистити",
+        description="[Офіцер] Видалити всі старі BBF гілки з каналу",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def bbf_cleanup(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        thread_parent = interaction.guild.get_channel(THREAD_PARENT_CHANNEL_ID)
+        if not thread_parent:
+            await interaction.followup.send("❌ Канал не знайдено.", ephemeral=True)
+            return
+
+        deleted = 0
+        failed  = 0
+
+        # Шукаємо всі активні та заархівовані гілки що починаються з "BBF —"
+        all_threads = list(thread_parent.threads)
+
+        # Додаємо заархівовані гілки
+        try:
+            async for thread in thread_parent.archived_threads(limit=100):
+                all_threads.append(thread)
+        except Exception as e:
+            print(f"[BBF] archived_threads помилка: {e}")
+
+        for thread in all_threads:
+            if thread.name.startswith("BBF —"):
+                try:
+                    await thread.delete()
+                    deleted += 1
+                    print(f"[BBF] Видалено: {thread.name}")
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    failed += 1
+                    print(f"[BBF] Не вдалось видалити {thread.name}: {e}")
+
+        await interaction.followup.send(
+            f"✅ Видалено гілок: **{deleted}**" + (f"\n❌ Не вдалось: **{failed}**" if failed else ""),
+            ephemeral=True,
+        )
 
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
