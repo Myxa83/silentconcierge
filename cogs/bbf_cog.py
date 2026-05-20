@@ -15,7 +15,6 @@ from pymongo import MongoClient
 
 # ─── Налаштування ────────────────────────────────────────────────────────────
 
-# MongoDB
 _mongo_client = None
 _mongo_db     = None
 
@@ -31,22 +30,21 @@ def _get_db():
         _mongo_db = _mongo_client["silentconcierge"]
         print(f"[BBF] MongoDB підключено: {_mongo_db.name}")
     return _mongo_db
+
 MAX_SPOTS                = 20
 GALLEY_MIN               = 8
-THREAD_PARENT_CHANNEL_ID = 1486067779177152523  # старий канал для гілок (не використовується)
-BBF_CATEGORY_ID = 1486067160555065425  # категорія для BBF каналів
+THREAD_PARENT_CHANNEL_ID = 1486067779177152523
+BBF_CATEGORY_ID          = 1486067160555065425
 VOICE_CHANNEL_ID         = 1486420425188839495
 BBF_ROLE_ID              = 1470790564718055434
 
-# UTC часи (CEST = UTC+2)
-REMINDER_HOUR_UTC    = 17   # 19:30 CEST
+REMINDER_HOUR_UTC    = 17
 REMINDER_MINUTE_UTC  = 30
-INVITE_HOUR_UTC      = 17   # 19:45 CEST
+INVITE_HOUR_UTC      = 17
 INVITE_MINUTE_UTC    = 45
-BBF_START_HOUR_UTC   = 18   # 20:00 CEST
+BBF_START_HOUR_UTC   = 18
 BBF_START_MINUTE_UTC = 0
 
-# weekday(): 0=пн,1=вт,2=ср,3=чт,4=пт,5=сб,6=нд
 DAY_NAMES = {
     0: "Понеділок",
     1: "Вівторок",
@@ -72,20 +70,15 @@ BBF_IMAGES = [
 # ─── Дати тижня ──────────────────────────────────────────────────────────────
 
 def _get_week_dates() -> dict[int, datetime]:
-    """Повертає дати для кожного дня BBF цього тижня (пн-нд).
-    Неділя (6) — наступна після поточного понеділка, тобто +6 днів від пн.
-    """
     now    = datetime.now(timezone.utc)
-    monday = now - timedelta(days=now.weekday())  # завжди понеділок цього тижня
+    monday = now - timedelta(days=now.weekday())
     dates  = {}
     for day_num in DAY_NAMES.keys():
-        # day_num: 0=пн,1=вт,2=ср,3=чт,4=пт,6=нд
         dates[day_num] = monday + timedelta(days=day_num)
     return dates
 
 
 def _bbf_timestamp(day_date: datetime) -> int:
-    """Unix timestamp початку BBF для конкретної дати."""
     target = day_date.replace(
         hour=BBF_START_HOUR_UTC,
         minute=BBF_START_MINUTE_UTC,
@@ -112,14 +105,14 @@ def _load_data() -> dict:
 
 def _empty_data() -> dict:
     return {
-        "week": {},            # {"0": day_data, ...}
-        "week_dates": {},      # {"0": "2026-05-20", ...} — дати цього тижня
-        "points": {},          # {"uid": int}
+        "week": {},
+        "week_dates": {},
+        "points": {},
         "channel_id": None,
-        "message_ids": {},     # {"0": msg_id}
-        "thread_ids": {},      # {"0": thread_id}
+        "message_ids": {},
+        "thread_ids": {},
         "reminder_msg_ids": {},
-        "confirmed": {},       # {"0": ["uid"]}
+        "confirmed": {},
         "guild_id": None,
         "used_images": [],
         "day_images": {},
@@ -213,35 +206,14 @@ async def _try_send_dm(guild: discord.Guild, uid: str, msg: str) -> None:
     except Exception:
         pass
 
-
-async def _check_galley_complete(day_data: dict, guild: discord.Guild) -> list[str]:
-    if _galley_count(day_data) < GALLEY_MIN:
-        return []
-    transferred = []
-    for entry in day_data["main"]:
-        if entry.get("auto_galley") and entry["team"] in GALLEY_TEAMS:
-            original = entry.get("original_team", entry["team"])
-            if original not in GALLEY_TEAMS:
-                entry["team"] = original
-                entry["auto_galley"] = False
-                transferred.append((entry["uid"], original))
-    for uid, original_team in transferred:
-        await _try_send_dm(
-            guild, uid,
-            f"⛵ Галера укомплектована! Тебе переведено до **{original_team}** на BBF. Вдалого бою!"
-        )
-    return [uid for uid, _ in transferred]
-
 # ─── Побудова ембедів ────────────────────────────────────────────────────────
 
 def _get_ts_for_day(data: dict, day_num: int) -> int:
-    """Бере збережену дату з даних і рахує timestamp."""
     day_key   = str(day_num)
     date_str  = data.get("week_dates", {}).get(day_key)
     if date_str:
         day_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
     else:
-        # Fallback — рахуємо від поточного тижня
         week_dates = _get_week_dates()
         day_date   = week_dates.get(day_num, datetime.now(timezone.utc))
     return _bbf_timestamp(day_date)
@@ -260,7 +232,6 @@ def _build_embed(
     day_key  = str(day_num)
     ts       = _get_ts_for_day(data, day_num)
 
-    # Дата для заголовку
     date_str = data.get("week_dates", {}).get(day_key, "")
     date_label = ""
     if date_str:
@@ -274,7 +245,7 @@ def _build_embed(
     )
 
     galley_main = [e for e in day_data["main"] if e["team"] in GALLEY_TEAMS]
-    ship_main   = [e for e in day_data["main"] if e["team"] in SHIP_TEAMS]
+    ship_main   = [e for e in day_data["main"] if e["team"] not in GALLEY_TEAMS]
     total_main  = len(day_data["main"])
 
     # Галера
@@ -325,7 +296,8 @@ def _build_embed(
             member = guild.get_member(int(entry["uid"]))
             name   = member.mention if member else f"<@{entry['uid']}>"
             pts    = points.get(entry["uid"], 0)
-            wait_lines.append(f"`{i}.` {name} — *{entry['team']}* `[{pts}🏅]`")
+            pts_str = f" `[{pts}🏅]`" if pts > 0 else ""
+            wait_lines.append(f"`{i}.` {name} — *{entry['team']}*{pts_str}")
         embed.add_field(
             name=f"⏳ Вейтинг ліст ({len(day_data['waitlist'])})",
             value="\n".join(wait_lines),
@@ -446,7 +418,6 @@ def _make_confirm_view(day_num: int) -> discord.ui.View:
                 ephemeral=True,
             )
 
-            # Оновлюємо ембед нагадування
             guild     = interaction.guild
             msg_id    = data.get("reminder_msg_ids", {}).get(day_key)
             thread_id = data.get("thread_ids", {}).get(day_key)
@@ -499,7 +470,6 @@ class VacationModal(discord.ui.Modal, title="🛟 Відпустка"):
             start = datetime(year, int(self.start_month.value), int(self.start_day.value), tzinfo=timezone.utc)
             end   = datetime(year, int(self.end_month.value),   int(self.end_day.value),   tzinfo=timezone.utc)
 
-            # Якщо кінець раніше початку — наступний рік
             if end < start:
                 end = datetime(year + 1, int(self.end_month.value), int(self.end_day.value), tzinfo=timezone.utc)
 
@@ -519,14 +489,12 @@ class VacationModal(discord.ui.Modal, title="🛟 Відпустка"):
         data = _load_data()
         uid  = str(interaction.user.id)
 
-        # Зберігаємо відпустку
         vacations = data.setdefault("vacations", {})
         vacations[uid] = {
             "start": start.strftime("%Y-%m-%d"),
             "end":   end.strftime("%Y-%m-%d"),
         }
 
-        # Відмічаємо у всіх днях тижня що потрапляють у відпустку
         week = data.get("week", {})
         week_dates = data.get("week_dates", {})
         marked_days = []
@@ -537,7 +505,6 @@ class VacationModal(discord.ui.Modal, title="🛟 Відпустка"):
                 continue
             day_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
             if start <= day_date <= end:
-                # Прибираємо з усіх списків і додаємо у відпустку
                 _remove_uid(day_data, uid)
                 if uid not in day_data["vacation"]:
                     day_data["vacation"].append(uid)
@@ -561,7 +528,6 @@ class VacationModal(discord.ui.Modal, title="🛟 Відпустка"):
 
         await interaction.response.send_message(msg, ephemeral=True)
 
-        # Оновлюємо ембеди для позначених днів
         guild = interaction.guild
         for day_key in week.keys():
             date_str = week_dates.get(day_key)
@@ -603,14 +569,12 @@ def _make_persistent_view(day_num: int) -> discord.ui.View:
             custom_id=f"bbf_can_{day_num}",
         )
         async def btn_can(self, interaction: discord.Interaction, button: discord.ui.Button):
-            # Перевіряємо роль
             role = interaction.guild.get_role(BBF_ROLE_ID)
             if role and role not in interaction.user.roles:
                 await interaction.response.send_message(
                     "❌ У тебе немає доступу до реєстрації на BBF.", ephemeral=True
                 )
                 return
-            # Перевіряємо чи реєстрація активна для цього дня
             data    = _load_data()
             day_key = str(day_num)
             if day_key not in data.get("week", {}):
@@ -688,74 +652,31 @@ async def _process_registration(
     prev_status = _get_status(day_data, uid)
     print(f"[BBF] Реєстрація: user={interaction.user} day={day_num} team={chosen_team} prev={prev_status}")
 
-    # Оновлення команди якщо вже зареєстрований
-    if prev_status == "main":
-        for entry in day_data["main"]:
+    # ── Оновлення команди якщо вже зареєстрований ──────────────────────────
+    if prev_status in ("main", "waitlist"):
+        target_list = day_data["main"] if prev_status == "main" else day_data["waitlist"]
+        for entry in target_list:
             if entry["uid"] == uid:
                 entry["original_team"] = chosen_team
+                # Якщо зараз на галері через auto — не міняємо поточну команду
                 if not entry.get("auto_galley"):
                     entry["team"] = chosen_team
+                break
         _save_data(data)
+        location = "основному списку" if prev_status == "main" else "вейтинг листі"
         await interaction.followup.send(
-            f"✅ Твою команду оновлено на **{chosen_team}**.", ephemeral=True
+            f"✅ Твою команду оновлено на **{chosen_team}** (у {location}).", ephemeral=True
         )
         await _refresh_embed(interaction.guild, data, day_num)
         return
 
-    if prev_status == "waitlist":
-        for entry in day_data["waitlist"]:
-            if entry["uid"] == uid:
-                entry["original_team"] = chosen_team
-                entry["team"] = chosen_team
-        _save_data(data)
-        await interaction.followup.send(
-            f"✅ Команду у вейтинг листі оновлено на **{chosen_team}**.", ephemeral=True
-        )
-        await _refresh_embed(interaction.guild, data, day_num)
-        return
-
+    # ── Прибираємо з vacation/cant якщо були ───────────────────────────────
     _remove_uid(day_data, uid)
-    galley_now = _galley_count(day_data)
 
-    if len(day_data["main"]) < MAX_SPOTS:
-        if galley_now < GALLEY_MIN and chosen_team not in GALLEY_TEAMS:
-            entry = {
-                "uid": uid,
-                "team": GALLEY_TEAMS[0],
-                "original_team": chosen_team,
-                "auto_galley": True,
-            }
-            day_data["main"].append(entry)
-            transferred = await _check_galley_complete(day_data, interaction.guild)
-            if points.get(uid, 0) > 0:
-                points[uid] = 0
-            if uid in transferred:
-                reply = (
-                    f"⛵ Галера щойно укомплектувалась! "
-                    f"Тебе одразу додано до **{chosen_team}**. Очки скинуто до 0."
-                )
-            else:
-                reply = (
-                    f"⚓ Галера ще не укомплектована ({galley_now + 1}/{GALLEY_MIN})! "
-                    f"Тебе тимчасово додано до **Галери**.\n"
-                    f"Як тільки наберемо {GALLEY_MIN} — тебе автоматично переведуть до **{chosen_team}**."
-                )
-        else:
-            entry = {
-                "uid": uid,
-                "team": chosen_team,
-                "original_team": chosen_team,
-                "auto_galley": False,
-            }
-            day_data["main"].append(entry)
-            await _check_galley_complete(day_data, interaction.guild)
-            if points.get(uid, 0) > 0:
-                points[uid] = 0
-            reply = (
-                f"🛶 Ти в основному списку на **{DAY_NAMES[day_num]}** "
-                f"— команда **{chosen_team}**! Очки скинуто до 0."
-            )
-    else:
+    total_main = len(day_data["main"])
+
+    # ── Вейтинг: ТІЛЬКИ якщо всі 20 місць зайняті ──────────────────────────
+    if total_main >= MAX_SPOTS:
         entry = {
             "uid": uid,
             "team": chosen_team,
@@ -766,13 +687,122 @@ async def _process_registration(
         points[uid] = points.get(uid, 0) + 1
         pos = len(day_data["waitlist"])
         pts = points[uid]
-        reply = (
-            f"⏳ Місця заповнені. Ти #{pos} у вейтинг листі на **{DAY_NAMES[day_num]}** "
-            f"— команда **{chosen_team}**.\n🏅 Твої очки пріоритету: **{pts}**"
+        data["points"] = points
+        _save_data(data)
+        await interaction.followup.send(
+            f"⏳ Усі {MAX_SPOTS} місць зайняті. Ти #{pos} у вейтинг листі на **{DAY_NAMES[day_num]}** "
+            f"— команда **{chosen_team}**.\n🏅 Твої очки пріоритету: **{pts}**",
+            ephemeral=True,
         )
+        await _refresh_embed(interaction.guild, data, day_num)
+        return
 
-    data["points"] = points
-    _save_data(data)
+    # ── Є вільне місце (< 20) ───────────────────────────────────────────────
+    galley_now     = _galley_count(day_data)
+    is_real_galley = chosen_team in GALLEY_TEAMS
+
+    if galley_now < GALLEY_MIN:
+        # Галера ще не повна — новий іде на Галеру
+        entry = {
+            "uid": uid,
+            "team": GALLEY_TEAMS[0],
+            "original_team": chosen_team,
+            "auto_galley": not is_real_galley,
+        }
+        day_data["main"].append(entry)
+        points[uid] = 0
+        data["points"] = points
+        _save_data(data)
+
+        if is_real_galley:
+            reply = (
+                f"⚓ Ти в **Екіпажі Галери** на **{DAY_NAMES[day_num]}**! "
+                f"Галера: {galley_now + 1}/{GALLEY_MIN}. Очки скинуто до 0."
+            )
+        else:
+            reply = (
+                f"⚓ Галера ще не укомплектована ({galley_now + 1}/{GALLEY_MIN})! "
+                f"Тебе тимчасово додано до **Галери**.\n"
+                f"Як тільки наберемо {GALLEY_MIN} — тебе переведуть до **{chosen_team}**. "
+                f"Очки скинуто до 0."
+            )
+
+    else:
+        # Галера повна (>= GALLEY_MIN)
+        # Шукаємо найстаршого "корабельного" на галері (auto_galley=True) — він іде на свій корабель
+        evict_index = None
+        for i, e in enumerate(day_data["main"]):
+            if e.get("auto_galley") and e["team"] in GALLEY_TEAMS:
+                evict_index = i
+                break
+
+        if evict_index is not None:
+            # Виштовхуємо найстаршого корабельного з галери → він іде на свій оригінальний корабель
+            evicted          = day_data["main"][evict_index]
+            evicted_original = evicted["original_team"]
+            evicted["team"]       = evicted_original
+            evicted["auto_galley"] = False
+            # (залишається в main[], тепер у секції "Всі кораблі")
+
+            # Нова людина займає місце на Галері
+            new_entry = {
+                "uid": uid,
+                "team": GALLEY_TEAMS[0],
+                "original_team": chosen_team,
+                "auto_galley": not is_real_galley,
+            }
+            day_data["main"].append(new_entry)
+            points[uid] = 0
+            data["points"] = points
+            _save_data(data)
+
+            await _try_send_dm(
+                interaction.guild, evicted["uid"],
+                f"⛵ Новий учасник зайшов на Галеру — тебе переведено до **{evicted_original}** "
+                f"на BBF ({DAY_NAMES[day_num]}). Вдалого бою!"
+            )
+
+            evicted_member = interaction.guild.get_member(int(evicted["uid"]))
+            evicted_name   = evicted_member.display_name if evicted_member else f"<@{evicted['uid']}>"
+
+            if is_real_galley:
+                reply = (
+                    f"⚓ Ти доєднався до **Екіпажу Галери** на **{DAY_NAMES[day_num]}**!\n"
+                    f"**{evicted_name}** переведено до **{evicted_original}**. Очки скинуто до 0."
+                )
+            else:
+                reply = (
+                    f"⚓ Тебе додано до **Галери** на **{DAY_NAMES[day_num]}** "
+                    f"(тимчасово, потім до **{chosen_team}**).\n"
+                    f"**{evicted_name}** переведено до **{evicted_original}**. Очки скинуто до 0."
+                )
+
+        else:
+            # Всі 8 на галері — справжні галерники (нікого виштовхнути не можна)
+            # Новий іде до "Всі кораблі" (НЕ вейтинг — місця ще є!)
+            new_entry = {
+                "uid": uid,
+                "team": chosen_team,
+                "original_team": chosen_team,
+                "auto_galley": False,
+            }
+            day_data["main"].append(new_entry)
+            points[uid] = 0
+            data["points"] = points
+            _save_data(data)
+
+            if is_real_galley:
+                reply = (
+                    f"⚓ Галера вже укомплектована справжніми галерниками!\n"
+                    f"Тебе додано до **Всі кораблі** → **Екіпаж Галери** на **{DAY_NAMES[day_num]}**. "
+                    f"Очки скинуто до 0."
+                )
+            else:
+                reply = (
+                    f"⛵ Галера укомплектована! Тебе одразу додано до **{chosen_team}** "
+                    f"(«Всі кораблі») на **{DAY_NAMES[day_num]}**. Очки скинуто до 0."
+                )
+
     await interaction.followup.send(reply, ephemeral=True)
     await _refresh_embed(interaction.guild, data, day_num)
 
@@ -902,12 +932,9 @@ class BBFCog(commands.Cog, name="BBF"):
         self.backup_task.cancel()
 
     def _register_views(self):
-        """Реєструє всі persistent views при запуску бота."""
         for day_num in DAY_NAMES.keys():
             self.bot.add_view(_make_persistent_view(day_num))
             self.bot.add_view(_make_confirm_view(day_num))
-
-    # ── Таск нагадувань ──────────────────────────────────────────────────────
 
     @tasks.loop(minutes=1)
     async def reminder_task(self):
@@ -947,7 +974,6 @@ class BBFCog(commands.Cog, name="BBF"):
         day_data  = data["week"][day_key]
         main_uids = [e["uid"] for e in day_data["main"]]
 
-        # Фільтруємо людей у відпустці
         def _is_on_vacation(uid: str, data: dict, check_date: datetime) -> bool:
             vac = data.get("vacations", {}).get(uid)
             if not vac:
@@ -962,7 +988,6 @@ class BBFCog(commands.Cog, name="BBF"):
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         active_uids = [uid for uid in main_uids if not _is_on_vacation(uid, data, today)]
 
-        # О 19:30 CEST — нагадування з кнопкою підтвердження
         if (
             now.hour == REMINDER_HOUR_UTC
             and now.minute == REMINDER_MINUTE_UTC
@@ -981,7 +1006,6 @@ class BBFCog(commands.Cog, name="BBF"):
             data.setdefault("reminded", {})[day_key] = True
             _save_data(data)
 
-        # О 19:45 CEST — запрошення в голосовий
         if (
             now.hour == INVITE_HOUR_UTC
             and now.minute == INVITE_MINUTE_UTC
@@ -1006,22 +1030,17 @@ class BBFCog(commands.Cog, name="BBF"):
     async def before_reminder(self):
         await self.bot.wait_until_ready()
 
-    # ── /bbf_старт ───────────────────────────────────────────────────────────
-
     @app_commands.command(
         name="bbf_старт",
         description="[Офіцер] Запустити тижневу реєстрацію на BBF",
     )
     @app_commands.default_permissions(manage_guild=True)
     async def bbf_start(self, interaction: discord.Interaction):
-        # Відповідаємо Discord ОДРАЗУ щоб уникнути timeout
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Зберігаємо старі очки, видаляємо старі гілки
         old_data   = _load_data()
         old_points = old_data.get("points", {})
 
-        # Видаляємо тільки BBF канали (починаються з 📅-)
         category_to_clean = interaction.guild.get_channel(BBF_CATEGORY_ID)
         if category_to_clean:
             for ch in list(category_to_clean.channels):
@@ -1040,7 +1059,6 @@ class BBFCog(commands.Cog, name="BBF"):
         data["guild_id"]   = interaction.guild.id
         data["channel_id"] = interaction.channel.id
 
-        # Рахуємо дати цього тижня
         week_dates = _get_week_dates()
         for day_num, day_date in week_dates.items():
             data["week_dates"][str(day_num)] = day_date.strftime("%Y-%m-%d")
@@ -1057,14 +1075,12 @@ class BBFCog(commands.Cog, name="BBF"):
             await interaction.followup.send("❌ Категорію не знайдено.", ephemeral=True)
             return
 
-        today_weekday = datetime.now(timezone.utc).weekday()
-        today_date    = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_date = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
         for day_num, day_name in DAY_NAMES.items():
             day_key  = str(day_num)
             day_date = week_dates[day_num].replace(hour=0, minute=0, second=0, microsecond=0)
 
-            # Пропускаємо дні що вже минули
             if day_date < today_date:
                 print(f"[BBF] Пропускаємо {day_name} {day_date.day:02}.{day_date.month:02} — вже минув")
                 continue
@@ -1082,8 +1098,7 @@ class BBFCog(commands.Cog, name="BBF"):
             view = _make_persistent_view(day_num)
 
             try:
-                print(f"[BBF] ── Починаю день {day_name} {date_str} (day_num={day_num}, day_key={day_key}) ──")
-                print(f"[BBF] Створюю канал для {day_name} {date_str}...")
+                print(f"[BBF] ── Починаю день {day_name} {date_str} ──")
                 channel = await interaction.guild.create_text_channel(
                     name=f"📅-{day_name.lower()}-{date_str}",
                     category=category,
@@ -1122,8 +1137,6 @@ class BBFCog(commands.Cog, name="BBF"):
             ephemeral=True,
         )
 
-    # ── /bbf_очки ────────────────────────────────────────────────────────────
-
     @app_commands.command(
         name="bbf_очки",
         description="Переглянути таблицю очок пріоритету",
@@ -1156,8 +1169,6 @@ class BBFCog(commands.Cog, name="BBF"):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ── /bbf_скинути_очки ────────────────────────────────────────────────────
-
     @app_commands.command(
         name="bbf_скинути_очки",
         description="[Офіцер] Скинути очки пріоритету гравцю або всім",
@@ -1182,8 +1193,6 @@ class BBFCog(commands.Cog, name="BBF"):
             await interaction.response.send_message(
                 "✅ Очки всіх гравців скинуто.", ephemeral=True
             )
-
-    # ── /bbf_статус ──────────────────────────────────────────────────────────
 
     @app_commands.command(
         name="bbf_статус",
@@ -1243,8 +1252,6 @@ class BBFCog(commands.Cog, name="BBF"):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ── /bbf_оновити ─────────────────────────────────────────────────────────
-
     @app_commands.command(
         name="bbf_оновити",
         description="[Офіцер] Вручну оновити всі ембеди BBF",
@@ -1263,9 +1270,6 @@ class BBFCog(commands.Cog, name="BBF"):
 
         await interaction.followup.send("✅ Всі ембеди оновлено.", ephemeral=True)
 
-
-    # ── Таск бекапів ─────────────────────────────────────────────────────────
-
     @tasks.loop(minutes=15)
     async def backup_task(self):
         data = _load_data()
@@ -1275,8 +1279,6 @@ class BBFCog(commands.Cog, name="BBF"):
     @backup_task.before_loop
     async def before_backup(self):
         await self.bot.wait_until_ready()
-
-    # ── /bbf_бекапи ──────────────────────────────────────────────────────────
 
     @app_commands.command(
         name="bbf_бекапи",
@@ -1341,10 +1343,8 @@ class BBFCog(commands.Cog, name="BBF"):
         deleted = 0
         failed  = 0
 
-        # Шукаємо всі активні та заархівовані гілки що починаються з "BBF —"
         all_threads = list(thread_parent.threads)
 
-        # Додаємо заархівовані гілки
         try:
             async for thread in thread_parent.archived_threads(limit=100):
                 all_threads.append(thread)
@@ -1367,7 +1367,6 @@ class BBFCog(commands.Cog, name="BBF"):
             ephemeral=True,
         )
 
-
     @app_commands.command(
         name="bbf_оновити_кнопки",
         description="[Офіцер] Оновити кнопки в існуючих каналах без видалення людей",
@@ -1382,7 +1381,6 @@ class BBFCog(commands.Cog, name="BBF"):
             return
 
         updated = 0
-        category = interaction.guild.get_channel(BBF_CATEGORY_ID)
 
         for day_num in DAY_NAMES.keys():
             day_key = str(day_num)
@@ -1409,7 +1407,6 @@ class BBFCog(commands.Cog, name="BBF"):
                     data.get("points", {}), interaction.guild,
                     self.bot.user, image_path, data,
                 )
-                # Новий view з перевіркою ролі
                 view = _make_persistent_view(day_num)
 
                 if image_path and Path(image_path).exists():
@@ -1431,10 +1428,72 @@ class BBFCog(commands.Cog, name="BBF"):
             ephemeral=True,
         )
 
+    @app_commands.command(
+        name="bbf_мігрувати",
+        description="[Офіцер] Виправити auto_galley для існуючих даних (запустити один раз після оновлення)",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def bbf_migrate(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        data = _load_data()
+        week = data.get("week", {})
+
+        if not week:
+            await interaction.followup.send("❌ Реєстрація ще не була запущена.", ephemeral=True)
+            return
+
+        report_lines = []
+
+        for day_key, day_data in week.items():
+            main = day_data.get("main", [])
+            day_num = int(day_key)
+            day_name = DAY_NAMES.get(day_num, day_key)
+
+            # 1. Виставляємо original_team якщо відсутній
+            for entry in main:
+                if "original_team" not in entry:
+                    entry["original_team"] = entry["team"]
+
+            # 2. Виставляємо правильний auto_galley
+            for entry in main:
+                if entry["team"] in GALLEY_TEAMS:
+                    entry["auto_galley"] = entry["original_team"] not in GALLEY_TEAMS
+                else:
+                    entry["auto_galley"] = False
+
+            # 3. Якщо галера не повна і є корабельні в "Всі кораблі" — переміщуємо їх на галеру
+            moved = []
+            for entry in main:
+                galley_now = sum(1 for e in main if e["team"] in GALLEY_TEAMS)
+                if galley_now >= GALLEY_MIN:
+                    break
+                if entry["team"] not in GALLEY_TEAMS:
+                    entry["original_team"] = entry["team"]
+                    entry["team"]          = GALLEY_TEAMS[0]
+                    entry["auto_galley"]   = True
+                    moved.append(entry["uid"])
+
+            if moved:
+                report_lines.append(f"**{day_name}**: переміщено на галеру {len(moved)} чол.")
+            else:
+                galley_count = sum(1 for e in main if e["team"] in GALLEY_TEAMS)
+                report_lines.append(f"**{day_name}**: ок (галера {galley_count}/{GALLEY_MIN})")
+
+        _save_data(data)
+
+        # Оновлюємо всі ембеди
+        for day_num in DAY_NAMES.keys():
+            await _refresh_embed(interaction.guild, data, day_num)
+
+        report = "\n".join(report_lines) if report_lines else "Змін не було"
+        await interaction.followup.send(
+            f"✅ Міграцію завершено! Ембеди оновлено.\n\n{report}",
+            ephemeral=True,
+        )
+
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
 def _save_backup(data: dict) -> None:
-    """Зберігає бекап даних з міткою часу."""
     try:
         db = _get_db()
         backup = {
@@ -1447,7 +1506,6 @@ def _save_backup(data: dict) -> None:
             backup,
             upsert=True
         )
-        # Зберігаємо тільки останні 48 бекапів (12 годин)
         backups = list(db["bbf_backups"].find({}, {"_id": 1}).sort("_id", -1))
         if len(backups) > 48:
             old_ids = [b["_id"] for b in backups[48:]]
@@ -1458,7 +1516,6 @@ def _save_backup(data: dict) -> None:
 
 
 def _list_backups() -> list:
-    """Повертає список останніх бекапів."""
     try:
         db = _get_db()
         return list(db["bbf_backups"].find({}, {"_id": 1, "timestamp": 1}).sort("_id", -1).limit(10))
@@ -1467,7 +1524,6 @@ def _list_backups() -> list:
 
 
 def _restore_backup(backup_id: str) -> dict | None:
-    """Відновлює бекап за ID."""
     try:
         db = _get_db()
         doc = db["bbf_backups"].find_one({"_id": backup_id})
@@ -1483,7 +1539,6 @@ def _restore_backup(backup_id: str) -> dict | None:
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(BBFCog(bot))
     print("[COG] BBFCog завантажено")
-    # Перевіряємо MongoDB при старті
     try:
         db = _get_db()
         db.command("ping")
