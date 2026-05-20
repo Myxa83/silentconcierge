@@ -14,3 +14,5 @@ aiocron
 PyNaCl
 yt-dlp
 pymongo[srv]
+playwright
+beautifulsoup4
