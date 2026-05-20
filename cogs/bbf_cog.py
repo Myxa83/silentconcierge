@@ -1436,10 +1436,23 @@ class BBFCog(commands.Cog, name="BBF"):
     async def bbf_migrate(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         data = _load_data()
+
+        # Конвертуємо int ключі в str (MongoDB іноді повертає int ключі)
+        for field in ("week", "week_dates", "message_ids", "thread_ids",
+                      "reminder_msg_ids", "confirmed", "reminded", "invited", "day_images"):
+            raw = data.get(field, {})
+            if raw and any(isinstance(k, int) for k in raw.keys()):
+                data[field] = {str(k): v for k, v in raw.items()}
+
         week = data.get("week", {})
 
         if not week:
-            await interaction.followup.send("❌ Реєстрація ще не була запущена.", ephemeral=True)
+            all_keys = list(data.keys())
+            raw_week = data.get("week")
+            await interaction.followup.send(
+                f"❌ `week` порожній.\nКлючі в даних: `{all_keys}`\nRaw week: `{raw_week}`",
+                ephemeral=True,
+            )
             return
 
         report_lines = []
