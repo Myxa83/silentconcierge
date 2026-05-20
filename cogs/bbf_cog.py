@@ -1000,16 +1000,17 @@ class BBFCog(commands.Cog, name="BBF"):
         old_data   = _load_data()
         old_points = old_data.get("points", {})
 
-        # Видаляємо ВСІ старі BBF канали з категорії
+        # Видаляємо тільки BBF канали (починаються з 📅-)
         category_to_clean = interaction.guild.get_channel(BBF_CATEGORY_ID)
         if category_to_clean:
             for ch in list(category_to_clean.channels):
-                try:
-                    await ch.delete()
-                    print(f"[BBF] Видалено старий канал: {ch.name}")
-                    await asyncio.sleep(0.3)
-                except Exception as e:
-                    print(f"[BBF] Не вдалось видалити {ch.name}: {e}")
+                if ch.name.startswith("📅-"):
+                    try:
+                        await ch.delete()
+                        print(f"[BBF] Видалено старий канал: {ch.name}")
+                        await asyncio.sleep(0.3)
+                    except Exception as e:
+                        print(f"[BBF] Не вдалось видалити {ch.name}: {e}")
         else:
             print("[BBF] Категорію для очистки не знайдено")
 
@@ -1288,3 +1289,4 @@ async def setup(bot: commands.Bot) -> None:
         print("[BBF] MongoDB ping OK ✅")
     except Exception as e:
         print(f"[BBF][ERROR] MongoDB ping FAIL: {e}")
+                
