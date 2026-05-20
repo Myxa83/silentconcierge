@@ -603,6 +603,13 @@ def _make_persistent_view(day_num: int) -> discord.ui.View:
             custom_id=f"bbf_can_{day_num}",
         )
         async def btn_can(self, interaction: discord.Interaction, button: discord.ui.Button):
+            # Перевіряємо роль
+            role = interaction.guild.get_role(BBF_ROLE_ID)
+            if role and role not in interaction.user.roles:
+                await interaction.response.send_message(
+                    "❌ У тебе немає доступу до реєстрації на BBF.", ephemeral=True
+                )
+                return
             # Перевіряємо чи реєстрація активна для цього дня
             data    = _load_data()
             day_key = str(day_num)
@@ -625,6 +632,10 @@ def _make_persistent_view(day_num: int) -> discord.ui.View:
             custom_id=f"bbf_cant_{day_num}",
         )
         async def btn_cant(self, interaction: discord.Interaction, button: discord.ui.Button):
+            role = interaction.guild.get_role(BBF_ROLE_ID)
+            if role and role not in interaction.user.roles:
+                await interaction.response.send_message("❌ У тебе немає доступу до BBF.", ephemeral=True)
+                return
             await _handle_action(interaction, day_num, "cant")
 
         @discord.ui.button(
@@ -634,6 +645,10 @@ def _make_persistent_view(day_num: int) -> discord.ui.View:
             custom_id=f"bbf_vacation_{day_num}",
         )
         async def btn_vacation(self, interaction: discord.Interaction, button: discord.ui.Button):
+            role = interaction.guild.get_role(BBF_ROLE_ID)
+            if role and role not in interaction.user.roles:
+                await interaction.response.send_message("❌ У тебе немає доступу до BBF.", ephemeral=True)
+                return
             await interaction.response.send_modal(VacationModal())
 
         @discord.ui.button(
@@ -643,6 +658,10 @@ def _make_persistent_view(day_num: int) -> discord.ui.View:
             custom_id=f"bbf_cancel_{day_num}",
         )
         async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+            role = interaction.guild.get_role(BBF_ROLE_ID)
+            if role and role not in interaction.user.roles:
+                await interaction.response.send_message("❌ У тебе немає доступу до BBF.", ephemeral=True)
+                return
             await _handle_action(interaction, day_num, "cancel")
 
     return PersistentView()
