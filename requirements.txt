@@ -13,3 +13,4 @@ wheel
 aiocron
 PyNaCl
 yt-dlp
+pymongo[srv]
