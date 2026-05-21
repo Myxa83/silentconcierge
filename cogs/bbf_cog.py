@@ -895,37 +895,56 @@ async def _refresh_embed(guild: discord.Guild, data: dict, day_num: int) -> None
     thread_id = data.get("thread_ids", {}).get(day_key)
     msg_id    = data.get("message_ids", {}).get(day_key)
     if not msg_id:
+        print(f"[BBF] _refresh_embed: немає message_id для дня {day_num}")
         return
     try:
         if thread_id:
-            channel = guild.get_thread(int(thread_id))
+            channel = guild.get_channel(int(thread_id))
             if not channel:
                 try:
                     channel = await guild.fetch_channel(int(thread_id))
-                except Exception:
+                except Exception as e:
+                    print(f"[BBF] Не вдалось fetch_channel {thread_id}: {e}")
                     channel = None
         else:
             channel_id = data.get("channel_id")
             channel    = guild.get_channel(int(channel_id)) if channel_id else None
         if not channel:
+            print(f"[BBF] _refresh_embed: канал не знайдено для дня {day_num}")
             return
-        msg_obj    = await channel.fetch_message(int(msg_id))
+
+        # Пробуємо знайти повідомлення
+        try:
+            msg_obj = await channel.fetch_message(int(msg_id))
+        except discord.NotFound:
+            print(f"[BBF] Повідомлення {msg_id} не знайдено в каналі {channel.id} — пропускаємо")
+            return
+        except Exception as e:
+            print(f"[BBF] Помилка fetch_message {msg_id}: {e}")
+            return
+
         image_path = data.get("day_images", {}).get(day_key)
         embed = _build_embed(
             day_num, data["week"][day_key],
             data.get("points", {}), guild, guild.me, image_path, data,
         )
         view = _make_persistent_view(day_num)
-        if image_path:
+
+        # Спочатку пробуємо з картинкою, потім без
+        if image_path and Path(image_path).exists():
             try:
                 file = discord.File(image_path, filename=Path(image_path).name)
                 await msg_obj.edit(embed=embed, view=view, attachments=[file])
-            except Exception:
-                await msg_obj.edit(embed=embed, view=view)
-        else:
-            await msg_obj.edit(embed=embed, view=view)
+                print(f"[BBF] Ембед дня {day_num} оновлено з картинкою")
+                return
+            except Exception as e:
+                print(f"[BBF] Картинка не завантажилась ({e}), пробуємо без...")
+
+        await msg_obj.edit(embed=embed, view=view)
+        print(f"[BBF] Ембед дня {day_num} оновлено без картинки")
+
     except Exception as e:
-        print(f"[BBF] Помилка оновлення ембеду дня {day_num}: {e}")
+        print(f"[BBF] Помилка оновлення ембеду дня {day_num}: {type(e).__name__}: {e}")
 
 # ─── Cog ─────────────────────────────────────────────────────────────────────
 
@@ -1437,6 +1456,90 @@ class BBFCog(commands.Cog, name="BBF"):
             f"✅ Кнопки оновлено в **{updated}** каналах. Люди збережені!",
             ephemeral=True,
         )
+
+
+    @app_commands.command(
+        name="bbf_переслати",
+        description="[Офіцер] Надіслати новий ембед в канал (якщо старий видалено)",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def bbf_resend(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        data = _load_data()
+
+        if not data.get("week"):
+            await interaction.followup.send("❌ Реєстрація ще не була запущена.", ephemeral=True)
+            return
+
+        sent = 0
+        role         = interaction.guild.get_role(BBF_ROLE_ID)
+        role_mention = role.mention if role else f"<@&{BBF_ROLE_ID}>"
+
+        for day_num in DAY_NAMES.keys():
+            day_key   = str(day_num)
+            if day_key not in data.get("week", {}):
+                continue
+            thread_id = data.get("thread_ids", {}).get(day_key)
+            if not thread_id:
+                continue
+
+            try:
+                channel = interaction.guild.get_channel(int(thread_id))
+                if not channel:
+                    channel = await interaction.guild.fetch_channel(int(thread_id))
+                if not channel:
+                    continue
+
+                # Перевіряємо чи існує старе повідомлення
+                msg_id   = data.get("message_ids", {}).get(day_key)
+                msg_exists = False
+                if msg_id:
+                    try:
+                        await channel.fetch_message(int(msg_id))
+                        msg_exists = True
+                    except Exception:
+                        msg_exists = False
+
+                if msg_exists:
+                    continue  # повідомлення є — не надсилаємо нове
+
+                # Надсилаємо новий ембед
+                image_path = data.get("day_images", {}).get(day_key)
+                embed = _build_embed(
+                    day_num, data["week"][day_key],
+                    data.get("points", {}), interaction.guild,
+                    self.bot.user, image_path, data,
+                )
+                view = _make_persistent_view(day_num)
+
+                if image_path and Path(image_path).exists():
+                    try:
+                        file = discord.File(image_path, filename=Path(image_path).name)
+                        msg  = await channel.send(file=file, embed=embed, view=view)
+                    except Exception:
+                        msg = await channel.send(embed=embed, view=view)
+                else:
+                    msg = await channel.send(embed=embed, view=view)
+
+                data.setdefault("message_ids", {})[day_key] = msg.id
+                sent += 1
+                print(f"[BBF] Новий ембед надіслано для {DAY_NAMES[day_num]}")
+
+            except Exception as e:
+                print(f"[BBF] Помилка переслання ембеду дня {day_num}: {e}")
+
+        _save_data(data)
+
+        if sent:
+            await interaction.followup.send(
+                f"✅ Надіслано нових ембедів: **{sent}**. Люди збережені!",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "ℹ️ Всі ембеди вже існують — нічого не надсилалось.",
+                ephemeral=True,
+            )
 
     @app_commands.command(
         name="bbf_мігрувати",
