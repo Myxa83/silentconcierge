@@ -1644,8 +1644,11 @@ def _save_backup(data: dict) -> None:
 def _list_backups() -> list:
     try:
         db = _get_db()
-        return list(db["bbf_backups"].find({}, {"_id": 1, "timestamp": 1}).sort("_id", -1).limit(10))
-    except Exception:
+        result = list(db["bbf_backups"].find({}, {"_id": 1, "timestamp": 1}).sort("_id", -1).limit(20))
+        print(f"[BBF] _list_backups: знайдено {len(result)}")
+        return result
+    except Exception as e:
+        print(f"[BBF][ERROR] _list_backups: {e}")
         return []
 
 
