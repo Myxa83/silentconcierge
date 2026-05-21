@@ -1315,9 +1315,10 @@ class BBFCog(commands.Cog, name="BBF"):
     )
     @app_commands.default_permissions(manage_guild=True)
     async def bbf_backups_list(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         backups = _list_backups()
         if not backups:
-            await interaction.response.send_message("ℹ️ Бекапів немає.", ephemeral=True)
+            await interaction.followup.send("ℹ️ Бекапів немає.", ephemeral=True)
             return
 
         lines = []
