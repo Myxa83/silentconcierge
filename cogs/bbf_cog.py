@@ -35,7 +35,7 @@ MAX_SPOTS                = 20
 GALLEY_MIN               = 8
 THREAD_PARENT_CHANNEL_ID = 1486067779177152523
 BBF_CATEGORY_ID          = 1486067160555065425
-VOICE_CHANNEL_ID         = 1506463961984274462
+VOICE_CHANNEL_ID         = 1486420425188839495
 BBF_ROLE_ID              = 1470790564718055434
 
 REMINDER_HOUR_UTC    = 17
@@ -577,9 +577,19 @@ def _make_persistent_view(day_num: int) -> discord.ui.View:
                 return
             data    = _load_data()
             day_key = str(day_num)
-            if day_key not in data.get("week", {}):
+
+            # Конвертуємо int ключі якщо є
+            week = data.get("week", {})
+            if week and any(isinstance(k, int) for k in week.keys()):
+                data["week"] = {str(k): v for k, v in week.items()}
+                week = data["week"]
+
+            if day_key not in week:
+                week_keys = list(week.keys())
                 await interaction.response.send_message(
-                    "❌ Реєстрація на цей день недоступна.", ephemeral=True
+                    f"❌ Реєстрація на цей день недоступна.\n"
+                    f"*(день: {day_key}, доступні: {week_keys})*",
+                    ephemeral=True,
                 )
                 return
             view = TeamSelectView(day_num)
