@@ -193,8 +193,37 @@ def _galley_count(day_data: dict) -> int:
 def _promote_from_waitlist(day_data: dict) -> str | None:
     if len(day_data["main"]) < MAX_SPOTS and day_data["waitlist"]:
         entry = day_data["waitlist"].pop(0)
+
+        # Перевіряємо галеру — якщо не повна, людина іде на галеру
+        galley_now     = _galley_count(day_data)
+        is_real_galley = entry["team"] in GALLEY_TEAMS
+
+        if galley_now < GALLEY_MIN and not is_real_galley:
+            # Галера не повна — тимчасово на галеру
+            entry["original_team"] = entry["team"]
+            entry["team"]          = GALLEY_TEAMS[0]
+            entry["auto_galley"]   = True
+        else:
+            entry["auto_galley"] = False
+
         day_data["main"].append(entry)
         return entry["uid"]
+    return None
+
+
+def _refill_galley(day_data: dict) -> str | None:
+    """Якщо галера не повна — переміщує останнього корабельного назад на галеру."""
+    galley_now = _galley_count(day_data)
+    if galley_now >= GALLEY_MIN:
+        return None
+    # Шукаємо останнього (найновішого) хто на кораблі з auto_galley=False
+    # тобто того хто був виштовхнутий з галери раніше
+    for entry in reversed(day_data["main"]):
+        if entry["team"] not in GALLEY_TEAMS and not entry.get("auto_galley"):
+            entry["original_team"] = entry["team"]
+            entry["team"]          = GALLEY_TEAMS[0]
+            entry["auto_galley"]   = True
+            return entry["uid"]
     return None
 
 
@@ -841,8 +870,15 @@ async def _handle_action(
                 "ℹ️ Ти не зареєстрований на цей день.", ephemeral=True
             )
             return
+        # Перевіряємо чи людина була на галері
+        was_on_galley = any(
+            e["uid"] == uid and e["team"] in GALLEY_TEAMS
+            for e in day_data["main"]
+        )
         _remove_uid(day_data, uid)
         promoted_uid = _promote_from_waitlist(day_data) if prev_status == "main" else None
+        # Якщо галера тепер не повна — повертаємо найновішого корабельного на галеру
+        galley_back_uid = _refill_galley(day_data) if prev_status == "main" else None
         _save_data(data)
         msg = f"⚓ Твою участь на **{DAY_NAMES[day_num]}** скасовано. Очки збережено."
         if promoted_uid:
@@ -853,12 +889,25 @@ async def _handle_action(
                 interaction.guild, promoted_uid,
                 f"🛶 Місце звільнилось! Тебе переведено в основний список BBF на **{DAY_NAMES[day_num]}**. Вдалого бою!"
             )
+        if galley_back_uid:
+            m     = interaction.guild.get_member(int(galley_back_uid))
+            pname = m.mention if m else f"<@{galley_back_uid}>"
+            msg  += f"\n⚓ {pname} повернуто на Галеру!"
+            await _try_send_dm(
+                interaction.guild, galley_back_uid,
+                f"⚓ Місце на Галері звільнилось — тебе повернуто на **Екіпаж Галери** на BBF ({DAY_NAMES[day_num]}). Вдалого бою!"
+            )
         await interaction.followup.send(msg, ephemeral=True)
 
     elif action == "cant":
+        was_on_galley = any(
+            e["uid"] == uid and e["team"] in GALLEY_TEAMS
+            for e in day_data["main"]
+        )
         _remove_uid(day_data, uid)
         day_data["cant"].append(uid)
         promoted_uid = _promote_from_waitlist(day_data) if prev_status == "main" else None
+        galley_back_uid = _refill_galley(day_data) if prev_status == "main" else None
         _save_data(data)
         msg = f"⛵ Відмічено як «Не буду» на **{DAY_NAMES[day_num]}**."
         if promoted_uid:
@@ -869,12 +918,21 @@ async def _handle_action(
                 interaction.guild, promoted_uid,
                 f"🛶 Місце звільнилось! Тебе переведено в основний список BBF на **{DAY_NAMES[day_num]}**. Вдалого бою!"
             )
+        if galley_back_uid:
+            m     = interaction.guild.get_member(int(galley_back_uid))
+            pname = m.mention if m else f"<@{galley_back_uid}>"
+            msg  += f"\n⚓ {pname} повернуто на Галеру!"
+            await _try_send_dm(
+                interaction.guild, galley_back_uid,
+                f"⚓ Місце на Галері звільнилось — тебе повернуто на **Екіпаж Галери** на BBF ({DAY_NAMES[day_num]}). Вдалого бою!"
+            )
         await interaction.followup.send(msg, ephemeral=True)
 
     elif action == "vacation":
         _remove_uid(day_data, uid)
         day_data["vacation"].append(uid)
         promoted_uid = _promote_from_waitlist(day_data) if prev_status == "main" else None
+        galley_back_uid = _refill_galley(day_data) if prev_status == "main" else None
         _save_data(data)
         msg = f"🛟 Відмічено як «Відпустка» на **{DAY_NAMES[day_num]}**."
         if promoted_uid:
@@ -884,6 +942,14 @@ async def _handle_action(
             await _try_send_dm(
                 interaction.guild, promoted_uid,
                 f"🛶 Місце звільнилось! Тебе переведено в основний список BBF на **{DAY_NAMES[day_num]}**. Вдалого бою!"
+            )
+        if galley_back_uid:
+            m     = interaction.guild.get_member(int(galley_back_uid))
+            pname = m.mention if m else f"<@{galley_back_uid}>"
+            msg  += f"\n⚓ {pname} повернуто на Галеру!"
+            await _try_send_dm(
+                interaction.guild, galley_back_uid,
+                f"⚓ Місце на Галері звільнилось — тебе повернуто на **Екіпаж Галери** на BBF ({DAY_NAMES[day_num]}). Вдалого бою!"
             )
         await interaction.followup.send(msg, ephemeral=True)
 
