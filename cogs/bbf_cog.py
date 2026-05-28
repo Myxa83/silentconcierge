@@ -1107,16 +1107,53 @@ class BBFCog(commands.Cog, name="BBF"):
             and not data.get("invited", {}).get(day_key)
         ):
             if active_uids:
-                mentions      = " ".join(f"<@{uid}>" for uid in active_uids)
-                ts            = _get_ts_for_day(data, weekday)
+                ts = _get_ts_for_day(data, weekday)
+                # Fetch канал щоб обійти кеш
                 voice_channel = guild.get_channel(VOICE_CHANNEL_ID)
-                vc_mention    = voice_channel.mention if voice_channel else f"<#{VOICE_CHANNEL_ID}>"
-                await thread.send(
+                if not voice_channel:
+                    try:
+                        voice_channel = await guild.fetch_channel(VOICE_CHANNEL_ID)
+                    except Exception:
+                        voice_channel = None
+                vc_mention = voice_channel.mention if voice_channel else f"<#{VOICE_CHANNEL_ID}>"
+
+                # Розділяємо на галеру і кораблі
+                day_data_now = data["week"][day_key]
+                galley_uids = [
+                    e["uid"] for e in day_data_now["main"]
+                    if e["team"] in GALLEY_TEAMS and e["uid"] in active_uids
+                ]
+                ship_entries = [
+                    e for e in day_data_now["main"]
+                    if e["team"] not in GALLEY_TEAMS and e["uid"] in active_uids
+                ]
+
+                galley_mentions = " ".join(f"<@{uid}>" for uid in galley_uids)
+                ship_mentions   = " ".join(f"<@{e['uid']}>" for e in ship_entries)
+
+                # Список галери
+                galley_lines = "\n".join(
+                    f"`{i:02}.` <@{uid}>"
+                    for i, uid in enumerate(galley_uids, 1)
+                ) or "*Поки порожньо*"
+
+                # Список кораблів
+                ship_lines = "\n".join(
+                    f"`{i:02}.` <@{e['uid']}> — *{e['team']}*"
+                    for i, e in enumerate(ship_entries, 1)
+                ) or "*Поки порожньо*"
+
+                msg = (
                     f"🚢 **Збираємось на борту!**\n"
-                    f"{mentions}\n\n"
-                    f"BBF о <t:{ts}:t>!\n"
-                    f"Заходьте в голосовий канал: {vc_mention} 🍾⚓"
+                    f"BBF о <t:{ts}:t>! Заходьте: {vc_mention} 🍾⚓\n\n"
+                    f"⚓ **Екіпаж Галери** ({len(galley_uids)}/{GALLEY_MIN}):\n"
+                    f"{galley_mentions}\n"
+                    f"{galley_lines}\n\n"
+                    f"⛵ **Флотилія** ({len(ship_entries)}):\n"
+                    f"{ship_mentions}\n"
+                    f"{ship_lines}"
                 )
+                await thread.send(msg)
 
             data.setdefault("invited", {})[day_key] = True
             _save_data(data)
