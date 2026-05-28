@@ -497,16 +497,20 @@ class MusicCog(commands.Cog, name="MusicCog"):
 
     async def _safe_send(self, interaction: discord.Interaction, message: str, ephemeral: bool = True, embed: Optional[discord.Embed] = None, view: Optional[discord.ui.View] = None) -> None:
         try:
-            if interaction.response.is_done():
-                await interaction.followup.send(
-                    content=message if not embed else None,
-                    embed=embed, view=view, ephemeral=ephemeral
-                )
+            kwargs: Dict[str, Any] = {"ephemeral": ephemeral}
+            if embed:
+                kwargs["embed"] = embed
+            elif message:
+                kwargs["content"] = message
             else:
-                await interaction.response.send_message(
-                    content=message if not embed else None,
-                    embed=embed, view=view, ephemeral=ephemeral
-                )
+                kwargs["content"] = "​"  # zero-width space
+            if view is not None:
+                kwargs["view"] = view
+
+            if interaction.response.is_done():
+                await interaction.followup.send(**kwargs)
+            else:
+                await interaction.response.send_message(**kwargs)
         except Exception as e:
             log_music_error("_safe_send", e)
 
