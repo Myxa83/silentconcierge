@@ -169,12 +169,25 @@ class SilentBot(commands.Bot):
                         print(f"[SYNC] Adding to global: /{cmd.name}")
 
             if global_tree_commands:
-                # Додаємо команди глобально
+                # Очищаємо глобальне дерево і додаємо ТІЛЬКИ BBF команди
+                # Спочатку отримуємо поточні глобальні команди
+                current_global = self.tree.get_commands()
+                
+                # Видаляємо всі що не з глобальних когів
+                global_cmd_names = {cmd.name for cmd in global_tree_commands}
+                for cmd in current_global:
+                    if cmd.name not in global_cmd_names:
+                        try:
+                            self.tree.remove_command(cmd.name)
+                        except Exception:
+                            pass
+
+                # Додаємо BBF команди
                 for cmd in global_tree_commands:
                     try:
                         self.tree.add_command(cmd)
                     except Exception:
-                        pass  # вже є
+                        pass
 
                 global_synced = await self.tree.sync()
                 print(f"[SYNC] Global sync: Count: {len(global_synced)}")
