@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# bbf_global_cog.py — Multi-server BBF registration system
+# bbf_cog_eng.py — Multi-server BBF registration system
 
 import asyncio
 import os
@@ -28,15 +28,18 @@ def _get_db():
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
-MAX_SPOTS     = 20
-GALLEY_MIN    = 8
+MAX_SPOTS  = 20
+GALLEY_MIN = 8
 
-REMINDER_HOUR_UTC    = 17
-REMINDER_MINUTE_UTC  = 30
-INVITE_HOUR_UTC      = 17
-INVITE_MINUTE_UTC    = 45
-BBF_START_HOUR_UTC   = 18
-BBF_START_MINUTE_UTC = 0
+# CEST = UTC+2
+CEST_OFFSET = timedelta(hours=2)
+
+REMINDER_HOUR_CEST    = 19
+REMINDER_MINUTE_CEST  = 30
+INVITE_HOUR_CEST      = 19
+INVITE_MINUTE_CEST    = 45
+BBF_START_HOUR_CEST   = 20
+BBF_START_MINUTE_CEST = 0
 
 DAY_NAMES = {
     0: "Monday",
@@ -51,15 +54,21 @@ GALLEY_TEAMS = ["Galley Crew"]
 SHIP_TEAMS   = ["Flight", "Balance", "Progress", "Bravery", "Panaxion", "Star of Epheria"]
 ALL_TEAMS    = GALLEY_TEAMS + SHIP_TEAMS
 
-# ─── Per-server data ─────────────────────────────────────────────────────────
+BBF_IMAGES = [
+    "assets/backgrounds/image-65.webp",
+    "assets/backgrounds/2026-03-06_99110141.PNG",
+    "assets/backgrounds/PN260416.png",
+    "assets/backgrounds/a56dd81618920250304171316184.png",
+    "assets/backgrounds/ed682f59d7420260410101500360 (1).jpg",
+    "assets/backgrounds/3e703842-4873-41c2-9060-20fd9fdc0109.png",
+]
+
+# ─── Per-server data ──────────────────────────────────────────────────────────
 
 def _guild_col(guild_id: int):
-    """Returns MongoDB collection for a specific guild."""
     return _get_db()[f"bbf_{guild_id}"]
 
-
 def _load_config(guild_id: int) -> dict:
-    """Load server config (category, role, voice channel)."""
     try:
         doc = _get_db()["bbf_config"].find_one({"_id": str(guild_id)})
         if doc:
@@ -68,7 +77,6 @@ def _load_config(guild_id: int) -> dict:
     except Exception as e:
         print(f"[BBF] Config load error: {e}")
     return {}
-
 
 def _save_config(guild_id: int, config: dict) -> None:
     try:
@@ -80,7 +88,6 @@ def _save_config(guild_id: int, config: dict) -> None:
     except Exception as e:
         print(f"[BBF] Config save error: {e}")
 
-
 def _load_data(guild_id: int) -> dict:
     try:
         doc = _guild_col(guild_id).find_one({"_id": "main"})
@@ -91,34 +98,22 @@ def _load_data(guild_id: int) -> dict:
         print(f"[BBF] Load error: {e}")
     return _empty_data()
 
-
 def _save_data(guild_id: int, data: dict) -> None:
     try:
         _guild_col(guild_id).replace_one(
-            {"_id": "main"},
-            {"_id": "main", **data},
-            upsert=True,
+            {"_id": "main"}, {"_id": "main", **data}, upsert=True,
         )
     except Exception as e:
         print(f"[BBF] Save error: {e}")
 
-
 def _empty_data() -> dict:
     return {
-        "week": {},
-        "week_dates": {},
-        "points": {},
-        "channel_id": None,
-        "message_ids": {},
-        "thread_ids": {},
-        "reminder_msg_ids": {},
-        "confirmed": {},
-        "used_images": [],
-        "day_images": {},
-        "reminded": {},
-        "invited": {},
+        "week": {}, "week_dates": {}, "points": {},
+        "channel_id": None, "message_ids": {}, "thread_ids": {},
+        "reminder_msg_ids": {}, "confirmed": {},
+        "used_images": [], "day_images": {},
+        "reminded": {}, "invited": {},
     }
-
 
 def _empty_day() -> dict:
     return {"main": [], "waitlist": [], "vacation": [], "cant": []}
@@ -138,7 +133,6 @@ def _save_backup(guild_id: int, data: dict) -> None:
     except Exception as e:
         print(f"[BBF] Backup error: {e}")
 
-
 def _list_backups(guild_id: int) -> list:
     try:
         return list(_get_db()[f"bbf_backups_{guild_id}"].find(
@@ -146,7 +140,6 @@ def _list_backups(guild_id: int) -> list:
         ).sort("_id", -1).limit(20))
     except Exception:
         return []
-
 
 def _restore_backup(guild_id: int, backup_id: str) -> dict | None:
     try:
@@ -160,24 +153,46 @@ def _restore_backup(guild_id: int, backup_id: str) -> dict | None:
 
 # ─── Week dates ───────────────────────────────────────────────────────────────
 
+def _now_cest() -> datetime:
+    """Current time in CEST."""
+    return datetime.now(timezone.utc) + CEST_OFFSET
+
 def _get_week_dates() -> dict[int, datetime]:
-    now    = datetime.now(timezone.utc)
+    now    = _now_cest()
     monday = now - timedelta(days=now.weekday())
     return {day_num: monday + timedelta(days=day_num) for day_num in DAY_NAMES}
 
-
 def _bbf_timestamp(day_date: datetime) -> int:
-    return int(day_date.replace(
-        hour=BBF_START_HOUR_UTC, minute=BBF_START_MINUTE_UTC,
+    """Unix timestamp for BBF start on given date (CEST)."""
+    target = day_date.replace(
+        hour=BBF_START_HOUR_CEST, minute=BBF_START_MINUTE_CEST,
         second=0, microsecond=0,
-    ).timestamp())
-
+    )
+    # Convert CEST to UTC for timestamp
+    target_utc = target - CEST_OFFSET
+    return int(target_utc.replace(tzinfo=timezone.utc).timestamp())
 
 def _get_ts_for_day(data: dict, day_num: int) -> int:
     date_str = data.get("week_dates", {}).get(str(day_num))
     if date_str:
-        return _bbf_timestamp(datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc))
-    return _bbf_timestamp(datetime.now(timezone.utc))
+        d = datetime.fromisoformat(date_str)
+        return _bbf_timestamp(d)
+    return _bbf_timestamp(_now_cest())
+
+# ─── Image picker ─────────────────────────────────────────────────────────────
+
+def _pick_image(data: dict, day_key: str) -> str:
+    if day_key in data.get("day_images", {}):
+        return data["day_images"][day_key]
+    used = data.get("used_images", [])
+    available = [img for img in BBF_IMAGES if img not in used]
+    if not available:
+        available = BBF_IMAGES[:]
+        data["used_images"] = []
+    chosen = random.choice(available)
+    data.setdefault("used_images", []).append(chosen)
+    data.setdefault("day_images", {})[day_key] = chosen
+    return chosen
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -186,7 +201,6 @@ def _get_entry(day_data: dict, uid: str) -> dict | None:
         if e["uid"] == uid:
             return e
     return None
-
 
 def _get_status(day_data: dict, uid: str) -> str | None:
     for e in day_data["main"]:
@@ -197,7 +211,6 @@ def _get_status(day_data: dict, uid: str) -> str | None:
     if uid in day_data["cant"]: return "cant"
     return None
 
-
 def _remove_uid(day_data: dict, uid: str) -> str | None:
     prev = _get_status(day_data, uid)
     day_data["main"]     = [e for e in day_data["main"]     if e["uid"] != uid]
@@ -206,10 +219,8 @@ def _remove_uid(day_data: dict, uid: str) -> str | None:
     if uid in day_data["cant"]:     day_data["cant"].remove(uid)
     return prev
 
-
 def _galley_count(day_data: dict) -> int:
     return sum(1 for e in day_data["main"] if e["team"] in GALLEY_TEAMS)
-
 
 def _promote_from_waitlist(day_data: dict) -> str | None:
     if len(day_data["main"]) < MAX_SPOTS and day_data["waitlist"]:
@@ -225,7 +236,6 @@ def _promote_from_waitlist(day_data: dict) -> str | None:
         return entry["uid"]
     return None
 
-
 def _refill_galley(day_data: dict) -> str | None:
     if _galley_count(day_data) >= GALLEY_MIN:
         return None
@@ -236,7 +246,6 @@ def _refill_galley(day_data: dict) -> str | None:
             entry["auto_galley"]   = True
             return entry["uid"]
     return None
-
 
 async def _try_send_dm(guild: discord.Guild, uid: str, msg: str) -> None:
     try:
@@ -252,10 +261,10 @@ def _build_embed(
     day_num: int, day_data: dict, points: dict,
     guild: discord.Guild, bot_user, image_path: str | None, data: dict,
 ) -> discord.Embed:
-    day_name  = DAY_NAMES[day_num]
-    day_key   = str(day_num)
-    ts        = _get_ts_for_day(data, day_num)
-    date_str  = data.get("week_dates", {}).get(day_key, "")
+    day_name   = DAY_NAMES[day_num]
+    day_key    = str(day_num)
+    ts         = _get_ts_for_day(data, day_num)
+    date_str   = data.get("week_dates", {}).get(day_key, "")
     date_label = ""
     if date_str:
         d = datetime.fromisoformat(date_str)
@@ -273,9 +282,9 @@ def _build_embed(
 
     galley_lines = []
     for i, entry in enumerate(galley_main, 1):
-        member = guild.get_member(int(entry["uid"]))
-        name   = member.mention if member else f"<@{entry['uid']}>"
-        pts    = points.get(entry["uid"], 0)
+        member    = guild.get_member(int(entry["uid"]))
+        name      = member.mention if member else f"<@{entry['uid']}>"
+        pts       = points.get(entry["uid"], 0)
         pts_str   = f" `[{pts}🏅]`" if pts > 0 else ""
         auto_mark = " *(auto)*" if entry.get("auto_galley") else ""
         galley_lines.append(f"`{i:02}.` {name}{pts_str}{auto_mark}")
@@ -290,9 +299,9 @@ def _build_embed(
 
     ship_lines = []
     for i, entry in enumerate(ship_main, 1):
-        member = guild.get_member(int(entry["uid"]))
-        name   = member.mention if member else f"<@{entry['uid']}>"
-        pts    = points.get(entry["uid"], 0)
+        member  = guild.get_member(int(entry["uid"]))
+        name    = member.mention if member else f"<@{entry['uid']}>"
+        pts     = points.get(entry["uid"], 0)
         pts_str = f" `[{pts}🏅]`" if pts > 0 else ""
         ship_lines.append(f"`{i:02}.` {name} — *{entry['team']}*{pts_str}")
 
@@ -312,9 +321,9 @@ def _build_embed(
     if day_data["waitlist"]:
         wait_lines = []
         for i, entry in enumerate(day_data["waitlist"], 1):
-            member = guild.get_member(int(entry["uid"]))
-            name   = member.mention if member else f"<@{entry['uid']}>"
-            pts    = points.get(entry["uid"], 0)
+            member  = guild.get_member(int(entry["uid"]))
+            name    = member.mention if member else f"<@{entry['uid']}>"
+            pts     = points.get(entry["uid"], 0)
             pts_str = f" `[{pts}🏅]`" if pts > 0 else ""
             wait_lines.append(f"`{i}.` {name} — *{entry['team']}*{pts_str}")
         embed.add_field(
@@ -334,8 +343,11 @@ def _build_embed(
             inline=False,
         )
 
+    if image_path:
+        embed.set_image(url=f"attachment://{Path(image_path).name}")
+
     embed.set_footer(
-        text="BBF Registration System",
+        text="Silent Concierge by Myxa  |  🍾 Rom, Rom, ROM!",
         icon_url=bot_user.display_avatar.url if bot_user else None,
     )
     return embed
@@ -368,8 +380,11 @@ def _build_reminder_embed(
     if confirmed_lines:
         embed.add_field(name=f"✅ Confirmed ({len(confirmed_lines)})", value="\n".join(confirmed_lines), inline=True)
     if waiting_lines:
-        embed.add_field(name=f"⏳ Waiting ({len(waiting_lines)})",   value="\n".join(waiting_lines),   inline=True)
-    embed.set_footer(text="BBF Registration System", icon_url=bot_user.display_avatar.url if bot_user else None)
+        embed.add_field(name=f"⏳ Waiting ({len(waiting_lines)})", value="\n".join(waiting_lines), inline=True)
+    embed.set_footer(
+        text="Silent Concierge by Myxa  |  🍾 Rom, Rom, ROM!",
+        icon_url=bot_user.display_avatar.url if bot_user else None,
+    )
     return embed
 
 # ─── Views ───────────────────────────────────────────────────────────────────
@@ -386,10 +401,10 @@ def _make_confirm_view(day_num: int, guild_id: int) -> discord.ui.View:
             custom_id=f"bbf_confirm_{guild_id}_{day_num}",
         )
         async def btn_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-            gid     = interaction.guild.id
-            data    = _load_data(gid)
-            day_key = str(day_num)
-            uid     = str(interaction.user.id)
+            gid      = interaction.guild.id
+            data     = _load_data(gid)
+            day_key  = str(day_num)
+            uid      = str(interaction.user.id)
             day_data = data.get("week", {}).get(day_key)
             if not day_data or _get_status(day_data, uid) != "main":
                 await interaction.response.send_message("ℹ️ You are not in the main list for this day.", ephemeral=True)
@@ -423,11 +438,11 @@ class VacationModal(discord.ui.Modal, title="🛟 Leave"):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            year  = datetime.now(timezone.utc).year
-            start = datetime(year, int(self.start_month.value), int(self.start_day.value), tzinfo=timezone.utc)
-            end   = datetime(year, int(self.end_month.value),   int(self.end_day.value),   tzinfo=timezone.utc)
+            year  = _now_cest().year
+            start = datetime(year, int(self.start_month.value), int(self.start_day.value))
+            end   = datetime(year, int(self.end_month.value),   int(self.end_day.value))
             if end < start:
-                end = datetime(year + 1, int(self.end_month.value), int(self.end_day.value), tzinfo=timezone.utc)
+                end = datetime(year + 1, int(self.end_month.value), int(self.end_day.value))
             if (end - start).days > 60:
                 await interaction.response.send_message("❌ Leave cannot exceed 60 days.", ephemeral=True)
                 return
@@ -442,14 +457,14 @@ class VacationModal(discord.ui.Modal, title="🛟 Leave"):
             "start": start.strftime("%Y-%m-%d"),
             "end":   end.strftime("%Y-%m-%d"),
         }
-        week = data.get("week", {})
+        week       = data.get("week", {})
         week_dates = data.get("week_dates", {})
         marked_days = []
         for day_key, day_data in week.items():
             date_str = week_dates.get(day_key)
             if not date_str:
                 continue
-            day_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+            day_date = datetime.fromisoformat(date_str)
             if start <= day_date <= end:
                 _remove_uid(day_data, uid)
                 if uid not in day_data["vacation"]:
@@ -467,7 +482,7 @@ class VacationModal(discord.ui.Modal, title="🛟 Leave"):
             date_str = week_dates.get(day_key)
             if not date_str:
                 continue
-            day_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+            day_date = datetime.fromisoformat(date_str)
             if start <= day_date <= end:
                 await _refresh_embed(interaction.guild, data, int(day_key))
 
@@ -607,7 +622,10 @@ async def _process_registration(interaction: discord.Interaction, day_num: int, 
             reply = (f"⚓ Galley not full ({galley_now+1}/{GALLEY_MIN})! Added to **Galley** temporarily.\n"
                      f"You'll be moved to **{chosen_team}** when galley is complete. Points reset.")
     else:
-        evict_index = next((i for i, e in enumerate(day_data["main"]) if e.get("auto_galley") and e["team"] in GALLEY_TEAMS), None)
+        evict_index = next(
+            (i for i, e in enumerate(day_data["main"]) if e.get("auto_galley") and e["team"] in GALLEY_TEAMS),
+            None
+        )
         if evict_index is not None:
             evicted          = day_data["main"][evict_index]
             evicted_original = evicted["original_team"]
@@ -620,7 +638,8 @@ async def _process_registration(interaction: discord.Interaction, day_num: int, 
             _save_data(gid, data)
             await _try_send_dm(interaction.guild, evicted["uid"],
                 f"⛵ New member joined the Galley — you've been moved to **{evicted_original}** on BBF ({DAY_NAMES[day_num]}). Good luck!")
-            evicted_name = (interaction.guild.get_member(int(evicted["uid"])) or type('', (), {'display_name': f"<@{evicted['uid']}>"})).display_name
+            evicted_member = interaction.guild.get_member(int(evicted["uid"]))
+            evicted_name   = evicted_member.display_name if evicted_member else f"<@{evicted['uid']}>"
             reply = (f"⚓ Added to **Galley** on **{DAY_NAMES[day_num]}** (temporary, then to **{chosen_team}**).\n"
                      f"**{evicted_name}** moved to **{evicted_original}**. Points reset.")
         else:
@@ -649,7 +668,7 @@ async def _handle_action(interaction: discord.Interaction, day_num: int, action:
     uid         = str(interaction.user.id)
     prev_status = _get_status(day_data, uid)
 
-    async def _notify_promoted(promoted_uid, back_uid):
+    async def _notify(promoted_uid, back_uid) -> str:
         msg = ""
         if promoted_uid:
             m = interaction.guild.get_member(int(promoted_uid))
@@ -670,31 +689,31 @@ async def _handle_action(interaction: discord.Interaction, day_num: int, action:
             await interaction.followup.send("ℹ️ You are not registered for this day.", ephemeral=True)
             return
         _remove_uid(day_data, uid)
-        promoted  = _promote_from_waitlist(day_data) if prev_status == "main" else None
-        back      = _refill_galley(day_data)          if prev_status == "main" else None
+        promoted = _promote_from_waitlist(day_data) if prev_status == "main" else None
+        back     = _refill_galley(day_data)          if prev_status == "main" else None
         _save_data(gid, data)
         msg = f"⚓ Your registration for **{DAY_NAMES[day_num]}** has been cancelled. Points kept."
-        msg += await _notify_promoted(promoted, back)
+        msg += await _notify(promoted, back)
         await interaction.followup.send(msg, ephemeral=True)
 
     elif action == "cant":
         _remove_uid(day_data, uid)
         day_data["cant"].append(uid)
-        promoted  = _promote_from_waitlist(day_data) if prev_status == "main" else None
-        back      = _refill_galley(day_data)          if prev_status == "main" else None
+        promoted = _promote_from_waitlist(day_data) if prev_status == "main" else None
+        back     = _refill_galley(day_data)          if prev_status == "main" else None
         _save_data(gid, data)
         msg = f"⛵ Marked as «Won't join» for **{DAY_NAMES[day_num]}**."
-        msg += await _notify_promoted(promoted, back)
+        msg += await _notify(promoted, back)
         await interaction.followup.send(msg, ephemeral=True)
 
     elif action == "vacation":
         _remove_uid(day_data, uid)
         day_data["vacation"].append(uid)
-        promoted  = _promote_from_waitlist(day_data) if prev_status == "main" else None
-        back      = _refill_galley(day_data)          if prev_status == "main" else None
+        promoted = _promote_from_waitlist(day_data) if prev_status == "main" else None
+        back     = _refill_galley(day_data)          if prev_status == "main" else None
         _save_data(gid, data)
         msg = f"🛟 Marked as «On Leave» for **{DAY_NAMES[day_num]}**."
-        msg += await _notify_promoted(promoted, back)
+        msg += await _notify(promoted, back)
         await interaction.followup.send(msg, ephemeral=True)
 
     await _refresh_embed(interaction.guild, data, day_num)
@@ -722,10 +741,19 @@ async def _refresh_embed(guild: discord.Guild, data: dict, day_num: int) -> None
         except Exception:
             return
 
-        config = _load_config(guild.id)
-        role_id = config.get("bbf_role_id")
-        embed = _build_embed(day_num, data["week"][day_key], data.get("points", {}), guild, guild.me, None, data)
-        view  = _make_persistent_view(day_num, guild.id, role_id)
+        config     = _load_config(guild.id)
+        role_id    = config.get("bbf_role_id")
+        image_path = data.get("day_images", {}).get(day_key)
+        embed      = _build_embed(day_num, data["week"][day_key], data.get("points", {}), guild, guild.me, image_path, data)
+        view       = _make_persistent_view(day_num, guild.id, role_id)
+
+        if image_path and Path(image_path).exists():
+            try:
+                file = discord.File(image_path, filename=Path(image_path).name)
+                await msg_obj.edit(embed=embed, view=view, attachments=[file])
+                return
+            except Exception:
+                pass
         await msg_obj.edit(embed=embed, view=view)
     except Exception as e:
         print(f"[BBF] Refresh error day {day_num}: {e}")
@@ -749,9 +777,8 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(
         category="Category where BBF channels will be created",
-        role="Role required to register for BBF (optional)",
         voice="Voice channel for BBF gatherings",
-        start_hour_utc="BBF start hour in UTC (default: 18)",
+        role="Role required to register (optional)",
     )
     async def bbf_setup(
         self,
@@ -759,18 +786,15 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         category: discord.CategoryChannel,
         voice: discord.VoiceChannel,
         role: discord.Role | None = None,
-        start_hour_utc: int = 18,
     ):
         await interaction.response.defer(ephemeral=True)
         config = {
-            "category_id":    category.id,
-            "voice_id":       voice.id,
-            "bbf_role_id":    role.id if role else None,
-            "start_hour_utc": start_hour_utc,
+            "category_id": category.id,
+            "voice_id":    voice.id,
+            "bbf_role_id": role.id if role else None,
         }
         _save_config(interaction.guild.id, config)
 
-        # Register persistent views for this guild
         for day_num in DAY_NAMES.keys():
             self.bot.add_view(_make_persistent_view(day_num, interaction.guild.id, role.id if role else None))
             self.bot.add_view(_make_confirm_view(day_num, interaction.guild.id))
@@ -780,8 +804,7 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             f"✅ **BBF configured!**\n"
             f"📁 Category: {category.mention}\n"
             f"🎙️ Voice: {voice.mention}\n"
-            f"👥 Role: {role_str}\n"
-            f"🕐 Start: {start_hour_utc}:00 UTC\n\n"
+            f"👥 Role: {role_str}\n\n"
             f"Use `/bbf_start` to open weekly registration!",
             ephemeral=True,
         )
@@ -804,7 +827,6 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             await interaction.followup.send("❌ Category not found. Run `/bbf_setup` again.", ephemeral=True)
             return
 
-        # Clean old channels
         for ch in list(category.channels):
             if ch.name.startswith("📅-"):
                 try:
@@ -830,7 +852,7 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
 
         await interaction.channel.send(f"{role_mention} ⚓ **BBF registration is open this week!** 🍾")
 
-        today_date = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_date = _now_cest().replace(hour=0, minute=0, second=0, microsecond=0)
 
         for day_num, day_name in DAY_NAMES.items():
             day_key  = str(day_num)
@@ -840,8 +862,9 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
 
             date_str = f"{day_date.day:02}.{day_date.month:02}"
             data["week"][day_key] = _empty_day()
+            image_path = _pick_image(data, day_key)
 
-            embed = _build_embed(day_num, data["week"][day_key], data["points"], interaction.guild, self.bot.user, None, data)
+            embed = _build_embed(day_num, data["week"][day_key], data["points"], interaction.guild, self.bot.user, image_path, data)
             view  = _make_persistent_view(day_num, gid, role_id)
 
             try:
@@ -851,7 +874,17 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
                     topic=f"BBF registration — {day_name} {date_str}",
                 )
                 data["thread_ids"][day_key] = channel.id
-                msg = await channel.send(embed=embed, view=view)
+
+                img_exists = image_path and Path(image_path).exists()
+                if img_exists:
+                    try:
+                        file = discord.File(image_path, filename=Path(image_path).name)
+                        msg  = await channel.send(file=file, embed=embed, view=view)
+                    except Exception:
+                        msg = await channel.send(embed=embed, view=view)
+                else:
+                    msg = await channel.send(embed=embed, view=view)
+
                 data["message_ids"][day_key] = msg.id
                 await channel.send(f"{role_mention} 📋 Registration for **{day_name} {date_str}** is open! 🛶")
                 await asyncio.sleep(0.5)
@@ -865,12 +898,11 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
 
     @tasks.loop(minutes=1)
     async def reminder_task(self):
-        now     = datetime.now(timezone.utc)
-        weekday = now.weekday()
+        now_cest = _now_cest()
+        weekday  = now_cest.weekday()
         if weekday not in DAY_NAMES:
             return
 
-        # Run for all configured guilds
         try:
             configs = list(_get_db()["bbf_config"].find({}))
         except Exception:
@@ -879,11 +911,11 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         for cfg in configs:
             try:
                 gid = int(cfg["_id"])
-                await self._run_reminders(gid, cfg, now, weekday)
+                await self._run_reminders(gid, cfg, now_cest, weekday)
             except Exception as e:
                 print(f"[BBF] Reminder error guild {cfg.get('_id')}: {e}")
 
-    async def _run_reminders(self, gid: int, config: dict, now: datetime, weekday: int):
+    async def _run_reminders(self, gid: int, config: dict, now_cest: datetime, weekday: int):
         data    = _load_data(gid)
         day_key = str(weekday)
         if day_key not in data.get("week", {}):
@@ -904,29 +936,25 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             except Exception:
                 return
 
-        day_data   = data["week"][day_key]
-        main_uids  = [e["uid"] for e in day_data["main"]]
-        today      = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_data  = data["week"][day_key]
+        main_uids = [e["uid"] for e in day_data["main"]]
+        today     = now_cest.replace(hour=0, minute=0, second=0, microsecond=0)
 
         def _is_on_vacation(uid):
             vac = data.get("vacations", {}).get(uid)
             if not vac:
                 return False
             try:
-                s = datetime.fromisoformat(vac["start"]).replace(tzinfo=timezone.utc)
-                e = datetime.fromisoformat(vac["end"]).replace(tzinfo=timezone.utc)
+                s = datetime.fromisoformat(vac["start"])
+                e = datetime.fromisoformat(vac["end"])
                 return s <= today <= e
             except Exception:
                 return False
 
         active_uids = [uid for uid in main_uids if not _is_on_vacation(uid)]
 
-        reminder_hour = REMINDER_HOUR_UTC
-        invite_hour   = INVITE_HOUR_UTC
-        start_hour    = config.get("start_hour_utc", BBF_START_HOUR_UTC)
-
-        # 19:30 — readiness check
-        if now.hour == reminder_hour and now.minute == REMINDER_MINUTE_UTC and not data.get("reminded", {}).get(day_key):
+        # 19:30 CEST — readiness check
+        if now_cest.hour == REMINDER_HOUR_CEST and now_cest.minute == REMINDER_MINUTE_CEST and not data.get("reminded", {}).get(day_key):
             if active_uids:
                 mentions  = " ".join(f"<@{uid}>" for uid in active_uids)
                 confirmed = data.get("confirmed", {}).get(day_key, [])
@@ -937,8 +965,8 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             data.setdefault("reminded", {})[day_key] = True
             _save_data(gid, data)
 
-        # 19:45 — gather up
-        if now.hour == invite_hour and now.minute == INVITE_MINUTE_UTC and not data.get("invited", {}).get(day_key):
+        # 19:45 CEST — gather up
+        if now_cest.hour == INVITE_HOUR_CEST and now_cest.minute == INVITE_MINUTE_CEST and not data.get("invited", {}).get(day_key):
             if active_uids:
                 ts = _get_ts_for_day(data, weekday)
                 voice_id      = config.get("voice_id")
@@ -1000,8 +1028,11 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         if not week:
             await interaction.response.send_message("ℹ️ Registration not open yet.", ephemeral=True)
             return
-        labels = {"main": "✅ Main list", "waitlist": "⏳ Waitlist", "vacation": "🛟 On Leave", "cant": "⛵ Won't join", None: "➖ Not registered"}
-        lines  = []
+        labels = {
+            "main": "✅ Main list", "waitlist": "⏳ Waitlist",
+            "vacation": "🛟 On Leave", "cant": "⛵ Won't join", None: "➖ Not registered",
+        }
+        lines = []
         for day_num, day_name in DAY_NAMES.items():
             day_key = str(day_num)
             if day_key not in week:
@@ -1021,7 +1052,10 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             lines.append(f"**{day_name}{date_label}**: {label}{team_str}")
         pts = data.get("points", {}).get(uid, 0)
         embed = discord.Embed(title="📋 Your BBF status this week", description="\n".join(lines), color=discord.Color.blue())
-        embed.set_footer(text=f"BBF System  |  🏅 Your points: {pts}")
+        embed.set_footer(
+            text=f"Silent Concierge by Myxa  |  🍾 Rom, Rom, ROM!  |  🏅 Your points: {pts}",
+            icon_url=self.bot.user.display_avatar.url,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="bbf_points", description="View priority points leaderboard")
@@ -1037,6 +1071,10 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             name = member.mention if member else f"<@{uid}>"
             lines.append(f"**{name}** — {pts} 🏅")
         embed = discord.Embed(title="🏅 BBF Priority Points", description="\n".join(lines), color=discord.Color.gold())
+        embed.set_footer(
+            text="Silent Concierge by Myxa  |  🍾 Rom, Rom, ROM!",
+            icon_url=self.bot.user.display_avatar.url,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="bbf_reset_points", description="[Admin] Reset priority points")
@@ -1089,7 +1127,9 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             if not thread_id:
                 continue
             try:
-                channel = interaction.guild.get_channel(int(thread_id)) or await interaction.guild.fetch_channel(int(thread_id))
+                channel = interaction.guild.get_channel(int(thread_id))
+                if not channel:
+                    channel = await interaction.guild.fetch_channel(int(thread_id))
                 if not channel:
                     continue
                 msg_id = data.get("message_ids", {}).get(day_key)
@@ -1102,9 +1142,17 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
                         pass
                 if msg_exists:
                     continue
-                embed = _build_embed(day_num, data["week"][day_key], data.get("points", {}), interaction.guild, self.bot.user, None, data)
+                image_path = data.get("day_images", {}).get(day_key)
+                embed = _build_embed(day_num, data["week"][day_key], data.get("points", {}), interaction.guild, self.bot.user, image_path, data)
                 view  = _make_persistent_view(day_num, gid, role_id)
-                msg   = await channel.send(embed=embed, view=view)
+                if image_path and Path(image_path).exists():
+                    try:
+                        file = discord.File(image_path, filename=Path(image_path).name)
+                        msg  = await channel.send(file=file, embed=embed, view=view)
+                    except Exception:
+                        msg = await channel.send(embed=embed, view=view)
+                else:
+                    msg = await channel.send(embed=embed, view=view)
                 data.setdefault("message_ids", {})[day_key] = msg.id
                 sent += 1
             except Exception as e:
@@ -1157,7 +1205,8 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         await interaction.response.defer(ephemeral=True)
         gid  = interaction.guild.id
         data = _load_data(gid)
-        for field in ("week", "week_dates", "message_ids", "thread_ids", "reminder_msg_ids", "confirmed", "reminded", "invited", "day_images"):
+        for field in ("week", "week_dates", "message_ids", "thread_ids",
+                      "reminder_msg_ids", "confirmed", "reminded", "invited", "day_images"):
             raw = data.get(field, {})
             if raw and any(isinstance(k, int) for k in raw.keys()):
                 data[field] = {str(k): v for k, v in raw.items()}
@@ -1167,8 +1216,8 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             return
         report = []
         for day_key, day_data in week.items():
-            main    = day_data.get("main", [])
-            day_num = int(day_key)
+            main     = day_data.get("main", [])
+            day_num  = int(day_key)
             day_name = DAY_NAMES.get(day_num, day_key)
             for entry in main:
                 if "original_team" not in entry:
@@ -1193,19 +1242,13 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         _save_data(gid, data)
         for day_num in DAY_NAMES.keys():
             await _refresh_embed(interaction.guild, data, day_num)
-        await interaction.followup.send(
-            f"✅ Migration done!\n\n" + "\n".join(report),
-            ephemeral=True,
-        )
-
-
-
+        await interaction.followup.send(f"✅ Migration done!\n\n" + "\n".join(report), ephemeral=True)
 
     @app_commands.command(name="bbf_help", description="BBF system guide")
     async def bbf_help(self, interaction: discord.Interaction):
         config = _load_config(interaction.guild.id)
         is_configured = bool(config.get("category_id"))
-        status_str = "✅ BBF is configured!" if is_configured else "❌ Not configured. Run /bbf_setup first!"
+        status_str = "✅ BBF is configured!" if is_configured else "❌ Not configured. Run `/bbf_setup` first!"
 
         embed = discord.Embed(
             title="⚓ BBF Registration System — Help",
@@ -1213,7 +1256,7 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             color=discord.Color.from_rgb(45, 60, 110),
         )
         embed.add_field(name="🔧 Setup (Admin)", value=(
-            "`/bbf_setup category: voice: role: start_hour_utc:`\n"
+            "`/bbf_setup category: voice: role:`\n"
             "Configure BBF for your server. Run once.\n\n"
             + status_str
         ), inline=False)
@@ -1221,8 +1264,8 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             "1. Admin runs `/bbf_start` at start of week\n"
             "2. Bot creates daily channels (Mon-Fri + Sun)\n"
             "3. Members click **Join** and choose their team\n"
-            "4. 30 min before BBF — readiness check\n"
-            "5. 15 min before BBF — gather-up message"
+            "4. At **19:30 CEST** — readiness check sent\n"
+            "5. At **19:45 CEST** — gather-up with Galley & Fleet"
         ), inline=False)
         embed.add_field(name="🛶 Buttons", value=(
             "**Join** — register and choose team\n"
@@ -1250,19 +1293,21 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
             "`/bbf_resend` `/bbf_reset_points`\n"
             "`/bbf_backups` `/bbf_restore` `/bbf_migrate`"
         ), inline=False)
-        embed.add_field(name="⏰ Auto messages (UTC)", value=(
-            "17:30 — readiness check\n"
-            "17:45 — gather-up with Galley & Fleet\n"
-            "18:00 — BBF start (configurable)"
+        embed.add_field(name="⏰ Auto messages (CEST)", value=(
+            "19:30 — readiness check\n"
+            "19:45 — gather-up with Galley & Fleet\n"
+            "20:00 — BBF start"
         ), inline=False)
-        embed.set_footer(text="BBF Registration System")
+        embed.set_footer(
+            text="Silent Concierge by Myxa  |  🍾 Rom, Rom, ROM!",
+            icon_url=self.bot.user.display_avatar.url,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(BBFGlobalCog(bot))
     print("[COG] BBFGlobalCog loaded")
-    # Register views for all configured guilds on startup
     try:
         configs = list(_get_db()["bbf_config"].find({}))
         for cfg in configs:
