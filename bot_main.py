@@ -66,7 +66,8 @@ class SilentBot(commands.Bot):
 
         # ── Визначаємо home guild ID ДО завантаження когів ──────────────────
         try:
-            self.home_guild_id = int(GUILD_ID) if GUILD_ID else None
+            gid_val = int(GUILD_ID)
+            self.home_guild_id = gid_val if gid_val != 0 else None
         except Exception:
             self.home_guild_id = None
         print(f"[BOOT] home_guild_id = {self.home_guild_id}")
