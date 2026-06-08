@@ -771,6 +771,11 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         self.reminder_task.cancel()
         self.backup_task.cancel()
 
+    def _is_home_guild(self, guild_id: int) -> bool:
+        """Перевіряє чи це основний сервер — він обслуговується bbf_cog.py."""
+        home = getattr(self.bot, "home_guild_id", None)
+        return home is not None and guild_id == home
+
     # ── Setup ────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="bbf_setup", description="[Admin] Set up BBF for this server")
@@ -787,6 +792,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         voice: discord.VoiceChannel,
         role: discord.Role | None = None,
     ):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_старт` instead.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
         config = {
             "category_id": category.id,
@@ -814,6 +825,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
     @app_commands.command(name="bbf_start", description="[Admin] Start weekly BBF registration")
     @app_commands.default_permissions(manage_guild=True)
     async def bbf_start(self, interaction: discord.Interaction):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_старт` instead.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True, thinking=True)
         gid    = interaction.guild.id
         config = _load_config(gid)
@@ -911,6 +928,9 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         for cfg in configs:
             try:
                 gid = int(cfg["_id"])
+                # ── Пропускаємо основний сервер — він має свій bbf_cog.py ──
+                if self._is_home_guild(gid):
+                    continue
                 await self._run_reminders(gid, cfg, now_cest, weekday)
             except Exception as e:
                 print(f"[BBF] Reminder error guild {cfg.get('_id')}: {e}")
@@ -1008,7 +1028,10 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
         except Exception:
             return
         for cfg in configs:
-            gid  = int(cfg["_id"])
+            gid = int(cfg["_id"])
+            # Пропускаємо основний сервер
+            if self._is_home_guild(gid):
+                continue
             data = _load_data(gid)
             if data.get("week"):
                 _save_backup(gid, data)
@@ -1021,6 +1044,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
 
     @app_commands.command(name="bbf_status", description="View your BBF status for this week")
     async def bbf_status(self, interaction: discord.Interaction):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_статус` instead.", ephemeral=True
+            )
+            return
+
         gid  = interaction.guild.id
         data = _load_data(gid)
         uid  = str(interaction.user.id)
@@ -1060,6 +1089,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
 
     @app_commands.command(name="bbf_points", description="View priority points leaderboard")
     async def bbf_points(self, interaction: discord.Interaction):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_очки` instead.", ephemeral=True
+            )
+            return
+
         data   = _load_data(interaction.guild.id)
         points = {k: v for k, v in data.get("points", {}).items() if v > 0}
         if not points:
@@ -1081,6 +1116,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(member="Member (leave empty to reset all)")
     async def bbf_reset_points(self, interaction: discord.Interaction, member: discord.Member | None = None):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_скинути_очки` instead.", ephemeral=True
+            )
+            return
+
         gid  = interaction.guild.id
         data = _load_data(gid)
         if member:
@@ -1095,6 +1136,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
     @app_commands.command(name="bbf_refresh", description="[Admin] Manually refresh all BBF embeds")
     @app_commands.default_permissions(manage_guild=True)
     async def bbf_refresh(self, interaction: discord.Interaction):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_оновити` instead.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
         gid  = interaction.guild.id
         data = _load_data(gid)
@@ -1108,6 +1155,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
     @app_commands.command(name="bbf_resend", description="[Admin] Send new embed if old one was deleted")
     @app_commands.default_permissions(manage_guild=True)
     async def bbf_resend(self, interaction: discord.Interaction):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_переслати` instead.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
         gid    = interaction.guild.id
         data   = _load_data(gid)
@@ -1166,6 +1219,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
     @app_commands.command(name="bbf_backups", description="[Admin] Show recent backups")
     @app_commands.default_permissions(manage_guild=True)
     async def bbf_backups(self, interaction: discord.Interaction):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_бекапи` instead.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
         backups = _list_backups(interaction.guild.id)
         if not backups:
@@ -1187,6 +1246,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(backup_id="Backup ID (e.g. 2026-05-20_14-30)")
     async def bbf_restore(self, interaction: discord.Interaction, backup_id: str):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_відновити` instead.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
         gid  = interaction.guild.id
         data = _restore_backup(gid, backup_id)
@@ -1202,6 +1267,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
     @app_commands.command(name="bbf_migrate", description="[Admin] Fix auto_galley for existing data")
     @app_commands.default_permissions(manage_guild=True)
     async def bbf_migrate(self, interaction: discord.Interaction):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module. Use `/bbf_мігрувати` instead.", ephemeral=True
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
         gid  = interaction.guild.id
         data = _load_data(gid)
@@ -1246,6 +1317,12 @@ class BBFGlobalCog(commands.Cog, name="BBFGlobal"):
 
     @app_commands.command(name="bbf_help", description="BBF system guide")
     async def bbf_help(self, interaction: discord.Interaction):
+        if self._is_home_guild(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ This server uses the Ukrainian BBF module.", ephemeral=True
+            )
+            return
+
         config = _load_config(interaction.guild.id)
         is_configured = bool(config.get("category_id"))
         status_str = "✅ BBF is configured!" if is_configured else "❌ Not configured. Run `/bbf_setup` first!"
@@ -1309,13 +1386,20 @@ async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(BBFGlobalCog(bot))
     print("[COG] BBFGlobalCog loaded")
     try:
-        configs = list(_get_db()["bbf_config"].find({}))
+        home_gid = getattr(bot, "home_guild_id", None)
+        configs  = list(_get_db()["bbf_config"].find({}))
+        registered = 0
         for cfg in configs:
-            gid     = int(cfg["_id"])
+            gid = int(cfg["_id"])
+            # ── Пропускаємо основний сервер ──────────────────────────────────
+            if home_gid and gid == home_gid:
+                print(f"[BBF] Skipping home guild {gid} (handled by bbf_cog.py)")
+                continue
             role_id = cfg.get("bbf_role_id")
             for day_num in DAY_NAMES.keys():
                 bot.add_view(_make_persistent_view(day_num, gid, role_id))
                 bot.add_view(_make_confirm_view(day_num, gid))
-        print(f"[BBF] Registered views for {len(configs)} guilds")
+            registered += 1
+        print(f"[BBF] Registered views for {registered} guild(s) (skipped home guild)")
     except Exception as e:
         print(f"[BBF] Startup view registration error: {e}")
