@@ -20,6 +20,7 @@ INTENTS.members = True
 INTENTS.message_content = True
 INTENTS.voice_states = True
 
+# Єдиний ког який синкується ГЛОБАЛЬНО
 GLOBAL_COGS = {"bbf_cog_eng"}
 
 LOG_DIR = Path("logs")
@@ -122,20 +123,28 @@ class SilentBot(commands.Bot):
         try:
             gid = self.home_guild_id
 
-            # ── 1. Guild sync — всі команди КРІМ eng-BBF ─────────────────────
+            # Збираємо імена команд з глобальних когів (bbf_cog_eng)
+            global_cmd_names: set[str] = set()
+            for cog_name in GLOBAL_COGS:
+                for name, c in self.cogs.items():
+                    if c.__module__ == f"cogs.{cog_name}":
+                        for cmd in c.get_app_commands():
+                            global_cmd_names.add(cmd.name)
+
+            print(f"[SYNC] Global-only commands: {global_cmd_names}")
+
+            # ── 1. Guild sync (основний сервер) ───────────────────────────────
+            # Всі команди КРІМ eng-BBF
             if gid:
                 guild_obj = discord.Object(id=gid)
 
                 # Видаляємо eng команди з guild tree
-                for cog_name in GLOBAL_COGS:
-                    for name, c in self.cogs.items():
-                        if c.__module__ == f"cogs.{cog_name}":
-                            for cmd in c.get_app_commands():
-                                try:
-                                    self.tree.remove_command(cmd.name, guild=guild_obj)
-                                    print(f"[SYNC] Removed eng cmd from guild tree: /{cmd.name}")
-                                except Exception:
-                                    pass
+                for cmd_name in global_cmd_names:
+                    try:
+                        self.tree.remove_command(cmd_name, guild=guild_obj)
+                        print(f"[SYNC] Removed from guild tree: /{cmd_name}")
+                    except Exception:
+                        pass
 
                 synced = await self.tree.sync(guild=guild_obj)
                 print(f"[SYNC] Guild sync: {gid}. Count: {len(synced)}")
@@ -148,7 +157,16 @@ class SilentBot(commands.Bot):
                     "commands": [c.name for c in synced],
                 })
 
-            # ── 2. Global sync — всі команди як є (eng вже в дереві через cog)
+            # ── 2. Global sync — тільки eng-BBF команди ──────────────────────
+            # Видаляємо з глобального дерева всі команди КРІМ eng-BBF
+            all_global = list(self.tree.get_commands())
+            for cmd in all_global:
+                if cmd.name not in global_cmd_names:
+                    try:
+                        self.tree.remove_command(cmd.name)
+                    except Exception:
+                        pass
+
             global_synced = await self.tree.sync()
             print(f"[SYNC] Global sync: Count: {len(global_synced)}")
             for command in global_synced:
@@ -229,20 +247,34 @@ async def force_sync(ctx: commands.Context) -> None:
         gid = bot.home_guild_id
         guild_count = 0
 
+        # Збираємо eng команди
+        global_cmd_names: set[str] = set()
+        for cog_name in GLOBAL_COGS:
+            for name, c in bot.cogs.items():
+                if c.__module__ == f"cogs.{cog_name}":
+                    for cmd in c.get_app_commands():
+                        global_cmd_names.add(cmd.name)
+
+        # Guild sync
         if gid:
             guild_obj = discord.Object(id=gid)
-            for cog_name in GLOBAL_COGS:
-                for name, c in bot.cogs.items():
-                    if c.__module__ == f"cogs.{cog_name}":
-                        for cmd in c.get_app_commands():
-                            try:
-                                bot.tree.remove_command(cmd.name, guild=guild_obj)
-                            except Exception:
-                                pass
+            for cmd_name in global_cmd_names:
+                try:
+                    bot.tree.remove_command(cmd_name, guild=guild_obj)
+                except Exception:
+                    pass
             synced = await bot.tree.sync(guild=guild_obj)
             guild_count = len(synced)
 
+        # Global sync — тільки eng
+        for cmd in list(bot.tree.get_commands()):
+            if cmd.name not in global_cmd_names:
+                try:
+                    bot.tree.remove_command(cmd.name)
+                except Exception:
+                    pass
         global_synced = await bot.tree.sync()
+
         await msg.edit(content=(
             f"Guild `{gid}`: **{guild_count}** команд.\n"
             f"Global: **{len(global_synced)}** команд.\n"
