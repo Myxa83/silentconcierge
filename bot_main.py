@@ -67,8 +67,6 @@ async def _do_sync(bot: commands.Bot) -> dict:
     Виконує синхронізацію команд:
       - Guild (основний сервер): всі команди КРІМ глобальних (eng-BBF)
       - Global: тільки eng-BBF команди
-
-    Повертає словник з результатами для логування/виводу.
     """
     gid = getattr(bot, "home_guild_id", None)
     global_cmd_names = _get_global_cmd_names(bot)
@@ -83,13 +81,13 @@ async def _do_sync(bot: commands.Bot) -> dict:
     }
 
     # ── 1. Guild sync ─────────────────────────────────────────────────────────
-    # Копіюємо всі команди на guild, потім прибираємо eng-команди
+    # Додаємо кожну НЕ-eng команду безпосередньо в guild tree
     if gid:
         guild_obj = discord.Object(id=gid)
-        bot.tree.copy_global_to(guild=guild_obj)
 
-        for cmd_name in global_cmd_names:
-            bot.tree.remove_command(cmd_name, guild=guild_obj)
+        for cmd in bot.tree.get_commands():
+            if cmd.name not in global_cmd_names:
+                bot.tree.add_command(cmd, guild=guild_obj, override=True)
 
         guild_synced = await bot.tree.sync(guild=guild_obj)
         result["guild_count"] = len(guild_synced)
