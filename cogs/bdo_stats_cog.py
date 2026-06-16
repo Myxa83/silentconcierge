@@ -89,9 +89,9 @@ async def _parse_screenshot(image_bytes: bytes) -> list[dict] | None:
     Надсилає скрін до OpenAI GPT-4o і отримує розпізнану таблицю.
     Повертає список: [{"family_name": str, "forts": int, "ships": int}, ...]
     """
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
-        print("[BDO_STATS][ERROR] OPENAI_API_KEY не задано!")
+        print("[BDO_STATS][ERROR] GEMINI_API_KEY не задано!")
         return None
 
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
@@ -119,39 +119,33 @@ async def _parse_screenshot(image_bytes: bytes) -> list[dict] | None:
 Порахуй уважно кожен рядок."""
 
     payload = {
-        "model": "gpt-4o",
-        "max_tokens": 1000,
-        "messages": [
+        "contents": [
             {
-                "role": "user",
-                "content": [
+                "parts": [
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{image_b64}",
-                        },
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": image_b64,
+                        }
                     },
-                    {"type": "text", "text": prompt},
-                ],
+                    {"text": prompt},
+                ]
             }
-        ],
+        ]
     }
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+                headers={"Content-Type": "application/json"},
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
 
-        text = data["choices"][0]["message"]["content"]
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
 
         text = text.strip()
         # Прибираємо можливі markdown блоки
