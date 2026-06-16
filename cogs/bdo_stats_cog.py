@@ -137,7 +137,7 @@ async def _parse_screenshot(image_bytes: bytes) -> list[dict] | None:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
                 headers={"Content-Type": "application/json"},
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=30),
