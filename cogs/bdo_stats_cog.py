@@ -86,12 +86,12 @@ def _is_leader(member: discord.Member) -> bool:
 
 async def _parse_screenshot(image_bytes: bytes) -> list[dict] | None:
     """
-    Надсилає скрін до Claude і отримує розпізнану таблицю.
+    Надсилає скрін до OpenAI GPT-4o і отримує розпізнану таблицю.
     Повертає список: [{"family_name": str, "forts": int, "ships": int}, ...]
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        print("[BDO_STATS][ERROR] ANTHROPIC_API_KEY не задано!")
+        print("[BDO_STATS][ERROR] OPENAI_API_KEY не задано!")
         return None
 
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
@@ -119,18 +119,16 @@ async def _parse_screenshot(image_bytes: bytes) -> list[dict] | None:
 Порахуй уважно кожен рядок."""
 
     payload = {
-        "model": "claude-sonnet-4-6",
+        "model": "gpt-4o",
         "max_tokens": 1000,
         "messages": [
             {
                 "role": "user",
                 "content": [
                     {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": image_b64,
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{image_b64}",
                         },
                     },
                     {"type": "text", "text": prompt},
@@ -142,11 +140,10 @@ async def _parse_screenshot(image_bytes: bytes) -> list[dict] | None:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://api.anthropic.com/v1/messages",
+                "https://api.openai.com/v1/chat/completions",
                 headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
                 },
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=30),
@@ -154,10 +151,7 @@ async def _parse_screenshot(image_bytes: bytes) -> list[dict] | None:
                 resp.raise_for_status()
                 data = await resp.json()
 
-        text = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                text += block["text"]
+        text = data["choices"][0]["message"]["content"]
 
         text = text.strip()
         # Прибираємо можливі markdown блоки
