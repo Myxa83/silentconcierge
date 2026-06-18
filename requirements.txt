@@ -17,3 +17,5 @@ pymongo[srv]
 playwright
 beautifulsoup4
 playwright-stealth
+opencv-python-headless
+numpy
