@@ -9,11 +9,13 @@ import json
 import re
 import aiohttp
 from datetime import datetime, timezone
+from io import BytesIO
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 from pymongo import MongoClient
+from PIL import Image
 
 # ─── MongoDB ──────────────────────────────────────────────────────────────────
 
@@ -407,6 +409,20 @@ class BDOStatsCog(commands.Cog, name="BDOStats"):
         mime_type = attachment.content_type or "image/png"
         if mime_type == "image/jpg":
             mime_type = "image/jpeg"
+
+        if mime_type == "image/webp":
+            try:
+                img = Image.open(BytesIO(image_bytes)).convert("RGBA")
+
+                png_buffer = BytesIO()
+                img.save(png_buffer, format="PNG")
+
+                image_bytes = png_buffer.getvalue()
+                mime_type = "image/png"
+
+                print("[BDO_STATS] WEBP конвертовано в PNG")
+            except Exception as e:
+                print(f"[BDO_STATS][ERROR] WEBP convert failed: {e}")
 
         players = await _parse_screenshot(image_bytes, mime_type)
 
