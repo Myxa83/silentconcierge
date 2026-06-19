@@ -6,6 +6,8 @@ import os
 import json
 import re
 import aiohttp
+import asyncio
+import unicodedata
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -46,21 +48,75 @@ LEADER_ROLE_IDS = [
 # ─── Discord family name helpers ──────────────────────────────────────────────
 
 def _extract_family_name(display_name: str) -> str | None:
+    """
+    З Discord display name витягує Family Name.
+
+    Приклади:
+    [SC] Myxa | Галя -> Myxa
+    [SC] 𝒨𝓎𝓍𝒶 | Галя -> 𝒨𝓎𝓍𝒶
+    [SC] ༄˖°.🍃𝓥𝒶𝓲𝓇𝑒🍃࿔| Геля -> ༄˖°.🍃𝓥𝒶𝓲𝓇𝑒🍃࿔
+    """
+    if not display_name:
+        return None
+
     name = re.sub(r"^\[.*?\]\s*", "", display_name).strip()
     name = re.sub(r"^\(.*?\)\s*", "", name).strip()
+
     if "|" in name:
-        name = name.split("|")[0].strip()
+        name = name.split("|", 1)[0].strip()
     else:
         name = name.split()[0].strip() if name.split() else name
+
     return name if name else None
 
 
+def _family_key(name: str | None) -> str:
+    """
+    Нормалізація для порівняння OCR Family Name з декоративними Discord ніками.
+
+    Головне:
+    𝒨𝓎𝓍𝒶 -> myxa
+    𝓥𝒶𝓲𝓇𝑒 -> vaire
+    """
+    if not name:
+        return ""
+
+    name = unicodedata.normalize("NFKD", str(name))
+    name = "".join(ch for ch in name if not unicodedata.combining(ch))
+    name = "".join(ch for ch in name if ch.isascii())
+    name = re.sub(r"[^A-Za-z0-9_]", "", name)
+
+    return name.lower()
+
+
 def _find_discord_member(guild: discord.Guild, family_name: str) -> discord.Member | None:
-    family_name_lower = family_name.lower()
+    """
+    Шукає Discord member по Family Name.
+    Працює навіть якщо в Discord нік декоративним шрифтом.
+    """
+    target = _family_key(family_name)
+    if not target:
+        return None
+
     for member in guild.members:
         fn = _extract_family_name(member.display_name)
-        if fn and fn.lower() == family_name_lower:
+        current = _family_key(fn)
+
+        if current and current == target:
             return member
+
+    # М'який fallback для дрібних OCR помилок, але без небезпечних коротких збігів.
+    if len(target) >= 5:
+        for member in guild.members:
+            fn = _extract_family_name(member.display_name)
+            current = _family_key(fn)
+
+            if not current or len(current) < 5:
+                continue
+
+            if target in current or current in target:
+                return member
+
     return None
 
 
@@ -454,6 +510,10 @@ class BDOStatsCog(commands.Cog, name="BDOStats"):
 
         await message.add_reaction("⏳")
 
+        # OCR може тривати довго, тому запускаємо у фоні.
+        asyncio.create_task(self._process_bdo_stats_message(message, attachment))
+
+    async def _process_bdo_stats_message(self, message: discord.Message, attachment: discord.Attachment):
         try:
             image_bytes = await attachment.read()
         except Exception as e:
