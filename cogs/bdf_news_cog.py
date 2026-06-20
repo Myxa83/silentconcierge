@@ -3,15 +3,14 @@
 
 import asyncio
 import json
-import os
 import re
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import aiohttp
 import discord
-import feedparser
 from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
 from discord.ext import commands, tasks
@@ -19,8 +18,7 @@ from PIL import Image
 
 
 CHANNEL_ID = 1324474229437108264
-
-BDF_FEED_URL = "https://www.blackdesertfoundry.com/category/all-news/feed/"
+BDF_NEWS_URL = "https://www.blackdesertfoundry.com/category/all-news/"
 STATE_FILE = Path("data/bdf_news_seen.json")
 
 
@@ -56,11 +54,13 @@ class BDFNewsCog(commands.Cog):
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 Chrome/120 Safari/537.36"
-            )
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         }
 
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=40) as resp:
+            async with session.get(url, timeout=45) as resp:
                 resp.raise_for_status()
                 return await resp.read()
 
@@ -84,14 +84,26 @@ class BDFNewsCog(commands.Cog):
 
         try:
             return GoogleTranslator(source="auto", target="uk").translate(text)
-        except Exception:
+        except Exception as e:
+            print(f"[BDFNewsCog] translate error: {e}")
             return text
 
     def make_bullets(self, text: str) -> str:
-        lines = []
-
         cleaned = re.sub(r"\s+", " ", text).strip()
         sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+
+        lines = []
+
+        blocked_words = [
+            "cookie",
+            "privacy",
+            "advertisement",
+            "subscribe",
+            "newsletter",
+            "black desert foundry",
+            "comments",
+            "leave a reply",
+        ]
 
         for sentence in sentences:
             sentence = sentence.strip()
@@ -99,39 +111,24 @@ class BDFNewsCog(commands.Cog):
             if len(sentence) < 45:
                 continue
 
-            if any(bad in sentence.lower() for bad in [
-                "cookie",
-                "privacy",
-                "advertisement",
-                "subscribe",
-                "newsletter",
-                "black desert foundry",
-            ]):
+            if any(word in sentence.lower() for word in blocked_words):
                 continue
 
             uk_sentence = self.translate_uk(sentence)
-
             lines.append(f"• {uk_sentence}")
 
             if len(lines) >= 5:
                 break
 
         if not lines:
-            return "• Нова публікація на Black Desert Foundry.\n• Відкрий посилання, щоб прочитати повний текст."
+            return (
+                "• Нова публікація на Black Desert Foundry.\n"
+                "• Відкрий посилання, щоб прочитати повний текст."
+            )
 
         return "\n".join(lines)
 
-    def extract_image_url(self, entry, article_html: str) -> str | None:
-        if hasattr(entry, "media_content") and entry.media_content:
-            url = entry.media_content[0].get("url")
-            if url:
-                return url
-
-        if hasattr(entry, "media_thumbnail") and entry.media_thumbnail:
-            url = entry.media_thumbnail[0].get("url")
-            if url:
-                return url
-
+    def extract_article_image(self, article_html: str) -> str | None:
         soup = BeautifulSoup(article_html, "lxml")
 
         og_image = soup.find("meta", property="og:image")
@@ -142,11 +139,30 @@ class BDFNewsCog(commands.Cog):
         if twitter_image and twitter_image.get("content"):
             return twitter_image["content"]
 
-        img = soup.find("img")
-        if img and img.get("src"):
-            return img["src"]
+        article = soup.find("article") or soup
+
+        img = article.find("img")
+        if img:
+            for attr in ("data-src", "data-lazy-src", "src"):
+                if img.get(attr):
+                    return img[attr]
 
         return None
+
+    def extract_date_from_article(self, article_html: str) -> str:
+        soup = BeautifulSoup(article_html, "lxml")
+
+        time_tag = soup.find("time")
+        if time_tag:
+            if time_tag.get("datetime"):
+                return time_tag["datetime"]
+            return time_tag.get_text(" ", strip=True)
+
+        meta_date = soup.find("meta", property="article:published_time")
+        if meta_date and meta_date.get("content"):
+            return meta_date["content"]
+
+        return "Дата не вказана"
 
     async def image_to_png_file(self, image_url: str) -> discord.File | None:
         try:
@@ -165,7 +181,73 @@ class BDFNewsCog(commands.Cog):
             print(f"[BDFNewsCog] image convert error: {e}")
             return None
 
-    async def send_post(self, entry) -> None:
+    async def fetch_posts_from_page(self) -> list[SimpleNamespace]:
+        html = await self.fetch_text(BDF_NEWS_URL)
+        soup = BeautifulSoup(html, "lxml")
+
+        posts = []
+        seen = set()
+
+        selectors = [
+            "article",
+            ".post",
+            ".type-post",
+            ".entry",
+        ]
+
+        article_nodes = []
+        for selector in selectors:
+            article_nodes = soup.select(selector)
+            if article_nodes:
+                break
+
+        if not article_nodes:
+            article_nodes = soup.find_all(["article", "div"])
+
+        for node in article_nodes:
+            title_tag = node.find(["h1", "h2", "h3"])
+            link_tag = None
+
+            if title_tag:
+                link_tag = title_tag.find("a", href=True)
+
+            if not link_tag:
+                link_tag = node.find("a", href=True)
+
+            if not title_tag or not link_tag:
+                continue
+
+            title = title_tag.get_text(" ", strip=True)
+            link = link_tag["href"].strip()
+
+            if not title or not link:
+                continue
+
+            if not link.startswith("http"):
+                continue
+
+            if "blackdesertfoundry.com" not in link:
+                continue
+
+            if link in seen:
+                continue
+
+            seen.add(link)
+
+            posts.append(
+                SimpleNamespace(
+                    title=title,
+                    link=link,
+                    published="Дата не вказана",
+                )
+            )
+
+            if len(posts) >= 5:
+                break
+
+        return posts
+
+    async def send_post(self, entry: SimpleNamespace) -> None:
         link = entry.link
 
         if link in self.seen_links:
@@ -177,15 +259,13 @@ class BDFNewsCog(commands.Cog):
         original_title = entry.title
         uk_title = self.translate_uk(original_title)
 
-        summary = self.make_bullets(article_text[:5000])
-
-        image_url = self.extract_image_url(entry, article_html)
+        summary = self.make_bullets(article_text[:6000])
+        image_url = self.extract_article_image(article_html)
+        published = self.extract_date_from_article(article_html)
 
         channel = self.bot.get_channel(CHANNEL_ID)
         if channel is None:
             channel = await self.bot.fetch_channel(CHANNEL_ID)
-
-        published = getattr(entry, "published", "Дата не вказана")
 
         embed = discord.Embed(
             title=uk_title[:256],
@@ -203,7 +283,7 @@ class BDFNewsCog(commands.Cog):
 
         embed.add_field(
             name="Дата",
-            value=published,
+            value=published[:1024],
             inline=False,
         )
 
@@ -232,12 +312,13 @@ class BDFNewsCog(commands.Cog):
     @tasks.loop(minutes=30)
     async def check_bdf_news(self):
         try:
-            feed_text = await self.fetch_text(BDF_FEED_URL)
-            feed = feedparser.parse(feed_text)
+            posts = await self.fetch_posts_from_page()
 
-            entries = list(feed.entries[:5])
+            if not posts:
+                print("[BDFNewsCog] no posts found")
+                return
 
-            for entry in reversed(entries):
+            for entry in reversed(posts):
                 await self.send_post(entry)
                 await asyncio.sleep(2)
 
@@ -251,3 +332,4 @@ class BDFNewsCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BDFNewsCog(bot))
+    print("[BDF_NEWS] ✅ BDFNewsCog loaded")
