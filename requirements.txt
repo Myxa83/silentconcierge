@@ -12,15 +12,13 @@ setuptools<70
 wheel
 aiocron
 PyNaCl
-yt-dlp
 pymongo[srv]
 playwright
 beautifulsoup4
 playwright-stealth
 opencv-python-headless
 numpy
-lxml
-feedparser
+
 lxml==5.2.2
 feedparser==6.0.11
 deep-translator==1.11.4
