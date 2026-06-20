@@ -48,14 +48,6 @@ LEADER_ROLE_IDS = [
 # ─── Discord family name helpers ──────────────────────────────────────────────
 
 def _extract_family_name(display_name: str) -> str | None:
-    """
-    З Discord display name витягує Family Name.
-
-    Приклади:
-    [SC] Myxa | Галя -> Myxa
-    [SC] 𝒨𝓎𝓍𝒶 | Галя -> 𝒨𝓎𝓍𝒶
-    [SC] ༄˖°.🍃𝓥𝒶𝓲𝓇𝑒🍃࿔| Геля -> ༄˖°.🍃𝓥𝒶𝓲𝓇𝑒🍃࿔
-    """
     if not display_name:
         return None
 
@@ -71,13 +63,6 @@ def _extract_family_name(display_name: str) -> str | None:
 
 
 def _family_key(name: str | None) -> str:
-    """
-    Нормалізація для порівняння OCR Family Name з декоративними Discord ніками.
-
-    Головне:
-    𝒨𝓎𝓍𝒶 -> myxa
-    𝓥𝒶𝓲𝓇𝑒 -> vaire
-    """
     if not name:
         return ""
 
@@ -90,10 +75,6 @@ def _family_key(name: str | None) -> str:
 
 
 def _find_discord_member(guild: discord.Guild, family_name: str) -> discord.Member | None:
-    """
-    Шукає Discord member по Family Name.
-    Працює навіть якщо в Discord нік декоративним шрифтом.
-    """
     target = _family_key(family_name)
     if not target:
         return None
@@ -105,16 +86,12 @@ def _find_discord_member(guild: discord.Guild, family_name: str) -> discord.Memb
         if current and current == target:
             return member
 
-    # М'який fallback для дрібних OCR помилок, але без небезпечних коротких збігів.
     if len(target) >= 5:
         for member in guild.members:
             fn = _extract_family_name(member.display_name)
             current = _family_key(fn)
 
-            if not current or len(current) < 5:
-                continue
-
-            if target in current or current in target:
+            if current and len(current) >= 5 and (target in current or current in target):
                 return member
 
     return None
@@ -149,31 +126,49 @@ def _crop_ratio(img: Image.Image, box: tuple[float, float, float, float]) -> Ima
 
 def _prepare_for_ocr(img: Image.Image, scale: int = 4, mode: str = "text") -> bytes:
     img = img.convert("RGB")
-    img = ImageOps.expand(img, border=10, fill=(25, 25, 25))
+
+    border = 24 if mode == "numbers" else 12
+    img = ImageOps.expand(img, border=border, fill=(20, 20, 20))
 
     arr = np.array(img)
-    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-    gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-
-    threshold = 125 if mode == "numbers" else 115
-    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-
-    # BDO table is light text on dark background. OCR likes dark text on light background.
-    binary = 255 - binary
 
     if mode == "numbers":
+        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+        _, _, v = cv2.split(hsv)
+
+        # Витягуємо світлі бежеві цифри на темному фоні.
+        mask = cv2.inRange(v, 105, 255)
+
         kernel = np.ones((2, 2), np.uint8)
-        binary = cv2.dilate(binary, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.dilate(mask, kernel, iterations=2)
+
+        mask = cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+        # OCR.space краще читає чорний текст на білому фоні.
+        binary = 255 - mask
+
+        # Трохи робимо цифри товстішими.
+        kernel2 = np.ones((2, 2), np.uint8)
+        binary = cv2.erode(binary, kernel2, iterations=1)
+
     else:
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+        _, binary = cv2.threshold(gray, 105, 255, cv2.THRESH_BINARY)
+        binary = 255 - binary
+
         kernel = np.ones((1, 1), np.uint8)
         binary = cv2.dilate(binary, kernel, iterations=1)
 
     out = Image.fromarray(binary).convert("RGB")
-    out = ImageEnhance.Sharpness(out).enhance(1.8)
+    out = ImageEnhance.Contrast(out).enhance(2.0)
+    out = ImageEnhance.Sharpness(out).enhance(2.0)
     return _pil_to_png_bytes(out)
 
 
@@ -334,6 +329,34 @@ def _fallback_parse(text: str) -> list[dict]:
     return players
 
 
+def _row_number_boxes(img: Image.Image, row_count: int) -> list[tuple[int, int, int, int]]:
+    """
+    Ріже праву частину таблиці на рядки.
+    База під Discord preview 880x420.
+    """
+    w, h = img.size
+    sx = w / 880
+    sy = h / 420
+
+    x1 = int(500 * sx)
+    x2 = int(879 * sx)
+    y1 = int(112 * sy)
+    y2 = int(414 * sy)
+
+    if row_count <= 0:
+        return []
+
+    row_h = (y2 - y1) / row_count
+    boxes = []
+
+    for i in range(row_count):
+        top = int(y1 + i * row_h) - int(3 * sy)
+        bottom = int(y1 + (i + 1) * row_h) + int(3 * sy)
+        boxes.append((x1, max(0, top), x2, min(h, bottom)))
+
+    return boxes
+
+
 async def _parse_screenshot(image_bytes: bytes, mime_type: str = "image/png") -> list[dict] | None:
     try:
         img = _image_bytes_to_pil(image_bytes)
@@ -346,27 +369,28 @@ async def _parse_screenshot(image_bytes: bytes, mime_type: str = "image/png") ->
 
     # Coordinates for BDO BBF result table. They scale with image size.
     # Rows with data start below header.
-    data_top = 0.295
-    data_bottom = 0.970
+    data_top = 0.265
+    data_bottom = 0.985
 
-    names_box = (0.145, data_top, 0.475, data_bottom)
+    # Ширше і вище, щоб не губити DreamwalkersD і Kakavozik.
+    names_box = (0.130, data_top, 0.500, data_bottom)
 
-    # Narrow crops around 7 numeric columns.
+    # Координати під 880x420. 1 = forts, 2-5 = ships, 6 ignore, 7 deaths.
     col_boxes = [
-        (0.555, data_top, 0.600, data_bottom),
-        (0.625, data_top, 0.670, data_bottom),
-        (0.692, data_top, 0.737, data_bottom),
-        (0.760, data_top, 0.805, data_bottom),
-        (0.828, data_top, 0.873, data_bottom),
-        (0.895, data_top, 0.940, data_bottom),
-        (0.948, data_top, 0.995, data_bottom),
+        (0.575, data_top, 0.640, data_bottom),
+        (0.642, data_top, 0.705, data_bottom),
+        (0.710, data_top, 0.770, data_bottom),
+        (0.775, data_top, 0.835, data_bottom),
+        (0.840, data_top, 0.900, data_bottom),
+        (0.900, data_top, 0.960, data_bottom),
+        (0.950, data_top, 0.998, data_bottom),
     ]
 
-    full_box = (0.100, 0.150, 0.998, 0.985)
+    full_box = (0.100, 0.120, 0.998, 0.990)
 
     names_png = _prepare_for_ocr(_crop_ratio(img, names_box), scale=4, mode="text")
     full_png = _prepare_for_ocr(_crop_ratio(img, full_box), scale=3, mode="text")
-    col_pngs = [_prepare_for_ocr(_crop_ratio(img, b), scale=5, mode="numbers") for b in col_boxes]
+    col_pngs = [_prepare_for_ocr(_crop_ratio(img, b), scale=10, mode="numbers") for b in col_boxes]
 
     async with aiohttp.ClientSession() as session:
         names_text = await _call_ocr_space(session, names_png, "names")
@@ -390,9 +414,30 @@ async def _parse_screenshot(image_bytes: bytes, mime_type: str = "image/png") ->
             columns.append(values)
             print(f"[BDO_STATS] Column {i}: {values}")
 
+        # Додатково пробуємо читати праву частину по рядках.
+        row_values = [[0, 0, 0, 0, 0, 0, 0] for _ in range(expected)]
+        for row_idx, box in enumerate(_row_number_boxes(img, expected), start=1):
+            row_crop = _crop_px(img, box)
+            row_png = _prepare_for_ocr(row_crop, scale=9, mode="numbers")
+            row_text = await _call_ocr_space(session, row_png, f"row_{row_idx:02d}")
+            nums = _extract_numbers(row_text, 7)
+
+            if len(nums) >= 7:
+                row_values[row_idx - 1] = nums[:7]
+            else:
+                print(f"[BDO_STATS][ROW PARTIAL] row={row_idx}, nums={nums}")
+
+            print(f"[BDO_STATS] Row {row_idx}: {row_values[row_idx - 1]}")
+            await asyncio.sleep(0.12)
+
     players = []
     for row_index, name in enumerate(names):
-        cols = [columns[c][row_index] for c in range(7)]
+        col_cols = [columns[c][row_index] for c in range(7)]
+        row_cols = row_values[row_index] if "row_values" in locals() and row_index < len(row_values) else [0, 0, 0, 0, 0, 0, 0]
+
+        # Якщо рядок прочитався, він точніший за окремі стовпчики.
+        cols = row_cols if any(row_cols) else col_cols
+
         players.append({
             "family_name": name,
             "forts": cols[0],
@@ -509,8 +554,6 @@ class BDOStatsCog(commands.Cog, name="BDOStats"):
             return
 
         await message.add_reaction("⏳")
-
-        # OCR може тривати довго, тому запускаємо у фоні.
         asyncio.create_task(self._process_bdo_stats_message(message, attachment))
 
     async def _process_bdo_stats_message(self, message: discord.Message, attachment: discord.Attachment):
