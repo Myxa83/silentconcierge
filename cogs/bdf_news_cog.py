@@ -318,6 +318,19 @@ class BDFNewsCog(commands.Cog):
                 print("[BDFNewsCog] no posts found")
                 return
 
+            if not self.seen_links:
+                for entry in posts:
+                    self.seen_links.add(entry.link)
+
+                self.save_seen()
+
+                print(
+                    f"[BDFNewsCog] first run: "
+                    f"saved {len(posts)} existing posts, no spam"
+                )
+
+                return
+
             for entry in reversed(posts):
                 await self.send_post(entry)
                 await asyncio.sleep(2)
