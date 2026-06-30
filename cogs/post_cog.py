@@ -27,10 +27,18 @@ WAIT_FILE_TIMEOUT = 600
 VIEW_TIMEOUT = 600
 ROUND_RADIUS = 40
 
+IMAGE_EXTENSIONS = (
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"
+)
+
 # ============================ UTILS ============================
 
 def _utc_now() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def bash_log(stage: str, data: str = "") -> None:
+    print(f"[POST_COG] {stage}: {data}", flush=True)
 
 
 def _append_json_list(path: Path, entry: Dict[str, Any]) -> None:
@@ -48,8 +56,8 @@ def _append_json_list(path: Path, entry: Dict[str, Any]) -> None:
 
         data.append(entry)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        bash_log("LOG_WRITE_ERROR", f"{type(e).__name__}: {e}")
 
 
 def log_event(stage: str, interaction: Optional[Interaction], extra: Optional[Dict[str, Any]] = None) -> None:
@@ -65,36 +73,111 @@ def log_event(stage: str, interaction: Optional[Interaction], extra: Optional[Di
     if extra:
         entry.update(extra)
 
+    bash_log("EVENT", json.dumps(entry, ensure_ascii=False))
     _append_json_list(LOG_FILE, entry)
 
 
 def log_tb(stage: str, interaction: Optional[Interaction], err: BaseException) -> None:
+    tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+
     entry = {
         "time": _utc_now(),
         "stage": stage,
         "user_id": getattr(getattr(interaction, "user", None), "id", None),
         "error_type": type(err).__name__,
         "error": str(err),
-        "traceback": "".join(traceback.format_exception(type(err), err, err.__traceback__)),
+        "traceback": tb,
     }
+
+    bash_log("ERROR", f"{stage} | {type(err).__name__}: {err}")
+    bash_log("TRACEBACK", tb)
 
     _append_json_list(TB_FILE, entry)
 
 
+def is_probably_image_url(url: str) -> bool:
+    if not url:
+        return False
+
+    clean = url.split("?")[0].lower()
+
+    if clean.endswith(IMAGE_EXTENSIONS):
+        return True
+
+    if "cdn.discordapp.com" in url or "media.discordapp.net" in url:
+        return True
+
+    if "tenor.com" in url or "giphy.com" in url:
+        return True
+
+    return False
+
+
+def extract_image_url_from_message(msg: discord.Message) -> Optional[str]:
+    bash_log(
+        "MESSAGE_CHECK",
+        f"author={msg.author.id} channel={msg.channel.id} "
+        f"attachments={len(msg.attachments)} embeds={len(msg.embeds)} "
+        f"stickers={len(msg.stickers)} content={msg.content!r}"
+    )
+
+    if msg.attachments:
+        att = msg.attachments[0]
+        bash_log(
+            "ATTACHMENT_FOUND",
+            f"url={att.url} filename={att.filename} content_type={att.content_type}"
+        )
+        return att.url
+
+    for emb in msg.embeds:
+        if emb.image and emb.image.url:
+            bash_log("EMBED_IMAGE_FOUND", emb.image.url)
+            return emb.image.url
+
+        if emb.thumbnail and emb.thumbnail.url:
+            bash_log("EMBED_THUMB_FOUND", emb.thumbnail.url)
+            return emb.thumbnail.url
+
+        if emb.url and is_probably_image_url(emb.url):
+            bash_log("EMBED_URL_FOUND", emb.url)
+            return emb.url
+
+    if msg.content:
+        urls = re.findall(r"https?://\S+", msg.content)
+        for url in urls:
+            clean_url = url.strip("<>()[]{}.,!?'\"")
+            if is_probably_image_url(clean_url):
+                bash_log("CONTENT_IMAGE_URL_FOUND", clean_url)
+                return clean_url
+
+        if urls:
+            clean_url = urls[0].strip("<>()[]{}.,!?'\"")
+            bash_log("CONTENT_URL_FOUND", clean_url)
+            return clean_url
+
+    bash_log("NO_IMAGE_FOUND", "message has no usable image url")
+    return None
+
+
 async def download_and_round(url: str) -> Tuple[Optional[discord.File], Optional[str], str]:
     if not url:
+        bash_log("DOWNLOAD_SKIP", "empty_url")
         return None, None, "empty_url"
 
     clean_url = url.split("?")[0].lower()
 
     if clean_url.endswith(".gif"):
+        bash_log("DOWNLOAD_SKIP_GIF", url)
         return None, url, "ok_gif"
 
     try:
+        bash_log("DOWNLOAD_START", url)
+
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT)) as session:
             async with session.get(url) as r:
+                bash_log("DOWNLOAD_RESPONSE", f"status={r.status} content_type={r.headers.get('content-type')}")
                 if r.status != 200:
-                    return None, None, f"http_{r.status}"
+                    return None, url, f"http_{r.status}"
                 data = await r.read()
 
         img = Image.open(io.BytesIO(data)).convert("RGBA")
@@ -111,9 +194,11 @@ async def download_and_round(url: str) -> Tuple[Optional[discord.File], Optional
         out.save(buf, format="PNG")
         buf.seek(0)
 
+        bash_log("DOWNLOAD_DONE", f"size={w}x{h}")
         return discord.File(buf, filename="image.png"), "attachment://image.png", "ok"
 
     except Exception as e:
+        bash_log("DOWNLOAD_ERROR", f"{type(e).__name__}: {e} | fallback_url={url}")
         return None, url, f"err_{type(e).__name__}"
 
 
@@ -199,11 +284,17 @@ class LinkModal(Modal, title="Картинка з посилання"):
         self.add_item(self.url)
 
     async def on_submit(self, interaction: Interaction):
-        self.session.image_url = (self.url.value or "").strip() or None
-        self.session.keep_existing_image = False
-        self.session.remove_image = False
+        try:
+            self.session.image_url = (self.url.value or "").strip() or None
+            self.session.keep_existing_image = False
+            self.session.remove_image = False
 
-        await interaction.response.send_modal(TextModal(self.cog, self.session))
+            bash_log("LINK_MODAL_SUBMIT", f"url={self.session.image_url}")
+
+            await interaction.response.send_modal(TextModal(self.cog, self.session))
+
+        except Exception as e:
+            log_tb("link_modal_submit", interaction, e)
 
 
 class ImageChoiceView(discord.ui.View):
@@ -216,16 +307,23 @@ class ImageChoiceView(discord.ui.View):
     async def from_pc(self, interaction: Interaction, _):
         try:
             await interaction.response.send_message(
-                "Надішли картинку файлом у цей канал.",
+                "Надішли картинку або GIF у цей канал.",
                 ephemeral=True
             )
 
+            bash_log("WAIT_IMAGE_START", f"user={interaction.user.id} channel={interaction.channel.id}")
+
             def check(m: discord.Message) -> bool:
-                return (
-                    m.author.id == interaction.user.id
-                    and m.channel.id == interaction.channel.id
-                    and bool(m.attachments)
-                )
+                if m.author.id != interaction.user.id:
+                    bash_log("WAIT_IMAGE_IGNORE_AUTHOR", f"got={m.author.id} need={interaction.user.id}")
+                    return False
+
+                if m.channel.id != interaction.channel.id:
+                    bash_log("WAIT_IMAGE_IGNORE_CHANNEL", f"got={m.channel.id} need={interaction.channel.id}")
+                    return False
+
+                url = extract_image_url_from_message(m)
+                return bool(url)
 
             msg = await self.cog.bot.wait_for(
                 "message",
@@ -233,15 +331,31 @@ class ImageChoiceView(discord.ui.View):
                 check=check
             )
 
-            self.session.image_url = msg.attachments[0].url
+            url = extract_image_url_from_message(msg)
+
+            if not url:
+                bash_log("WAIT_IMAGE_ERROR", "message passed check but url is empty")
+                return await interaction.followup.send(
+                    "❌ Я бачу повідомлення, але не бачу в ньому картинки або GIF.",
+                    ephemeral=True
+                )
+
+            self.session.image_url = url
             self.session.keep_existing_image = False
             self.session.remove_image = False
+
+            bash_log("WAIT_IMAGE_DONE", f"url={url}")
 
             await interaction.followup.send_modal(TextModal(self.cog, self.session))
 
         except Exception as e:
+            bash_log("WAIT_IMAGE_EXCEPTION", f"{type(e).__name__}: {e}")
             log_tb("image_from_pc", interaction, e)
-            await interaction.followup.send("❌ Час очікування вийшов.", ephemeral=True)
+
+            await interaction.followup.send(
+                "❌ Час очікування вийшов або картинка не була розпізнана. Деталі дивись у bash.",
+                ephemeral=True
+            )
 
     @discord.ui.button(label="З посилання", style=discord.ButtonStyle.secondary)
     async def from_link(self, interaction: Interaction, _):
@@ -252,6 +366,8 @@ class ImageChoiceView(discord.ui.View):
         self.session.image_url = None
         self.session.keep_existing_image = False
         self.session.remove_image = True
+
+        bash_log("NO_IMAGE_SELECTED", f"user={interaction.user.id}")
 
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
@@ -268,22 +384,31 @@ class EditImageChoiceView(discord.ui.View):
         self.session.remove_image = False
         self.session.image_url = None
 
+        bash_log("EDIT_KEEP_IMAGE_SELECTED", f"user={interaction.user.id}")
+
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
     @discord.ui.button(label="Замінити (ПК)", style=discord.ButtonStyle.primary)
     async def repl_pc(self, interaction: Interaction, _):
         try:
             await interaction.response.send_message(
-                "Надішли файл у цей канал.",
+                "Надішли картинку або GIF у цей канал.",
                 ephemeral=True
             )
 
+            bash_log("WAIT_REPLACE_IMAGE_START", f"user={interaction.user.id} channel={interaction.channel.id}")
+
             def check(m: discord.Message) -> bool:
-                return (
-                    m.author.id == interaction.user.id
-                    and m.channel.id == interaction.channel.id
-                    and bool(m.attachments)
-                )
+                if m.author.id != interaction.user.id:
+                    bash_log("WAIT_REPLACE_IGNORE_AUTHOR", f"got={m.author.id} need={interaction.user.id}")
+                    return False
+
+                if m.channel.id != interaction.channel.id:
+                    bash_log("WAIT_REPLACE_IGNORE_CHANNEL", f"got={m.channel.id} need={interaction.channel.id}")
+                    return False
+
+                url = extract_image_url_from_message(m)
+                return bool(url)
 
             msg = await self.cog.bot.wait_for(
                 "message",
@@ -291,20 +416,38 @@ class EditImageChoiceView(discord.ui.View):
                 check=check
             )
 
-            self.session.image_url = msg.attachments[0].url
+            url = extract_image_url_from_message(msg)
+
+            if not url:
+                bash_log("WAIT_REPLACE_IMAGE_ERROR", "message passed check but url is empty")
+                return await interaction.followup.send(
+                    "❌ Я бачу повідомлення, але не бачу в ньому картинки або GIF.",
+                    ephemeral=True
+                )
+
+            self.session.image_url = url
             self.session.keep_existing_image = False
             self.session.remove_image = False
+
+            bash_log("WAIT_REPLACE_IMAGE_DONE", f"url={url}")
 
             await interaction.followup.send_modal(TextModal(self.cog, self.session))
 
         except Exception as e:
+            bash_log("WAIT_REPLACE_IMAGE_EXCEPTION", f"{type(e).__name__}: {e}")
             log_tb("edit_replace_pc", interaction, e)
-            await interaction.followup.send("❌ Час очікування вийшов.", ephemeral=True)
+
+            await interaction.followup.send(
+                "❌ Час очікування вийшов або картинка не була розпізнана. Деталі дивись у bash.",
+                ephemeral=True
+            )
 
     @discord.ui.button(label="Замінити (URL)", style=discord.ButtonStyle.secondary)
     async def repl_url(self, interaction: Interaction, _):
         self.session.keep_existing_image = False
         self.session.remove_image = False
+
+        bash_log("EDIT_REPLACE_URL_SELECTED", f"user={interaction.user.id}")
 
         await interaction.response.send_modal(LinkModal(self.cog, self.session))
 
@@ -313,6 +456,8 @@ class EditImageChoiceView(discord.ui.View):
         self.session.remove_image = True
         self.session.keep_existing_image = False
         self.session.image_url = None
+
+        bash_log("EDIT_REMOVE_IMAGE_SELECTED", f"user={interaction.user.id}")
 
         await interaction.response.send_modal(TextModal(self.cog, self.session))
 
@@ -327,6 +472,8 @@ class AuthorView(discord.ui.View):
     async def with_author(self, interaction: Interaction, _):
         self.session.anonymous = False
 
+        bash_log("AUTHOR_SELECTED", f"anonymous=False user={interaction.user.id}")
+
         await interaction.response.send_message(
             "Додавати футер?",
             ephemeral=True,
@@ -336,6 +483,8 @@ class AuthorView(discord.ui.View):
     @discord.ui.button(label="Анонімно", style=discord.ButtonStyle.primary)
     async def anon(self, interaction: Interaction, _):
         self.session.anonymous = True
+
+        bash_log("AUTHOR_SELECTED", f"anonymous=True user={interaction.user.id}")
 
         await interaction.response.send_message(
             "Додавати футер?",
@@ -353,11 +502,13 @@ class FooterView(discord.ui.View):
     @discord.ui.button(label="З футером", style=discord.ButtonStyle.success)
     async def yes(self, interaction: Interaction, _):
         self.session.footer = True
+        bash_log("FOOTER_SELECTED", f"footer=True user={interaction.user.id}")
         await self.cog.finalize(interaction, self.session)
 
     @discord.ui.button(label="Без футера", style=discord.ButtonStyle.secondary)
     async def no(self, interaction: Interaction, _):
         self.session.footer = False
+        bash_log("FOOTER_SELECTED", f"footer=False user={interaction.user.id}")
         await self.cog.finalize(interaction, self.session)
 
 
@@ -366,6 +517,7 @@ class FooterView(discord.ui.View):
 class PostCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        bash_log("COG_INIT", "PostCog loaded")
 
     @app_commands.command(name="post", description="Створити пост")
     @app_commands.describe(image="Прикріпи файл одразу")
@@ -375,6 +527,7 @@ class PostCog(commands.Cog):
         image: Optional[discord.Attachment] = None
     ):
         if not isinstance(interaction.user, discord.Member) or not has_access(interaction.user):
+            bash_log("NO_ACCESS", f"user={getattr(interaction.user, 'id', None)}")
             return await interaction.response.send_message("⛔ Нема прав.", ephemeral=True)
 
         log_event("post_cmd_start", interaction)
@@ -383,6 +536,7 @@ class PostCog(commands.Cog):
 
         if image:
             sess.image_url = image.url
+            bash_log("POST_WITH_ATTACHMENT", f"url={image.url} filename={image.filename}")
             await interaction.response.send_modal(TextModal(self, sess))
         else:
             await interaction.response.send_message(
@@ -395,12 +549,14 @@ class PostCog(commands.Cog):
     @app_commands.describe(message_link="Посилання на повідомлення")
     async def post_edit_cmd(self, interaction: Interaction, message_link: str):
         if not isinstance(interaction.user, discord.Member) or not has_access(interaction.user):
+            bash_log("NO_ACCESS_EDIT", f"user={getattr(interaction.user, 'id', None)}")
             return await interaction.response.send_message("⛔ Нема прав.", ephemeral=True)
 
         log_event("post_edit_start", interaction, {"message_link": message_link})
 
         parsed = parse_message_link(message_link)
         if not parsed:
+            bash_log("BAD_MESSAGE_LINK", message_link)
             return await interaction.response.send_message("❌ Невірне посилання.", ephemeral=True)
 
         _, c_id, m_id = parsed
@@ -408,6 +564,13 @@ class PostCog(commands.Cog):
         try:
             channel = self.bot.get_channel(c_id) or await self.bot.fetch_channel(c_id)
             msg = await channel.fetch_message(m_id)
+
+            bash_log(
+                "EDIT_TARGET_FETCHED",
+                f"channel={c_id} message={m_id} author={msg.author.id} "
+                f"embeds={len(msg.embeds)} attachments={len(msg.attachments)}"
+            )
+
         except Exception as e:
             log_tb("post_edit_fetch_message", interaction, e)
             return await interaction.response.send_message(
@@ -416,6 +579,7 @@ class PostCog(commands.Cog):
             )
 
         if msg.author.id != self.bot.user.id:
+            bash_log("EDIT_NOT_BOT_MESSAGE", f"message_author={msg.author.id} bot={self.bot.user.id}")
             return await interaction.response.send_message("❌ Це не мій пост.", ephemeral=True)
 
         title = None
@@ -431,6 +595,11 @@ class PostCog(commands.Cog):
             anon = not bool(emb.author and emb.author.name)
             foot = bool(emb.footer and emb.footer.text)
             has_img = bool((emb.image and emb.image.url) or msg.attachments)
+
+            bash_log(
+                "OLD_EMBED_PARSED",
+                f"title={title!r} text_len={len(text)} anon={anon} footer={foot} has_img={has_img}"
+            )
 
         sess = PostSession(
             title=title,
@@ -459,6 +628,14 @@ class PostCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         try:
+            bash_log(
+                "FINALIZE_START",
+                f"edit={session.edit_mode} title={session.title!r} "
+                f"text_len={len(session.text or '')} image_url={session.image_url!r} "
+                f"keep={session.keep_existing_image} remove={session.remove_image} "
+                f"anon={session.anonymous} footer={session.footer}"
+            )
+
             embed = discord.Embed(
                 title=session.title or "",
                 description=session.text or "",
@@ -485,16 +662,34 @@ class PostCog(commands.Cog):
 
                 old_attachments = list(msg.attachments)
 
+                bash_log(
+                    "EDIT_MESSAGE_STATE",
+                    f"old_attachments={len(old_attachments)} embeds={len(msg.embeds)}"
+                )
+
                 if session.keep_existing_image:
                     if old_attachments:
                         embed.set_image(url=old_attachments[0].url)
+
+                        bash_log(
+                            "EDIT_KEEP_ATTACHMENT",
+                            f"url={old_attachments[0].url}"
+                        )
+
                         await msg.edit(embed=embed, attachments=old_attachments)
 
                     elif msg.embeds and msg.embeds[0].image and msg.embeds[0].image.url:
                         embed.set_image(url=msg.embeds[0].image.url)
+
+                        bash_log(
+                            "EDIT_KEEP_EMBED_URL",
+                            f"url={msg.embeds[0].image.url}"
+                        )
+
                         await msg.edit(embed=embed)
 
                     else:
+                        bash_log("EDIT_KEEP_NO_IMAGE", "no old image found")
                         await msg.edit(embed=embed)
 
                     log_event("post_edit_keep_image_done", interaction)
@@ -502,6 +697,9 @@ class PostCog(commands.Cog):
 
                 if session.remove_image:
                     embed.set_image(url=None)
+
+                    bash_log("EDIT_REMOVE_IMAGE", "attachments=[]")
+
                     await msg.edit(embed=embed, attachments=[])
 
                     log_event("post_edit_remove_image_done", interaction)
@@ -509,6 +707,11 @@ class PostCog(commands.Cog):
 
                 if session.image_url:
                     f, url, status = await download_and_round(session.image_url)
+
+                    bash_log(
+                        "EDIT_REPLACE_IMAGE",
+                        f"status={status} url={url} has_file={bool(f)}"
+                    )
 
                     if url:
                         embed.set_image(url=url)
@@ -527,8 +730,15 @@ class PostCog(commands.Cog):
 
                 if old_attachments and msg.embeds and msg.embeds[0].image:
                     embed.set_image(url=old_attachments[0].url)
+
+                    bash_log(
+                        "EDIT_FALLBACK_KEEP_ATTACHMENT",
+                        f"url={old_attachments[0].url}"
+                    )
+
                     await msg.edit(embed=embed, attachments=old_attachments)
                 else:
+                    bash_log("EDIT_NO_IMAGE_FALLBACK", "edit embed only")
                     await msg.edit(embed=embed)
 
                 log_event("post_edit_done", interaction)
@@ -543,12 +753,19 @@ class PostCog(commands.Cog):
             if session.image_url:
                 f_send, img_url, image_status = await download_and_round(session.image_url)
 
+                bash_log(
+                    "CREATE_IMAGE_PREPARED",
+                    f"status={image_status} url={img_url} has_file={bool(f_send)}"
+                )
+
                 if img_url:
                     embed.set_image(url=img_url)
 
             if f_send:
+                bash_log("CREATE_SEND_WITH_FILE", "sending embed + file")
                 await interaction.channel.send(embed=embed, file=f_send)
             else:
+                bash_log("CREATE_SEND_EMBED_ONLY", "sending embed only")
                 await interaction.channel.send(embed=embed)
 
             log_event(
@@ -564,7 +781,7 @@ class PostCog(commands.Cog):
 
             try:
                 await interaction.followup.send(
-                    "❌ Щось зламалося. Помилка записана в logs/post_tracebacks.json.",
+                    "❌ Щось зламалося. Помилка записана в logs/post_tracebacks.json і виведена в bash.",
                     ephemeral=True
                 )
             except Exception:
