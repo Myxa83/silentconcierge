@@ -342,6 +342,18 @@ class LinkModal(Modal, title="Картинка з посилання"):
             log_tb("link_modal_submit", interaction, e)
 
 
+class OpenTextModalView(discord.ui.View):
+    def __init__(self, cog: "PostCog", session: PostSession):
+        super().__init__(timeout=VIEW_TIMEOUT)
+        self.cog = cog
+        self.session = session
+
+    @discord.ui.button(label="Ввести текст", style=discord.ButtonStyle.success)
+    async def open_text(self, interaction: Interaction, _):
+        bash_log("OPEN_TEXT_MODAL", f"user={interaction.user.id}")
+        await interaction.response.send_modal(TextModal(self.cog, self.session))
+
+
 class ImageChoiceView(discord.ui.View):
     def __init__(self, cog: "PostCog", session: PostSession):
         super().__init__(timeout=VIEW_TIMEOUT)
@@ -410,7 +422,11 @@ class ImageChoiceView(discord.ui.View):
 
             bash_log("WAIT_IMAGE_DONE", f"url={url}")
 
-            await interaction.followup.send_modal(TextModal(self.cog, self.session))
+            await interaction.followup.send(
+                "✅ Картинку отримано. Тепер натисни кнопку, щоб ввести текст.",
+                ephemeral=True,
+                view=OpenTextModalView(self.cog, self.session)
+            )
 
         except Exception as e:
             bash_log("WAIT_IMAGE_EXCEPTION", f"{type(e).__name__}: {e}")
@@ -514,7 +530,11 @@ class EditImageChoiceView(discord.ui.View):
 
             bash_log("WAIT_REPLACE_IMAGE_DONE", f"url={url}")
 
-            await interaction.followup.send_modal(TextModal(self.cog, self.session))
+            await interaction.followup.send(
+                "✅ Картинку отримано. Тепер натисни кнопку, щоб ввести текст.",
+                ephemeral=True,
+                view=OpenTextModalView(self.cog, self.session)
+            )
 
         except Exception as e:
             bash_log("WAIT_REPLACE_IMAGE_EXCEPTION", f"{type(e).__name__}: {e}")
