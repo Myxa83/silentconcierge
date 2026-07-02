@@ -56,19 +56,12 @@ def _append_json_list(path: Path, entry: Dict[str, Any]) -> None:
                 data = []
 
         data.append(entry)
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         bash_log("LOG_WRITE_ERROR", f"{type(e).__name__}: {e}")
 
 
-def log_event(
-    stage: str,
-    interaction: Optional[Interaction],
-    extra: Optional[Dict[str, Any]] = None
-) -> None:
+def log_event(stage: str, interaction: Optional[Interaction], extra: Optional[Dict[str, Any]] = None) -> None:
     entry = {
         "time": _utc_now(),
         "stage": stage,
@@ -198,9 +191,7 @@ async def download_and_round(url: str) -> Tuple[Optional[discord.File], Optional
     try:
         bash_log("DOWNLOAD_START", url)
 
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT)
-        ) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT)) as session:
             async with session.get(url) as r:
                 bash_log(
                     "DOWNLOAD_RESPONSE",
@@ -227,6 +218,7 @@ async def download_and_round(url: str) -> Tuple[Optional[discord.File], Optional
         buf.seek(0)
 
         bash_log("DOWNLOAD_DONE", f"size={w}x{h}")
+
         return discord.File(buf, filename="image.png"), "attachment://image.png", "ok"
 
     except Exception as e:
@@ -244,10 +236,7 @@ def parse_message_link(link: str) -> Optional[Tuple[int, int, int]]:
 
 
 def has_access(member: discord.Member) -> bool:
-    return (
-        member.guild_permissions.manage_messages
-        or member.guild_permissions.administrator
-    )
+    return member.guild_permissions.manage_messages or member.guild_permissions.administrator
 
 
 @dataclass
@@ -298,11 +287,7 @@ class TextModal(Modal, title="Текст поста"):
             self.session.title = (self.title_input.value or "").strip() or None
             self.session.text = (self.text_input.value or "").strip()
 
-            log_event(
-                "text_modal_submit",
-                interaction,
-                {"edit_mode": self.session.edit_mode}
-            )
+            log_event("text_modal_submit", interaction, {"edit_mode": self.session.edit_mode})
 
             await interaction.response.send_message(
                 "Показувати автора?",
@@ -336,22 +321,29 @@ class LinkModal(Modal, title="Картинка з посилання"):
 
             bash_log("LINK_MODAL_SUBMIT", f"url={self.session.image_url}")
 
-            await interaction.response.send_modal(TextModal(self.cog, self.session))
+            await interaction.response.send_message(
+                "✅ Посилання прийнято. Натисни кнопку нижче, щоб відкрити форму тексту.",
+                ephemeral=True,
+                view=ContinueTextView(self.cog, self.session)
+            )
 
         except Exception as e:
             log_tb("link_modal_submit", interaction, e)
 
 
-class OpenTextModalView(discord.ui.View):
+class ContinueTextView(discord.ui.View):
     def __init__(self, cog: "PostCog", session: PostSession):
         super().__init__(timeout=VIEW_TIMEOUT)
         self.cog = cog
         self.session = session
 
-    @discord.ui.button(label="Ввести текст", style=discord.ButtonStyle.success)
-    async def open_text(self, interaction: Interaction, _):
-        bash_log("OPEN_TEXT_MODAL", f"user={interaction.user.id}")
-        await interaction.response.send_modal(TextModal(self.cog, self.session))
+    @discord.ui.button(label="Далі: текст поста", style=discord.ButtonStyle.success)
+    async def continue_text(self, interaction: Interaction, _):
+        try:
+            bash_log("CONTINUE_TEXT_CLICK", f"user={interaction.user.id}")
+            await interaction.response.send_modal(TextModal(self.cog, self.session))
+        except Exception as e:
+            log_tb("continue_text", interaction, e)
 
 
 class ImageChoiceView(discord.ui.View):
@@ -378,24 +370,15 @@ class ImageChoiceView(discord.ui.View):
 
             def check(m: discord.Message) -> bool:
                 if m.author.id != interaction.user.id:
-                    bash_log(
-                        "WAIT_IMAGE_IGNORE_AUTHOR",
-                        f"got={m.author.id} need={interaction.user.id}"
-                    )
+                    bash_log("WAIT_IMAGE_IGNORE_AUTHOR", f"got={m.author.id} need={interaction.user.id}")
                     return False
 
                 if m.channel.id != interaction.channel.id:
-                    bash_log(
-                        "WAIT_IMAGE_IGNORE_CHANNEL",
-                        f"got={m.channel.id} need={interaction.channel.id}"
-                    )
+                    bash_log("WAIT_IMAGE_IGNORE_CHANNEL", f"got={m.channel.id} need={interaction.channel.id}")
                     return False
 
                 if not is_message_after_start(m, start_time):
-                    bash_log(
-                        "WAIT_IMAGE_IGNORE_OLD",
-                        f"msg_time={m.created_at} start={start_time}"
-                    )
+                    bash_log("WAIT_IMAGE_IGNORE_OLD", f"msg_time={m.created_at} start={start_time}")
                     return False
 
                 url = extract_image_url_from_message(m)
@@ -423,9 +406,9 @@ class ImageChoiceView(discord.ui.View):
             bash_log("WAIT_IMAGE_DONE", f"url={url}")
 
             await interaction.followup.send(
-                "✅ Картинку отримано. Тепер натисни кнопку, щоб ввести текст.",
+                "✅ Картинку/GIF прийнято. Натисни кнопку нижче, щоб відкрити форму тексту.",
                 ephemeral=True,
-                view=OpenTextModalView(self.cog, self.session)
+                view=ContinueTextView(self.cog, self.session)
             )
 
         except Exception as e:
@@ -486,24 +469,15 @@ class EditImageChoiceView(discord.ui.View):
 
             def check(m: discord.Message) -> bool:
                 if m.author.id != interaction.user.id:
-                    bash_log(
-                        "WAIT_REPLACE_IGNORE_AUTHOR",
-                        f"got={m.author.id} need={interaction.user.id}"
-                    )
+                    bash_log("WAIT_REPLACE_IGNORE_AUTHOR", f"got={m.author.id} need={interaction.user.id}")
                     return False
 
                 if m.channel.id != interaction.channel.id:
-                    bash_log(
-                        "WAIT_REPLACE_IGNORE_CHANNEL",
-                        f"got={m.channel.id} need={interaction.channel.id}"
-                    )
+                    bash_log("WAIT_REPLACE_IGNORE_CHANNEL", f"got={m.channel.id} need={interaction.channel.id}")
                     return False
 
                 if not is_message_after_start(m, start_time):
-                    bash_log(
-                        "WAIT_REPLACE_IGNORE_OLD",
-                        f"msg_time={m.created_at} start={start_time}"
-                    )
+                    bash_log("WAIT_REPLACE_IGNORE_OLD", f"msg_time={m.created_at} start={start_time}")
                     return False
 
                 url = extract_image_url_from_message(m)
@@ -531,9 +505,9 @@ class EditImageChoiceView(discord.ui.View):
             bash_log("WAIT_REPLACE_IMAGE_DONE", f"url={url}")
 
             await interaction.followup.send(
-                "✅ Картинку отримано. Тепер натисни кнопку, щоб ввести текст.",
+                "✅ Картинку/GIF прийнято. Натисни кнопку нижче, щоб відкрити форму тексту.",
                 ephemeral=True,
-                view=OpenTextModalView(self.cog, self.session)
+                view=ContinueTextView(self.cog, self.session)
             )
 
         except Exception as e:
@@ -793,10 +767,7 @@ class PostCog(commands.Cog):
                     if old_attachments:
                         embed.set_image(url=old_attachments[0].url)
 
-                        bash_log(
-                            "EDIT_KEEP_ATTACHMENT",
-                            f"url={old_attachments[0].url}"
-                        )
+                        bash_log("EDIT_KEEP_ATTACHMENT", f"url={old_attachments[0].url}")
 
                         await msg.edit(
                             embed=embed,
@@ -806,10 +777,7 @@ class PostCog(commands.Cog):
                     elif msg.embeds and msg.embeds[0].image and msg.embeds[0].image.url:
                         embed.set_image(url=msg.embeds[0].image.url)
 
-                        bash_log(
-                            "EDIT_KEEP_EMBED_URL",
-                            f"url={msg.embeds[0].image.url}"
-                        )
+                        bash_log("EDIT_KEEP_EMBED_URL", f"url={msg.embeds[0].image.url}")
 
                         await msg.edit(embed=embed)
 
@@ -877,10 +845,7 @@ class PostCog(commands.Cog):
                 if old_attachments and msg.embeds and msg.embeds[0].image:
                     embed.set_image(url=old_attachments[0].url)
 
-                    bash_log(
-                        "EDIT_FALLBACK_KEEP_ATTACHMENT",
-                        f"url={old_attachments[0].url}"
-                    )
+                    bash_log("EDIT_FALLBACK_KEEP_ATTACHMENT", f"url={old_attachments[0].url}")
 
                     await msg.edit(
                         embed=embed,
