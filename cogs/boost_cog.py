@@ -18,19 +18,17 @@ BACKGROUND_URL = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/
 
 STATE_FILE = Path("data/boost_state.json")
 
-# Бажано додати в GitHub:
-# assets/fonts/Cinzel-Regular.ttf
-# Якщо файла нема - бот сам візьме запасний системний шрифт.
-NUMBER_FONT_PATH = Path("assets/fonts/Cinzel-Regular.ttf")
+# Шрифт для цифр
+NUMBER_FONT_PATH = Path("assets/fonts/Cinzel-VariableFont_wght.ttf")
 
-# Твій фон з полями навколо плашки: 666x375
+# Фон Boost.png, який має чорні/прозорі поля навколо плашки
 ORIGINAL_BG_W = 666
 ORIGINAL_BG_H = 375
 
-# Вирізаємо тільки саму плашку
+# Обрізка до самої плашки
 BANNER_CROP_BOX = (13, 79, 653, 289)
 
-# Після обрізки плашка стає 640x210
+# Після обрізки плашка має бути 640x210
 CLEAN_W = 640
 CLEAN_H = 210
 
@@ -38,11 +36,9 @@ CLEAN_H = 210
 OLD_LEVEL_CENTER = (270, 122)
 NEW_LEVEL_CENTER = (399, 122)
 
-# Тонший і менший шрифт
 LEVEL_FONT_SIZE = 38
 
-# Аватарка всередині правої рамки
-# Було завелике і зависоко - тепер менше і нижче
+# Аватарка в правій рамці
 AVATAR_SIZE = 112
 AVATAR_CENTER = (547, 104)
 
@@ -53,7 +49,7 @@ AVATAR_Y = AVATAR_CENTER[1] - AVATAR_SIZE // 2
 class BoostCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.bg_cache = None
+        self.bg_cache: Image.Image | None = None
         self.state = self.load_state()
 
     # -------------------------
@@ -73,12 +69,13 @@ class BoostCog(commands.Cog):
 
     def save_state(self):
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
         STATE_FILE.write_text(
             json.dumps(self.state, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-    def get_saved_tier(self, guild_id: int):
+    def get_saved_tier(self, guild_id: int) -> int | None:
         guild_data = self.state.get(str(guild_id), {})
         tier = guild_data.get("premium_tier")
 
@@ -92,6 +89,7 @@ class BoostCog(commands.Cog):
             "premium_tier": guild.premium_tier or 0,
             "premium_subscription_count": guild.premium_subscription_count or 0,
         }
+
         self.save_state()
 
     # -------------------------
@@ -109,15 +107,12 @@ class BoostCog(commands.Cog):
             data = await self.fetch_bytes(BACKGROUND_URL)
             img = Image.open(BytesIO(data)).convert("RGBA")
 
-            # Якщо файл 666x375 з полями - обрізаємо до самої плашки.
             if img.size == (ORIGINAL_BG_W, ORIGINAL_BG_H):
                 img = img.crop(BANNER_CROP_BOX)
 
-            # Якщо вже 640x210 - лишаємо як є.
             elif img.size == (CLEAN_W, CLEAN_H):
                 pass
 
-            # Якщо розмір інший - акуратно підганяємо без ручного розтягування.
             else:
                 img = ImageOps.fit(
                     img,
@@ -162,10 +157,6 @@ class BoostCog(commands.Cog):
         return frames, durations
 
     def circle_crop_avatar(self, img: Image.Image, size: int) -> Image.Image:
-        """
-        Кругла аватарка без витягування.
-        ImageOps.fit зберігає пропорції і обрізає зайве по центру.
-        """
         img = img.convert("RGBA")
 
         img = ImageOps.fit(
@@ -191,8 +182,8 @@ class BoostCog(commands.Cog):
     def get_number_font(self, size: int):
         font_paths = [
             str(NUMBER_FONT_PATH),
-            "assets/fonts/Cinzel-Regular.ttf",
-            "assets/fonts/CormorantGaramond-Regular.ttf",
+            "assets/fonts/Cinzel-VariableFont_wght.ttf",
+            "assets/fonts/FixelDisplay-Bold.otf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "C:/Windows/Fonts/georgia.ttf",
@@ -223,6 +214,7 @@ class BoostCog(commands.Cog):
         glow: bool = False,
     ):
         bbox = draw.textbbox((0, 0), text, font=font, stroke_width=1)
+
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
 
@@ -234,18 +226,18 @@ class BoostCog(commands.Cog):
             (x + 2, y + 2),
             text,
             font=font,
-            fill=(0, 0, 0, 135),
+            fill=(0, 0, 0, 130),
         )
 
-        # Дуже легке світіння тільки для нової цифри
+        # Дуже легке світіння для нової цифри
         if glow:
             draw.text(
                 (x, y),
                 text,
                 font=font,
-                fill=(255, 175, 40, 32),
+                fill=(255, 175, 40, 28),
                 stroke_width=2,
-                stroke_fill=(255, 150, 35, 32),
+                stroke_fill=(255, 150, 35, 28),
             )
 
         # Основна цифра
@@ -258,12 +250,12 @@ class BoostCog(commands.Cog):
             stroke_fill=stroke,
         )
 
-        # Легкий блік зверху
+        # Легкий блік
         draw.text(
             (x - 1, y - 1),
             text,
             font=font,
-            fill=(255, 245, 200, 50),
+            fill=(255, 245, 200, 45),
         )
 
     def draw_level_numbers(
@@ -275,25 +267,25 @@ class BoostCog(commands.Cog):
         draw = ImageDraw.Draw(base)
         font = self.get_number_font(LEVEL_FONT_SIZE)
 
-        # Ліва цифра - тонша сіра
+        # Ліва цифра - сіра
         self.draw_centered_number(
             draw=draw,
             text=str(old_level),
             center=OLD_LEVEL_CENTER,
             font=font,
             fill=(178, 178, 172, 255),
-            stroke=(35, 35, 38, 210),
+            stroke=(35, 35, 38, 200),
             glow=False,
         )
 
-        # Права цифра - тонша золота
+        # Права цифра - золота
         self.draw_centered_number(
             draw=draw,
             text=str(new_level),
             center=NEW_LEVEL_CENTER,
             font=font,
             fill=(230, 178, 68, 255),
-            stroke=(68, 42, 20, 210),
+            stroke=(68, 42, 20, 200),
             glow=True,
         )
 
@@ -427,6 +419,25 @@ class BoostCog(commands.Cog):
         self.set_saved_guild_state(guild)
 
     # -------------------------
+    # GUILD STATE UPDATE
+    # -------------------------
+
+    @commands.Cog.listener()
+    async def on_guild_update(
+        self,
+        before: discord.Guild,
+        after: discord.Guild,
+    ):
+        before_tier = before.premium_tier or 0
+        after_tier = after.premium_tier or 0
+
+        before_boosts = before.premium_subscription_count or 0
+        after_boosts = after.premium_subscription_count or 0
+
+        if before_tier != after_tier or before_boosts != after_boosts:
+            self.set_saved_guild_state(after)
+
+    # -------------------------
     # READY
     # -------------------------
 
@@ -452,12 +463,6 @@ class BoostCog(commands.Cog):
         old_level: int = 1,
         new_level: int = 2,
     ):
-        """
-        Використання:
-        !testboost
-        !testboost 1 2
-        !testboost 2 3
-        """
         if ctx.channel.id != TEST_CHANNEL_ID:
             await ctx.reply(
                 "Тест бусту можна запускати тільки в тестовому каналі.",
