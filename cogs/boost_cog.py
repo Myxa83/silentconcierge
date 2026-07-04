@@ -18,29 +18,23 @@ BACKGROUND_URL = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/
 
 STATE_FILE = Path("data/boost_state.json")
 
-# Шрифт для цифр
 NUMBER_FONT_PATH = Path("assets/fonts/Cinzel-VariableFont_wght.ttf")
 
-# Фон Boost.png, який має чорні/прозорі поля навколо плашки
 ORIGINAL_BG_W = 666
 ORIGINAL_BG_H = 375
 
-# Обрізка до самої плашки
 BANNER_CROP_BOX = (13, 79, 653, 289)
 
-# Після обрізки плашка має бути 640x210
 CLEAN_W = 640
 CLEAN_H = 210
 
-# Координати цифр для обрізаного банера 640x210
-OLD_LEVEL_CENTER = (270, 122)
+OLD_LEVEL_CENTER = (260, 122)
 NEW_LEVEL_CENTER = (399, 122)
 
 LEVEL_FONT_SIZE = 38
 
-# Аватарка в правій рамці
-AVATAR_SIZE = 112
-AVATAR_CENTER = (547, 104)
+AVATAR_SIZE = 120
+AVATAR_CENTER = (541, 104)
 
 AVATAR_X = AVATAR_CENTER[0] - AVATAR_SIZE // 2
 AVATAR_Y = AVATAR_CENTER[1] - AVATAR_SIZE // 2
@@ -49,12 +43,8 @@ AVATAR_Y = AVATAR_CENTER[1] - AVATAR_SIZE // 2
 class BoostCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.bg_cache: Image.Image | None = None
+        self.bg_cache = None
         self.state = self.load_state()
-
-    # -------------------------
-    # STATE
-    # -------------------------
 
     def load_state(self) -> dict:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -69,32 +59,22 @@ class BoostCog(commands.Cog):
 
     def save_state(self):
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
         STATE_FILE.write_text(
             json.dumps(self.state, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-    def get_saved_tier(self, guild_id: int) -> int | None:
+    def get_saved_tier(self, guild_id: int):
         guild_data = self.state.get(str(guild_id), {})
         tier = guild_data.get("premium_tier")
-
-        if isinstance(tier, int):
-            return tier
-
-        return None
+        return tier if isinstance(tier, int) else None
 
     def set_saved_guild_state(self, guild: discord.Guild):
         self.state[str(guild.id)] = {
             "premium_tier": guild.premium_tier or 0,
             "premium_subscription_count": guild.premium_subscription_count or 0,
         }
-
         self.save_state()
-
-    # -------------------------
-    # FILE LOADING
-    # -------------------------
 
     async def fetch_bytes(self, url: str) -> bytes:
         async with aiohttp.ClientSession() as session:
@@ -110,10 +90,7 @@ class BoostCog(commands.Cog):
             if img.size == (ORIGINAL_BG_W, ORIGINAL_BG_H):
                 img = img.crop(BANNER_CROP_BOX)
 
-            elif img.size == (CLEAN_W, CLEAN_H):
-                pass
-
-            else:
+            elif img.size != (CLEAN_W, CLEAN_H):
                 img = ImageOps.fit(
                     img,
                     (CLEAN_W, CLEAN_H),
@@ -124,10 +101,6 @@ class BoostCog(commands.Cog):
             self.bg_cache = img
 
         return self.bg_cache.copy()
-
-    # -------------------------
-    # AVATAR
-    # -------------------------
 
     async def get_avatar_frames(self, member: discord.Member):
         avatar_asset = member.display_avatar
@@ -175,10 +148,6 @@ class BoostCog(commands.Cog):
 
         return result
 
-    # -------------------------
-    # FONT
-    # -------------------------
-
     def get_number_font(self, size: int):
         font_paths = [
             str(NUMBER_FONT_PATH),
@@ -199,10 +168,6 @@ class BoostCog(commands.Cog):
 
         return ImageFont.load_default()
 
-    # -------------------------
-    # NUMBERS
-    # -------------------------
-
     def draw_centered_number(
         self,
         draw: ImageDraw.ImageDraw,
@@ -221,7 +186,6 @@ class BoostCog(commands.Cog):
         x = center[0] - text_w // 2
         y = center[1] - text_h // 2 - 1
 
-        # М'яка тінь
         draw.text(
             (x + 2, y + 2),
             text,
@@ -229,7 +193,6 @@ class BoostCog(commands.Cog):
             fill=(0, 0, 0, 130),
         )
 
-        # Дуже легке світіння для нової цифри
         if glow:
             draw.text(
                 (x, y),
@@ -240,7 +203,6 @@ class BoostCog(commands.Cog):
                 stroke_fill=(255, 150, 35, 28),
             )
 
-        # Основна цифра
         draw.text(
             (x, y),
             text,
@@ -250,7 +212,6 @@ class BoostCog(commands.Cog):
             stroke_fill=stroke,
         )
 
-        # Легкий блік
         draw.text(
             (x - 1, y - 1),
             text,
@@ -267,7 +228,6 @@ class BoostCog(commands.Cog):
         draw = ImageDraw.Draw(base)
         font = self.get_number_font(LEVEL_FONT_SIZE)
 
-        # Ліва цифра - сіра
         self.draw_centered_number(
             draw=draw,
             text=str(old_level),
@@ -278,7 +238,6 @@ class BoostCog(commands.Cog):
             glow=False,
         )
 
-        # Права цифра - золота
         self.draw_centered_number(
             draw=draw,
             text=str(new_level),
@@ -288,10 +247,6 @@ class BoostCog(commands.Cog):
             stroke=(68, 42, 20, 200),
             glow=True,
         )
-
-    # -------------------------
-    # IMAGE GENERATION
-    # -------------------------
 
     async def make_boost_image(
         self,
@@ -347,10 +302,6 @@ class BoostCog(commands.Cog):
         output.seek(0)
         return discord.File(output, filename=filename)
 
-    # -------------------------
-    # SEND
-    # -------------------------
-
     async def send_boost_notice(
         self,
         channel: discord.abc.Messageable,
@@ -369,17 +320,12 @@ class BoostCog(commands.Cog):
             file=file,
         )
 
-    # -------------------------
-    # REAL BOOST EVENT
-    # -------------------------
-
     @commands.Cog.listener()
     async def on_member_update(
         self,
         before: discord.Member,
         after: discord.Member,
     ):
-        # Було не бустером, стало бустером
         if before.premium_since is not None:
             return
 
@@ -418,10 +364,6 @@ class BoostCog(commands.Cog):
 
         self.set_saved_guild_state(guild)
 
-    # -------------------------
-    # GUILD STATE UPDATE
-    # -------------------------
-
     @commands.Cog.listener()
     async def on_guild_update(
         self,
@@ -437,19 +379,11 @@ class BoostCog(commands.Cog):
         if before_tier != after_tier or before_boosts != after_boosts:
             self.set_saved_guild_state(after)
 
-    # -------------------------
-    # READY
-    # -------------------------
-
     @commands.Cog.listener()
     async def on_ready(self):
         for guild in self.bot.guilds:
             if self.get_saved_tier(guild.id) is None:
                 self.set_saved_guild_state(guild)
-
-    # -------------------------
-    # TEST COMMAND
-    # -------------------------
 
     @commands.command(
         name="testboost",
