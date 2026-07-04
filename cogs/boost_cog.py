@@ -1,416 +1,356 @@
 # -*- coding: utf-8 -*-
-# cogs/boost_cog.py
-
+import io
 import json
-from io import BytesIO
+import traceback
 from pathlib import Path
+from datetime import datetime, timezone
 
 import aiohttp
 import discord
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont, ImageSequence, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 
-TEST_CHANNEL_ID = 1370522199873814528
-BOOST_CHANNEL_ID = 1331734685683945523
+# ===================== CONFIG =====================
 
-BACKGROUND_URL = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/assets/backgrounds/Boost.png"
+BOOST_CHANNEL_ID = 1324474229437108264
 
-STATE_FILE = Path("data/boost_state.json")
+DATA_DIR = Path("data")
+SEEN_FILE = DATA_DIR / "boost_seen.json"
+LOG_FILE = DATA_DIR / "boost_banner_errors.json"
 
-NUMBER_FONT_PATH = Path("assets/fonts/Cinzel-VariableFont_wght.ttf")
+ASSETS_DIR = Path("assets")
+BANNER_TEMPLATE = ASSETS_DIR / "boost_banner.png"
 
-ORIGINAL_BG_W = 666
-ORIGINAL_BG_H = 375
+# Аватар
+AVATAR_X = 722
+AVATAR_Y = 52
+AVATAR_SIZE = 126
 
-BANNER_CROP_BOX = (13, 79, 653, 289)
+# Цифри
+LEVEL_FROM_X = 412
+LEVEL_FROM_Y = 163
 
-CLEAN_W = 640
-CLEAN_H = 210
+LEVEL_TO_X = 592
+LEVEL_TO_Y = 163
 
-OLD_LEVEL_CENTER = (260, 122)
-NEW_LEVEL_CENTER = (399, 122)
+LEVEL_FONT_PATH = ASSETS_DIR / "fonts" / "CinzelDecorative-Bold.ttf"
+LEVEL_FONT_SIZE = 72
 
-LEVEL_FONT_SIZE = 38
+# Стиль цифр
+TEXT_TOP_COLOR = (236, 196, 102)
+TEXT_BOTTOM_COLOR = (118, 74, 35)
+TEXT_STROKE_COLOR = (27, 22, 19)
+TEXT_SHADOW_COLOR = (0, 0, 0, 190)
+TEXT_GLOW_COLOR = (255, 185, 70, 90)
 
-AVATAR_SIZE = 120
-AVATAR_CENTER = (541, 104)
 
-AVATAR_X = AVATAR_CENTER[0] - AVATAR_SIZE // 2
-AVATAR_Y = AVATAR_CENTER[1] - AVATAR_SIZE // 2
+# ===================== UTILS =====================
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-class BoostCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self.bg_cache = None
-        self.state = self.load_state()
+def load_json(path: Path, default):
+    try:
+        if not path.exists():
+            return default
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
 
-    def load_state(self) -> dict:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-        if not STATE_FILE.exists():
-            return {}
+def save_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
 
-    def save_state(self):
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(
-            json.dumps(self.state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+def log_error(stage: str, err: Exception) -> None:
+    data = load_json(LOG_FILE, [])
+    data.append({
+        "time": now_iso(),
+        "stage": stage,
+        "error_type": type(err).__name__,
+        "error": str(err),
+        "traceback": traceback.format_exc(),
+    })
+    save_json(LOG_FILE, data)
+    print(f"[BOOST_BANNER_ERROR] {stage}: {type(err).__name__}: {err}", flush=True)
 
-    def get_saved_tier(self, guild_id: int):
-        guild_data = self.state.get(str(guild_id), {})
-        tier = guild_data.get("premium_tier")
-        return tier if isinstance(tier, int) else None
 
-    def set_saved_guild_state(self, guild: discord.Guild):
-        self.state[str(guild.id)] = {
-            "premium_tier": guild.premium_tier or 0,
-            "premium_subscription_count": guild.premium_subscription_count or 0,
-        }
-        self.save_state()
+async def download_bytes(url: str) -> bytes:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            return await resp.read()
 
-    async def fetch_bytes(self, url: str) -> bytes:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                return await resp.read()
 
-    async def get_background(self) -> Image.Image:
-        if self.bg_cache is None:
-            data = await self.fetch_bytes(BACKGROUND_URL)
-            img = Image.open(BytesIO(data)).convert("RGBA")
+def circle_crop(img: Image.Image, size: int) -> Image.Image:
+    img = img.convert("RGBA").resize((size, size), Image.LANCZOS)
 
-            if img.size == (ORIGINAL_BG_W, ORIGINAL_BG_H):
-                img = img.crop(BANNER_CROP_BOX)
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, size, size), fill=255)
 
-            elif img.size != (CLEAN_W, CLEAN_H):
-                img = ImageOps.fit(
-                    img,
-                    (CLEAN_W, CLEAN_H),
-                    method=Image.LANCZOS,
-                    centering=(0.5, 0.5),
-                )
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(img, (0, 0), mask)
+    return out
 
-            self.bg_cache = img
 
-        return self.bg_cache.copy()
-
-    async def get_avatar_frames(self, member: discord.Member):
-        avatar_asset = member.display_avatar
-
-        try:
-            if avatar_asset.is_animated():
-                avatar_asset = avatar_asset.replace(format="gif", size=256)
-            else:
-                avatar_asset = avatar_asset.replace(static_format="png", size=256)
-        except Exception:
-            avatar_asset = member.display_avatar.replace(size=256)
-
-        avatar_bytes = await avatar_asset.read()
-        avatar_img = Image.open(BytesIO(avatar_bytes))
-
-        frames = []
-        durations = []
-
-        if getattr(avatar_img, "is_animated", False):
-            for frame in ImageSequence.Iterator(avatar_img):
-                frames.append(frame.convert("RGBA"))
-                durations.append(frame.info.get("duration", 80))
-        else:
-            frames.append(avatar_img.convert("RGBA"))
-            durations.append(100)
-
-        return frames, durations
-
-    def circle_crop_avatar(self, img: Image.Image, size: int) -> Image.Image:
-        img = img.convert("RGBA")
-
-        img = ImageOps.fit(
-            img,
-            (size, size),
-            method=Image.LANCZOS,
-            centering=(0.5, 0.5),
-        )
-
-        mask = Image.new("L", (size, size), 0)
-        draw = ImageDraw.Draw(mask)
-        draw.ellipse((0, 0, size, size), fill=255)
-
-        result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        result.paste(img, (0, 0), mask)
-
-        return result
-
-    def get_number_font(self, size: int):
-        font_paths = [
-            str(NUMBER_FONT_PATH),
-            "assets/fonts/Cinzel-VariableFont_wght.ttf",
-            "assets/fonts/FixelDisplay-Bold.otf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "C:/Windows/Fonts/georgia.ttf",
-            "C:/Windows/Fonts/times.ttf",
-            "C:/Windows/Fonts/arial.ttf",
-        ]
-
-        for path in font_paths:
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
-                continue
-
+def get_font(size: int) -> ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.truetype(str(LEVEL_FONT_PATH), size)
+    except Exception:
         return ImageFont.load_default()
 
-    def draw_centered_number(
-        self,
-        draw: ImageDraw.ImageDraw,
-        text: str,
-        center: tuple[int, int],
-        font,
-        fill: tuple[int, int, int, int],
-        stroke: tuple[int, int, int, int],
-        glow: bool = False,
-    ):
-        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=1)
 
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
+def make_vertical_gradient(size: tuple[int, int], top_color, bottom_color) -> Image.Image:
+    w, h = size
+    gradient = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    pix = gradient.load()
 
-        x = center[0] - text_w // 2
-        y = center[1] - text_h // 2 - 1
+    for y in range(h):
+        ratio = y / max(h - 1, 1)
+        r = int(top_color[0] * (1 - ratio) + bottom_color[0] * ratio)
+        g = int(top_color[1] * (1 - ratio) + bottom_color[1] * ratio)
+        b = int(top_color[2] * (1 - ratio) + bottom_color[2] * ratio)
 
-        draw.text(
-            (x + 2, y + 2),
-            text,
-            font=font,
-            fill=(0, 0, 0, 130),
-        )
+        for x in range(w):
+            pix[x, y] = (r, g, b, 255)
 
-        if glow:
-            draw.text(
-                (x, y),
-                text,
-                font=font,
-                fill=(255, 175, 40, 28),
-                stroke_width=2,
-                stroke_fill=(255, 150, 35, 28),
-            )
+    return gradient
 
-        draw.text(
-            (x, y),
-            text,
-            font=font,
-            fill=fill,
-            stroke_width=1,
-            stroke_fill=stroke,
-        )
 
-        draw.text(
-            (x - 1, y - 1),
-            text,
-            font=font,
-            fill=(255, 245, 200, 45),
-        )
+def draw_luxury_number(
+    base: Image.Image,
+    text: str,
+    center_x: int,
+    center_y: int,
+    font: ImageFont.FreeTypeFont,
+) -> None:
+    bbox = font.getbbox(text, stroke_width=3)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
 
-    def draw_level_numbers(
-        self,
-        base: Image.Image,
-        old_level: int,
-        new_level: int,
-    ):
-        draw = ImageDraw.Draw(base)
-        font = self.get_number_font(LEVEL_FONT_SIZE)
+    pad = 18
+    layer_w = text_w + pad * 2
+    layer_h = text_h + pad * 2
 
-        self.draw_centered_number(
-            draw=draw,
-            text=str(old_level),
-            center=OLD_LEVEL_CENTER,
-            font=font,
-            fill=(178, 178, 172, 255),
-            stroke=(35, 35, 38, 200),
-            glow=False,
-        )
+    x = int(center_x - layer_w / 2)
+    y = int(center_y - layer_h / 2)
 
-        self.draw_centered_number(
-            draw=draw,
-            text=str(new_level),
-            center=NEW_LEVEL_CENTER,
-            font=font,
-            fill=(230, 178, 68, 255),
-            stroke=(68, 42, 20, 200),
-            glow=True,
-        )
+    text_x = pad - bbox[0]
+    text_y = pad - bbox[1]
 
-    async def make_boost_image(
-        self,
-        member: discord.Member,
-        old_level: int,
-        new_level: int,
-    ) -> discord.File:
-        bg = await self.get_background()
-        avatar_frames, durations = await self.get_avatar_frames(member)
+    # Тінь
+    shadow = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.text(
+        (text_x + 4, text_y + 5),
+        text,
+        font=font,
+        fill=TEXT_SHADOW_COLOR,
+        stroke_width=3,
+        stroke_fill=TEXT_SHADOW_COLOR,
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(3))
+    base.alpha_composite(shadow, (x, y))
 
-        final_frames = []
+    # М’яке золотисте світіння
+    glow = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    glow_draw.text(
+        (text_x, text_y),
+        text,
+        font=font,
+        fill=TEXT_GLOW_COLOR,
+        stroke_width=4,
+        stroke_fill=TEXT_GLOW_COLOR,
+    )
+    glow = glow.filter(ImageFilter.GaussianBlur(2))
+    base.alpha_composite(glow, (x, y))
 
-        for avatar in avatar_frames:
-            frame = bg.copy()
+    # Маска тексту
+    mask = Image.new("L", (layer_w, layer_h), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.text(
+        (text_x, text_y),
+        text,
+        font=font,
+        fill=255,
+        stroke_width=0,
+    )
 
-            self.draw_level_numbers(
-                base=frame,
-                old_level=old_level,
-                new_level=new_level,
-            )
+    # Обводка як у рамки
+    stroke_layer = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+    stroke_draw = ImageDraw.Draw(stroke_layer)
+    stroke_draw.text(
+        (text_x, text_y),
+        text,
+        font=font,
+        fill=(0, 0, 0, 0),
+        stroke_width=3,
+        stroke_fill=TEXT_STROKE_COLOR,
+    )
+    base.alpha_composite(stroke_layer, (x, y))
 
-            avatar = self.circle_crop_avatar(
-                img=avatar,
-                size=AVATAR_SIZE,
-            )
+    # Градієнт усередині цифр
+    gradient = make_vertical_gradient(
+        (layer_w, layer_h),
+        TEXT_TOP_COLOR,
+        TEXT_BOTTOM_COLOR
+    )
 
-            frame.paste(
-                avatar,
-                (AVATAR_X, AVATAR_Y),
-                avatar,
-            )
+    number_layer = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+    number_layer.paste(gradient, (0, 0), mask)
 
-            final_frames.append(frame)
+    # Легкий верхній блік
+    highlight = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+    highlight_draw = ImageDraw.Draw(highlight)
+    highlight_draw.text(
+        (text_x - 1, text_y - 2),
+        text,
+        font=font,
+        fill=(255, 235, 170, 90),
+        stroke_width=0,
+    )
+    number_layer.alpha_composite(highlight)
 
-        output = BytesIO()
+    base.alpha_composite(number_layer, (x, y))
 
-        if len(final_frames) > 1:
-            final_frames[0].save(
-                output,
-                format="GIF",
-                save_all=True,
-                append_images=final_frames[1:],
-                duration=durations,
-                loop=0,
-                disposal=2,
-                optimize=False,
-            )
-            filename = "silent_cove_boost.gif"
-        else:
-            final_frames[0].save(output, format="PNG")
-            filename = "silent_cove_boost.png"
 
-        output.seek(0)
-        return discord.File(output, filename=filename)
+async def make_boost_banner(member: discord.Member, old_level: int, new_level: int) -> discord.File:
+    if not BANNER_TEMPLATE.exists():
+        raise FileNotFoundError(f"Не знайдено шаблон: {BANNER_TEMPLATE}")
 
-    async def send_boost_notice(
-        self,
-        channel: discord.abc.Messageable,
-        member: discord.Member,
-        old_level: int,
-        new_level: int,
-    ):
-        file = await self.make_boost_image(
-            member=member,
-            old_level=old_level,
-            new_level=new_level,
-        )
+    base = Image.open(BANNER_TEMPLATE).convert("RGBA")
 
-        await channel.send(
-            content=f"{member.mention} дякуємо за підтримку **Silent Cove**!",
-            file=file,
-        )
+    avatar_url = member.display_avatar.replace(size=256, static_format="png").url
+    avatar_data = await download_bytes(avatar_url)
+    avatar = Image.open(io.BytesIO(avatar_data)).convert("RGBA")
+    avatar = circle_crop(avatar, AVATAR_SIZE)
+
+    base.alpha_composite(avatar, (AVATAR_X, AVATAR_Y))
+
+    font = get_font(LEVEL_FONT_SIZE)
+
+    draw_luxury_number(base, str(old_level), LEVEL_FROM_X, LEVEL_FROM_Y, font)
+    draw_luxury_number(base, str(new_level), LEVEL_TO_X, LEVEL_TO_Y, font)
+
+    buf = io.BytesIO()
+    base.save(buf, format="PNG")
+    buf.seek(0)
+
+    return discord.File(buf, filename="silent_cove_boost.png")
+
+
+# ===================== COG =====================
+
+class BoostBannerCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.seen = load_json(SEEN_FILE, {})
+        print("[BOOST_BANNER] Cog loaded", flush=True)
+
+    def save_seen(self):
+        save_json(SEEN_FILE, self.seen)
+
+    def is_duplicate(self, member_id: int, boost_count: int, level: int) -> bool:
+        key = str(member_id)
+        sig = f"{boost_count}:{level}"
+
+        if self.seen.get(key) == sig:
+            return True
+
+        self.seen[key] = sig
+        self.save_seen()
+        return False
 
     @commands.Cog.listener()
-    async def on_member_update(
-        self,
-        before: discord.Member,
-        after: discord.Member,
-    ):
-        if before.premium_since is not None:
-            return
-
-        if after.premium_since is None:
-            return
-
-        guild = after.guild
-        current_tier = guild.premium_tier or 0
-
-        saved_tier = self.get_saved_tier(guild.id)
-
-        if saved_tier is None:
-            old_level = current_tier
-            new_level = current_tier
-        else:
-            old_level = saved_tier
-            new_level = current_tier
-
-        if new_level < old_level:
-            old_level = new_level
-
-        channel = self.bot.get_channel(BOOST_CHANNEL_ID)
-
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(BOOST_CHANNEL_ID)
-            except Exception:
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        try:
+            if before.guild.id != after.guild.id:
                 return
 
-        await self.send_boost_notice(
-            channel=channel,
-            member=after,
-            old_level=old_level,
-            new_level=new_level,
-        )
+            if before.premium_since is not None:
+                return
 
-        self.set_saved_guild_state(guild)
+            if after.premium_since is None:
+                return
 
-    @commands.Cog.listener()
-    async def on_guild_update(
-        self,
-        before: discord.Guild,
-        after: discord.Guild,
-    ):
-        before_tier = before.premium_tier or 0
-        after_tier = after.premium_tier or 0
+            guild = after.guild
+            channel = guild.get_channel(BOOST_CHANNEL_ID)
 
-        before_boosts = before.premium_subscription_count or 0
-        after_boosts = after.premium_subscription_count or 0
+            if channel is None:
+                channel = await self.bot.fetch_channel(BOOST_CHANNEL_ID)
 
-        if before_tier != after_tier or before_boosts != after_boosts:
-            self.set_saved_guild_state(after)
+            boost_count = guild.premium_subscription_count or 0
+            new_level = guild.premium_tier or 0
+            old_level = max(new_level - 1, 0)
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        for guild in self.bot.guilds:
-            if self.get_saved_tier(guild.id) is None:
-                self.set_saved_guild_state(guild)
+            if self.is_duplicate(after.id, boost_count, new_level):
+                print(
+                    f"[BOOST_BANNER] duplicate skipped member={after.id} boosts={boost_count} level={new_level}",
+                    flush=True,
+                )
+                return
 
-    @commands.command(
-        name="testboost",
-        help="Тестове повідомлення про буст сервера Silent Cove.",
-        brief="Тест буст-банера.",
-    )
+            banner = await make_boost_banner(after, old_level, new_level)
+
+            await channel.send(
+                content=f"{after.mention} дякуємо за підтримку **Silent Cove**!",
+                file=banner,
+            )
+
+            print(
+                f"[BOOST_BANNER] sent member={after.id} boosts={boost_count} level={new_level}",
+                flush=True,
+            )
+
+        except Exception as e:
+            log_error("on_member_update", e)
+
+    @commands.command(name="test_boost_banner")
     @commands.has_permissions(administrator=True)
-    async def test_boost(
+    async def test_boost_banner(
         self,
         ctx: commands.Context,
-        old_level: int = 1,
-        new_level: int = 2,
+        old_level: int = 15,
+        new_level: int = 16
     ):
-        if ctx.channel.id != TEST_CHANNEL_ID:
-            await ctx.reply(
-                "Тест бусту можна запускати тільки в тестовому каналі.",
-                mention_author=False,
-            )
-            return
+        try:
+            banner = await make_boost_banner(ctx.author, old_level, new_level)
 
-        await self.send_boost_notice(
-            channel=ctx.channel,
-            member=ctx.author,
-            old_level=old_level,
-            new_level=new_level,
+            await ctx.send(
+                content=f"{ctx.author.mention} дякуємо за підтримку **Silent Cove**!",
+                file=banner,
+            )
+
+        except Exception as e:
+            log_error("test_boost_banner", e)
+            await ctx.send("❌ Помилка генерації банера. Дивись data/boost_banner_errors.json.")
+
+    @commands.command(name="boost_debug")
+    @commands.has_permissions(administrator=True)
+    async def boost_debug(self, ctx: commands.Context):
+        guild = ctx.guild
+
+        await ctx.send(
+            f"Boosts: `{guild.premium_subscription_count}`\n"
+            f"Level: `{guild.premium_tier}`\n"
+            f"Seen records: `{len(self.seen)}`\n"
+            f"Template exists: `{BANNER_TEMPLATE.exists()}`\n"
+            f"Font exists: `{LEVEL_FONT_PATH.exists()}`"
         )
+
+    @commands.command(name="boost_seen_clear")
+    @commands.has_permissions(administrator=True)
+    async def boost_seen_clear(self, ctx: commands.Context):
+        self.seen = {}
+        self.save_seen()
+        await ctx.send("✅ boost_seen очищено.")
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(BoostCog(bot))
+    await bot.add_cog(BoostBannerCog(bot))
