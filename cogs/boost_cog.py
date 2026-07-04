@@ -18,30 +18,33 @@ BACKGROUND_URL = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/
 
 STATE_FILE = Path("data/boost_state.json")
 
-# Бажано додати цей файл у GitHub:
-# assets/fonts/Cinzel-Bold.ttf
-NUMBER_FONT_PATH = Path("assets/fonts/Cinzel-Bold.ttf")
+# Бажано додати в GitHub:
+# assets/fonts/Cinzel-Regular.ttf
+# Якщо файла нема - бот сам візьме запасний системний шрифт.
+NUMBER_FONT_PATH = Path("assets/fonts/Cinzel-Regular.ttf")
 
-# Якщо фон ще з чорними полями навколо плашки - 666x375
+# Твій фон з полями навколо плашки: 666x375
 ORIGINAL_BG_W = 666
 ORIGINAL_BG_H = 375
 
-# Обрізаємо тільки саму плашку
+# Вирізаємо тільки саму плашку
 BANNER_CROP_BOX = (13, 79, 653, 289)
 
-# Після обрізки банер стає 640x210
+# Після обрізки плашка стає 640x210
 CLEAN_W = 640
 CLEAN_H = 210
 
-# Координати для ОБРІЗАНОГО банера 640x210
-OLD_LEVEL_CENTER = (270, 127)
-NEW_LEVEL_CENTER = (399, 127)
+# Координати цифр для обрізаного банера 640x210
+OLD_LEVEL_CENTER = (270, 122)
+NEW_LEVEL_CENTER = (399, 122)
 
-LEVEL_FONT_SIZE = 46
+# Тонший і менший шрифт
+LEVEL_FONT_SIZE = 38
 
-# Аватарка кругла, всередині правого овального місця
-AVATAR_SIZE = 124
-AVATAR_CENTER = (548, 102)
+# Аватарка всередині правої рамки
+# Було завелике і зависоко - тепер менше і нижче
+AVATAR_SIZE = 112
+AVATAR_CENTER = (547, 104)
 
 AVATAR_X = AVATAR_CENTER[0] - AVATAR_SIZE // 2
 AVATAR_Y = AVATAR_CENTER[1] - AVATAR_SIZE // 2
@@ -106,14 +109,16 @@ class BoostCog(commands.Cog):
             data = await self.fetch_bytes(BACKGROUND_URL)
             img = Image.open(BytesIO(data)).convert("RGBA")
 
-            # Якщо це твій файл 666x375 з полями навколо - обрізаємо
+            # Якщо файл 666x375 з полями - обрізаємо до самої плашки.
             if img.size == (ORIGINAL_BG_W, ORIGINAL_BG_H):
                 img = img.crop(BANNER_CROP_BOX)
 
-            # Якщо вже 640x210 - залишаємо як є
-            elif img.size != (CLEAN_W, CLEAN_H):
-                # На випадок, якщо GitHub віддасть інший розмір.
-                # Не розтягуємо пропорції, а підганяємо під робочий розмір.
+            # Якщо вже 640x210 - лишаємо як є.
+            elif img.size == (CLEAN_W, CLEAN_H):
+                pass
+
+            # Якщо розмір інший - акуратно підганяємо без ручного розтягування.
+            else:
                 img = ImageOps.fit(
                     img,
                     (CLEAN_W, CLEAN_H),
@@ -158,8 +163,8 @@ class BoostCog(commands.Cog):
 
     def circle_crop_avatar(self, img: Image.Image, size: int) -> Image.Image:
         """
-        Робить круглу аватарку без витягування.
-        ImageOps.fit зберігає пропорції й обрізає зайве по центру.
+        Кругла аватарка без витягування.
+        ImageOps.fit зберігає пропорції і обрізає зайве по центру.
         """
         img = img.convert("RGBA")
 
@@ -186,11 +191,13 @@ class BoostCog(commands.Cog):
     def get_number_font(self, size: int):
         font_paths = [
             str(NUMBER_FONT_PATH),
-            "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "C:/Windows/Fonts/georgiab.ttf",
-            "C:/Windows/Fonts/timesbd.ttf",
-            "C:/Windows/Fonts/arialbd.ttf",
+            "assets/fonts/Cinzel-Regular.ttf",
+            "assets/fonts/CormorantGaramond-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "C:/Windows/Fonts/georgia.ttf",
+            "C:/Windows/Fonts/times.ttf",
+            "C:/Windows/Fonts/arial.ttf",
         ]
 
         for path in font_paths:
@@ -215,34 +222,31 @@ class BoostCog(commands.Cog):
         stroke: tuple[int, int, int, int],
         glow: bool = False,
     ):
-        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=2)
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=1)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
 
         x = center[0] - text_w // 2
-        y = center[1] - text_h // 2 - 2
+        y = center[1] - text_h // 2 - 1
 
-        # М'яка чорна тінь
+        # М'яка тінь
         draw.text(
-            (x + 3, y + 4),
+            (x + 2, y + 2),
             text,
             font=font,
-            fill=(0, 0, 0, 170),
-            stroke_width=2,
-            stroke_fill=(0, 0, 0, 130),
+            fill=(0, 0, 0, 135),
         )
 
-        # Світіння для нової цифри
+        # Дуже легке світіння тільки для нової цифри
         if glow:
-            for offset in (6, 4, 2):
-                draw.text(
-                    (x, y),
-                    text,
-                    font=font,
-                    fill=(255, 175, 35, 45),
-                    stroke_width=offset,
-                    stroke_fill=(255, 155, 25, 45),
-                )
+            draw.text(
+                (x, y),
+                text,
+                font=font,
+                fill=(255, 175, 40, 32),
+                stroke_width=2,
+                stroke_fill=(255, 150, 35, 32),
+            )
 
         # Основна цифра
         draw.text(
@@ -250,16 +254,16 @@ class BoostCog(commands.Cog):
             text,
             font=font,
             fill=fill,
-            stroke_width=2,
+            stroke_width=1,
             stroke_fill=stroke,
         )
 
-        # Легкий верхній блік
+        # Легкий блік зверху
         draw.text(
             (x - 1, y - 1),
             text,
             font=font,
-            fill=(255, 245, 195, 85),
+            fill=(255, 245, 200, 50),
         )
 
     def draw_level_numbers(
@@ -271,25 +275,25 @@ class BoostCog(commands.Cog):
         draw = ImageDraw.Draw(base)
         font = self.get_number_font(LEVEL_FONT_SIZE)
 
-        # Ліва цифра - сіра
+        # Ліва цифра - тонша сіра
         self.draw_centered_number(
             draw=draw,
             text=str(old_level),
             center=OLD_LEVEL_CENTER,
             font=font,
-            fill=(205, 205, 198, 255),
-            stroke=(45, 45, 48, 255),
+            fill=(178, 178, 172, 255),
+            stroke=(35, 35, 38, 210),
             glow=False,
         )
 
-        # Права цифра - золота
+        # Права цифра - тонша золота
         self.draw_centered_number(
             draw=draw,
             text=str(new_level),
             center=NEW_LEVEL_CENTER,
             font=font,
-            fill=(255, 210, 92, 255),
-            stroke=(92, 55, 18, 255),
+            fill=(230, 178, 68, 255),
+            stroke=(68, 42, 20, 210),
             glow=True,
         )
 
@@ -311,14 +315,12 @@ class BoostCog(commands.Cog):
         for avatar in avatar_frames:
             frame = bg.copy()
 
-            # Цифри рівнів
             self.draw_level_numbers(
                 base=frame,
                 old_level=old_level,
                 new_level=new_level,
             )
 
-            # Аватарка без витягування
             avatar = self.circle_crop_avatar(
                 img=avatar,
                 size=AVATAR_SIZE,
@@ -430,8 +432,6 @@ class BoostCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # Не перезаписуємо, якщо вже є збережений стан.
-        # Це важливо, щоб old_level не ламався після рестарту.
         for guild in self.bot.guilds:
             if self.get_saved_tier(guild.id) is None:
                 self.set_saved_guild_state(guild)
@@ -440,7 +440,11 @@ class BoostCog(commands.Cog):
     # TEST COMMAND
     # -------------------------
 
-    @commands.command(name="testboost")
+    @commands.command(
+        name="testboost",
+        help="Тестове повідомлення про буст сервера Silent Cove.",
+        brief="Тест буст-банера.",
+    )
     @commands.has_permissions(administrator=True)
     async def test_boost(
         self,
@@ -448,6 +452,12 @@ class BoostCog(commands.Cog):
         old_level: int = 1,
         new_level: int = 2,
     ):
+        """
+        Використання:
+        !testboost
+        !testboost 1 2
+        !testboost 2 3
+        """
         if ctx.channel.id != TEST_CHANNEL_ID:
             await ctx.reply(
                 "Тест бусту можна запускати тільки в тестовому каналі.",
