@@ -18,33 +18,39 @@ BACKGROUND_URL = "https://raw.githubusercontent.com/Myxa83/silentconcierge/main/
 
 STATE_FILE = Path("data/boost_state.json")
 
+# Бажано додати цей файл у GitHub:
+# assets/fonts/Cinzel-Bold.ttf
+NUMBER_FONT_PATH = Path("assets/fonts/Cinzel-Bold.ttf")
 
-# Оригінальний файл, по якому ми рахували координати
+# Якщо фон ще з чорними полями навколо плашки - 666x375
 ORIGINAL_BG_W = 666
 ORIGINAL_BG_H = 375
 
-# Рамка-плашка всередині картинки
-# Це прибирає зайвий фон навколо банера
+# Обрізаємо тільки саму плашку
 BANNER_CROP_BOX = (13, 79, 653, 289)
 
 # Після обрізки банер стає 640x210
 CLEAN_W = 640
 CLEAN_H = 210
 
-# Координати вже для обрізаного банера
-OLD_LEVEL_CENTER = (276, 133)
-NEW_LEVEL_CENTER = (404, 133)
+# Координати для ОБРІЗАНОГО банера 640x210
+OLD_LEVEL_CENTER = (270, 127)
+NEW_LEVEL_CENTER = (399, 127)
 
-AVATAR_X = 481
-AVATAR_Y = 22
-AVATAR_W = 126
-AVATAR_H = 145
+LEVEL_FONT_SIZE = 46
+
+# Аватарка кругла, всередині правого овального місця
+AVATAR_SIZE = 124
+AVATAR_CENTER = (548, 102)
+
+AVATAR_X = AVATAR_CENTER[0] - AVATAR_SIZE // 2
+AVATAR_Y = AVATAR_CENTER[1] - AVATAR_SIZE // 2
 
 
 class BoostCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.bg_cache: Image.Image | None = None
+        self.bg_cache = None
         self.state = self.load_state()
 
     # -------------------------
@@ -69,12 +75,16 @@ class BoostCog(commands.Cog):
             encoding="utf-8",
         )
 
-    def get_saved_tier(self, guild_id: int) -> int | None:
+    def get_saved_tier(self, guild_id: int):
         guild_data = self.state.get(str(guild_id), {})
         tier = guild_data.get("premium_tier")
-        return tier if isinstance(tier, int) else None
 
-    def set_saved_tier(self, guild: discord.Guild):
+        if isinstance(tier, int):
+            return tier
+
+        return None
+
+    def set_saved_guild_state(self, guild: discord.Guild):
         self.state[str(guild.id)] = {
             "premium_tier": guild.premium_tier or 0,
             "premium_subscription_count": guild.premium_subscription_count or 0,
@@ -82,7 +92,7 @@ class BoostCog(commands.Cog):
         self.save_state()
 
     # -------------------------
-    # LOADING FILES
+    # FILE LOADING
     # -------------------------
 
     async def fetch_bytes(self, url: str) -> bytes:
@@ -96,9 +106,20 @@ class BoostCog(commands.Cog):
             data = await self.fetch_bytes(BACKGROUND_URL)
             img = Image.open(BytesIO(data)).convert("RGBA")
 
-            # Якщо це саме твій файл 666x375, обрізаємо зайвий фон навколо плашки
+            # Якщо це твій файл 666x375 з полями навколо - обрізаємо
             if img.size == (ORIGINAL_BG_W, ORIGINAL_BG_H):
                 img = img.crop(BANNER_CROP_BOX)
+
+            # Якщо вже 640x210 - залишаємо як є
+            elif img.size != (CLEAN_W, CLEAN_H):
+                # На випадок, якщо GitHub віддасть інший розмір.
+                # Не розтягуємо пропорції, а підганяємо під робочий розмір.
+                img = ImageOps.fit(
+                    img,
+                    (CLEAN_W, CLEAN_H),
+                    method=Image.LANCZOS,
+                    centering=(0.5, 0.5),
+                )
 
             self.bg_cache = img
 
@@ -127,8 +148,7 @@ class BoostCog(commands.Cog):
 
         if getattr(avatar_img, "is_animated", False):
             for frame in ImageSequence.Iterator(avatar_img):
-                frame = frame.convert("RGBA")
-                frames.append(frame)
+                frames.append(frame.convert("RGBA"))
                 durations.append(frame.info.get("duration", 80))
         else:
             frames.append(avatar_img.convert("RGBA"))
@@ -136,39 +156,36 @@ class BoostCog(commands.Cog):
 
         return frames, durations
 
-    def ellipse_crop_avatar(
-        self,
-        img: Image.Image,
-        width: int,
-        height: int,
-    ) -> Image.Image:
+    def circle_crop_avatar(self, img: Image.Image, size: int) -> Image.Image:
         """
-        Обрізає аватарку під овал без розтягування.
-        ImageOps.fit зберігає пропорції, а зайве обрізає по центру.
+        Робить круглу аватарку без витягування.
+        ImageOps.fit зберігає пропорції й обрізає зайве по центру.
         """
         img = img.convert("RGBA")
 
         img = ImageOps.fit(
             img,
-            (width, height),
+            (size, size),
             method=Image.LANCZOS,
             centering=(0.5, 0.5),
         )
 
-        mask = Image.new("L", (width, height), 0)
+        mask = Image.new("L", (size, size), 0)
         draw = ImageDraw.Draw(mask)
-        draw.ellipse((0, 0, width, height), fill=255)
+        draw.ellipse((0, 0, size, size), fill=255)
 
-        result = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         result.paste(img, (0, 0), mask)
+
         return result
 
     # -------------------------
     # FONT
     # -------------------------
 
-    def get_font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    def get_number_font(self, size: int):
         font_paths = [
+            str(NUMBER_FONT_PATH),
             "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "C:/Windows/Fonts/georgiab.ttf",
@@ -180,12 +197,12 @@ class BoostCog(commands.Cog):
             try:
                 return ImageFont.truetype(path, size)
             except Exception:
-                pass
+                continue
 
         return ImageFont.load_default()
 
     # -------------------------
-    # DRAW NUMBERS
+    # NUMBERS
     # -------------------------
 
     def draw_centered_number(
@@ -193,52 +210,56 @@ class BoostCog(commands.Cog):
         draw: ImageDraw.ImageDraw,
         text: str,
         center: tuple[int, int],
-        font: ImageFont.ImageFont,
+        font,
         fill: tuple[int, int, int, int],
+        stroke: tuple[int, int, int, int],
         glow: bool = False,
     ):
-        bbox = draw.textbbox((0, 0), text, font=font)
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=2)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
 
         x = center[0] - text_w // 2
-        y = center[1] - text_h // 2 - 5
+        y = center[1] - text_h // 2 - 2
 
-        # тінь
+        # М'яка чорна тінь
         draw.text(
             (x + 3, y + 4),
             text,
             font=font,
-            fill=(0, 0, 0, 190),
+            fill=(0, 0, 0, 170),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0, 130),
         )
 
-        # світіння для правої золотої цифри
+        # Світіння для нової цифри
         if glow:
-            for offset in range(6, 0, -2):
-                alpha = 35 + offset * 10
-                for dx, dy in [
-                    (-offset, 0),
-                    (offset, 0),
-                    (0, -offset),
-                    (0, offset),
-                    (-offset, -offset),
-                    (offset, offset),
-                ]:
-                    draw.text(
-                        (x + dx, y + dy),
-                        text,
-                        font=font,
-                        fill=(255, 175, 35, alpha),
-                    )
+            for offset in (6, 4, 2):
+                draw.text(
+                    (x, y),
+                    text,
+                    font=font,
+                    fill=(255, 175, 35, 45),
+                    stroke_width=offset,
+                    stroke_fill=(255, 155, 25, 45),
+                )
 
-        draw.text((x, y), text, font=font, fill=fill)
+        # Основна цифра
+        draw.text(
+            (x, y),
+            text,
+            font=font,
+            fill=fill,
+            stroke_width=2,
+            stroke_fill=stroke,
+        )
 
-        # маленький верхній блік
+        # Легкий верхній блік
         draw.text(
             (x - 1, y - 1),
             text,
             font=font,
-            fill=(255, 245, 190, 80),
+            fill=(255, 245, 195, 85),
         )
 
     def draw_level_numbers(
@@ -248,25 +269,27 @@ class BoostCog(commands.Cog):
         new_level: int,
     ):
         draw = ImageDraw.Draw(base)
-        font = self.get_font(52)
+        font = self.get_number_font(LEVEL_FONT_SIZE)
 
-        # ліва цифра - сіра
+        # Ліва цифра - сіра
         self.draw_centered_number(
             draw=draw,
             text=str(old_level),
             center=OLD_LEVEL_CENTER,
             font=font,
-            fill=(190, 190, 185, 255),
+            fill=(205, 205, 198, 255),
+            stroke=(45, 45, 48, 255),
             glow=False,
         )
 
-        # права цифра - золота зі світінням
+        # Права цифра - золота
         self.draw_centered_number(
             draw=draw,
             text=str(new_level),
             center=NEW_LEVEL_CENTER,
             font=font,
-            fill=(255, 205, 78, 255),
+            fill=(255, 210, 92, 255),
+            stroke=(92, 55, 18, 255),
             glow=True,
         )
 
@@ -281,7 +304,6 @@ class BoostCog(commands.Cog):
         new_level: int,
     ) -> discord.File:
         bg = await self.get_background()
-
         avatar_frames, durations = await self.get_avatar_frames(member)
 
         final_frames = []
@@ -289,14 +311,17 @@ class BoostCog(commands.Cog):
         for avatar in avatar_frames:
             frame = bg.copy()
 
-            # цифри
-            self.draw_level_numbers(frame, old_level, new_level)
+            # Цифри рівнів
+            self.draw_level_numbers(
+                base=frame,
+                old_level=old_level,
+                new_level=new_level,
+            )
 
-            # овальна аватарка без розтягування
-            avatar = self.ellipse_crop_avatar(
-                avatar,
-                AVATAR_W,
-                AVATAR_H,
+            # Аватарка без витягування
+            avatar = self.circle_crop_avatar(
+                img=avatar,
+                size=AVATAR_SIZE,
             )
 
             frame.paste(
@@ -334,7 +359,7 @@ class BoostCog(commands.Cog):
 
     async def send_boost_notice(
         self,
-        channel: discord.TextChannel,
+        channel: discord.abc.Messageable,
         member: discord.Member,
         old_level: int,
         new_level: int,
@@ -360,7 +385,7 @@ class BoostCog(commands.Cog):
         before: discord.Member,
         after: discord.Member,
     ):
-        # Користувач почав бустити сервер
+        # Було не бустером, стало бустером
         if before.premium_since is not None:
             return
 
@@ -368,18 +393,17 @@ class BoostCog(commands.Cog):
             return
 
         guild = after.guild
-
         current_tier = guild.premium_tier or 0
+
         saved_tier = self.get_saved_tier(guild.id)
 
         if saved_tier is None:
-            old_level = max(current_tier - 1, 0)
+            old_level = current_tier
             new_level = current_tier
         else:
             old_level = saved_tier
             new_level = current_tier
 
-        # Якщо рівень не змінився, все одно показуємо поточний рівень
         if new_level < old_level:
             old_level = new_level
 
@@ -398,31 +422,19 @@ class BoostCog(commands.Cog):
             new_level=new_level,
         )
 
-        self.set_saved_tier(guild)
+        self.set_saved_guild_state(guild)
 
     # -------------------------
-    # TRACK GUILD TIER CHANGES
+    # READY
     # -------------------------
-
-    @commands.Cog.listener()
-    async def on_guild_update(
-        self,
-        before: discord.Guild,
-        after: discord.Guild,
-    ):
-        # Просто оновлюємо збережений рівень, щоб цифри були правильні
-        before_tier = before.premium_tier or 0
-        after_tier = after.premium_tier or 0
-
-        if before_tier != after_tier:
-            self.set_saved_tier(after)
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # Записуємо поточний рівень серверів після запуску
+        # Не перезаписуємо, якщо вже є збережений стан.
+        # Це важливо, щоб old_level не ламався після рестарту.
         for guild in self.bot.guilds:
             if self.get_saved_tier(guild.id) is None:
-                self.set_saved_tier(guild)
+                self.set_saved_guild_state(guild)
 
     # -------------------------
     # TEST COMMAND
