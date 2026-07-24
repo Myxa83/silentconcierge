@@ -2,18 +2,18 @@
 # cogs/music_cog.py
 
 import asyncio
-import json
 import hashlib
 import re
 import shutil
 import traceback
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
 import discord
 from discord.ext import commands
 from discord import app_commands
+
+from data.mongo_store import load_state, save_state
 
 try:
     import yt_dlp
@@ -22,7 +22,7 @@ except Exception:
 
 
 TEAL = 0x05B2B4
-PLAYLISTS_PATH = Path("data/music_playlists.json")
+PLAYLISTS_COLLECTION = "music_playlists"
 AUTO_LEAVE_SECONDS = 15 * 60
 
 MUSIC_GIFS = [
@@ -78,31 +78,20 @@ def pick_music_gif(track_url: str) -> str:
     return MUSIC_GIFS[idx]
 
 
-def _ensure_playlists_file() -> None:
-    PLAYLISTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not PLAYLISTS_PATH.exists():
-        PLAYLISTS_PATH.write_text(
-            json.dumps({"users": {}}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-
 def _load_playlists() -> Dict[str, Any]:
-    _ensure_playlists_file()
-    try:
-        data = json.loads(PLAYLISTS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {"users": {}}
-        data.setdefault("users", {})
-        return data
-    except Exception as e:
-        log_music_error("_load_playlists", e)
+    data = load_state(
+        PLAYLISTS_COLLECTION,
+        {"users": {}},
+        legacy_path="data/music_playlists.json",
+    )
+    if not isinstance(data, dict):
         return {"users": {}}
+    data.setdefault("users", {})
+    return data
 
 
 def _save_playlists(data: Dict[str, Any]) -> None:
-    _ensure_playlists_file()
-    PLAYLISTS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_state(PLAYLISTS_COLLECTION, data)
 
 
 def _extract_urls(text: str) -> List[str]:
@@ -482,7 +471,6 @@ class MusicCog(commands.Cog, name="MusicCog"):
         self.bot = bot
         self.players: Dict[int, GuildPlayer] = {}
         self.autoleave_tasks: Dict[int, asyncio.Task] = {}
-        _ensure_playlists_file()
 
     def get_player(self, guild_id: int) -> GuildPlayer:
         if guild_id not in self.players:

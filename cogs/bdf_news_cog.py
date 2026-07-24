@@ -2,11 +2,9 @@
 # cogs/bdf_news_cog.py
 
 import asyncio
-import json
 import re
 from datetime import datetime, timezone
 from io import BytesIO
-from pathlib import Path
 from types import SimpleNamespace
 
 import aiohttp
@@ -16,10 +14,12 @@ from deep_translator import GoogleTranslator
 from discord.ext import commands, tasks
 from PIL import Image
 
+from data.mongo_store import load_state, save_state
+
 
 CHANNEL_ID = 1324474229437108264
 BDF_NEWS_URL = "https://www.blackdesertfoundry.com/category/all-news/"
-STATE_FILE = Path("data/bdf_news_seen.json")
+STATE_COLLECTION = "bdf_news_state"
 
 UKRAINIAN_MONTHS = (
     "",
@@ -62,21 +62,23 @@ class BDFNewsCog(commands.Cog):
         self.check_bdf_news.cancel()
 
     def load_seen(self) -> set[str]:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-        if not STATE_FILE.exists():
+        links = load_state(
+            STATE_COLLECTION,
+            [],
+            legacy_path="data/bdf_news_seen.json",
+        )
+        if not isinstance(links, list):
             return set()
-
-        try:
-            return set(json.loads(STATE_FILE.read_text(encoding="utf-8")))
-        except Exception:
-            return set()
+        return {
+            link
+            for link in links
+            if isinstance(link, str) and link
+        }
 
     def save_seen(self) -> None:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(
-            json.dumps(sorted(self.seen_links), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        save_state(
+            STATE_COLLECTION,
+            sorted(self.seen_links),
         )
 
     async def fetch_bytes(self, url: str) -> bytes:

@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import io
-import json
 import traceback
 from pathlib import Path
 from datetime import datetime, timezone
@@ -10,14 +9,15 @@ import discord
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
+from data.mongo_store import append_event, load_state, save_state
+
 
 # ===================== CONFIG =====================
 
 BOOST_CHANNEL_ID = 1324474229437108264
 
-DATA_DIR = Path("data")
-SEEN_FILE = DATA_DIR / "boost_seen.json"
-LOG_FILE = DATA_DIR / "boost_banner_errors.json"
+STATE_COLLECTION = "boost_state"
+ERROR_COLLECTION = "boost_errors"
 
 ASSETS_DIR = Path("assets")
 BANNER_TEMPLATE = ASSETS_DIR / "boost_banner.png"
@@ -51,30 +51,14 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def load_json(path: Path, default):
-    try:
-        if not path.exists():
-            return default
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-
-
-def save_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def log_error(stage: str, err: Exception) -> None:
-    data = load_json(LOG_FILE, [])
-    data.append({
+    append_event(ERROR_COLLECTION, {
         "time": now_iso(),
         "stage": stage,
         "error_type": type(err).__name__,
         "error": str(err),
         "traceback": traceback.format_exc(),
     })
-    save_json(LOG_FILE, data)
     print(f"[BOOST_BANNER_ERROR] {stage}: {type(err).__name__}: {err}", flush=True)
 
 
@@ -249,23 +233,27 @@ async def make_boost_banner(member: discord.Member, old_level: int, new_level: i
 class BoostBannerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.seen = load_json(SEEN_FILE, {})
+        seen = load_state(
+            STATE_COLLECTION,
+            {},
+            legacy_path="data/boost_seen.json",
+        )
+        self.seen = seen if isinstance(seen, dict) else {}
         print("[BOOST_BANNER] Cog loaded", flush=True)
 
     def save_seen(self):
-        save_json(SEEN_FILE, self.seen)
+        save_state(STATE_COLLECTION, self.seen)
 
     def is_duplicate(self, member_id: int, boost_count: int, level: int) -> bool:
         key = str(member_id)
         sig = f"{boost_count}:{level}"
+        return self.seen.get(key) == sig
 
-        if self.seen.get(key) == sig:
-            return True
-
+    def mark_seen(self, member_id: int, boost_count: int, level: int) -> None:
+        key = str(member_id)
+        sig = f"{boost_count}:{level}"
         self.seen[key] = sig
         self.save_seen()
-        return False
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
@@ -302,6 +290,7 @@ class BoostBannerCog(commands.Cog):
                 content=f"{after.mention} дякуємо за підтримку **Silent Cove**!",
                 file=banner,
             )
+            self.mark_seen(after.id, boost_count, new_level)
 
             print(
                 f"[BOOST_BANNER] sent member={after.id} boosts={boost_count} level={new_level}",
@@ -329,7 +318,7 @@ class BoostBannerCog(commands.Cog):
 
         except Exception as e:
             log_error("test_boost_banner", e)
-            await ctx.send("❌ Помилка генерації банера. Дивись data/boost_banner_errors.json.")
+            await ctx.send("❌ Помилка генерації банера. Деталі записані в MongoDB.")
 
     @commands.command(name="boost_debug")
     @commands.has_permissions(administrator=True)

@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
-import json
-import os
-import subprocess
-from pathlib import Path
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 
-# ========================= PATHS =========================
-DATA_PATH = Path("data/timezones.json")
+from data.mongo_store import load_state, save_state
+
+# ========================= STORAGE =========================
+STATE_COLLECTION = "timezones"
 
 # ========================= ROLES =========================
 ROLE_SVITOCH = 1383410423704846396
@@ -46,20 +44,15 @@ COUNTRIES = {
 
 # ========================= HELPERS =========================
 def load_data() -> dict:
-    if not DATA_PATH.exists():
-        return {}
-    try:
-        with open(DATA_PATH, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-            return json.loads(content) if content else {}
-    except Exception as e:
-        print(f"[ERROR] Помилка читання JSON: {e}")
-        return {}
+    data = load_state(
+        STATE_COLLECTION,
+        {},
+        legacy_path="data/timezones.json",
+    )
+    return data if isinstance(data, dict) else {}
 
 def save_data(data: dict) -> None:
-    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    save_state(STATE_COLLECTION, data)
 
 # ========================= UI =========================
 class TZSelect(discord.ui.Select):
@@ -96,34 +89,6 @@ class TZView(discord.ui.View):
 class TimezoneCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.github_backup.start()  # Запускаємо цикл бекапу
-
-    def cog_unload(self):
-        self.github_backup.cancel()
-
-    # --- АВТОМАТИЧНИЙ БЕКАП НА GITHUB ---
-    @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
-    async def github_backup(self):
-        if not DATA_PATH.exists():
-            return
-
-        try:
-            # Виконуємо Git команди
-            subprocess.run(["git", "add", str(DATA_PATH)], check=True)
-            
-            # Перевіряємо чи є зміни перед комітом
-            result = subprocess.run(
-                ["git", "commit", "-m", "Auto-update: timezones.json daily backup"],
-                capture_output=True, text=True
-            )
-            
-            if "nothing to commit" not in result.stdout:
-                subprocess.run(["git", "push"], check=True)
-                print("[SYSTEM] Таймзони синхронізовано з GitHub.")
-            else:
-                print("[SYSTEM] Змін у таймзонах немає, бекап пропущено.")
-        except Exception as e:
-            print(f"[ERROR] Авто-бекап таймзон не вдався: {e}")
 
     async def apply_country(self, user: discord.Member, key: str) -> tuple[bool, str]:
         if key not in COUNTRIES:

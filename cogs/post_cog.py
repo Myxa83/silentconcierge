@@ -6,7 +6,6 @@ import asyncio
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
 import aiohttp
@@ -16,12 +15,13 @@ from discord import app_commands, Interaction
 from discord.ui import Modal, TextInput
 from PIL import Image, ImageDraw
 
+from data.mongo_store import append_event
+
 # ============================ CONFIG ============================
 
 FOOTER_TEXT = "Silent Concierge by Myxa"
-LOG_DIR = Path("logs")
-LOG_FILE = LOG_DIR / "post_logs.json"
-TB_FILE = LOG_DIR / "post_tracebacks.json"
+LOG_COLLECTION = "post_logs"
+TRACEBACK_COLLECTION = "post_tracebacks"
 
 HTTP_TIMEOUT = 15
 WAIT_FILE_TIMEOUT = 600
@@ -42,23 +42,8 @@ def bash_log(stage: str, data: str = "") -> None:
     print(f"[POST_COG] {stage}: {data}", flush=True)
 
 
-def _append_json_list(path: Path, entry: Dict[str, Any]) -> None:
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        data = []
-
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(data, list):
-                    data = []
-            except Exception:
-                data = []
-
-        data.append(entry)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        bash_log("LOG_WRITE_ERROR", f"{type(e).__name__}: {e}")
+def _append_log(collection: str, entry: Dict[str, Any]) -> None:
+    append_event(collection, entry)
 
 
 def log_event(stage: str, interaction: Optional[Interaction], extra: Optional[Dict[str, Any]] = None) -> None:
@@ -75,7 +60,7 @@ def log_event(stage: str, interaction: Optional[Interaction], extra: Optional[Di
         entry.update(extra)
 
     bash_log("EVENT", json.dumps(entry, ensure_ascii=False))
-    _append_json_list(LOG_FILE, entry)
+    _append_log(LOG_COLLECTION, entry)
 
 
 def log_tb(stage: str, interaction: Optional[Interaction], err: BaseException) -> None:
@@ -93,7 +78,7 @@ def log_tb(stage: str, interaction: Optional[Interaction], err: BaseException) -
     bash_log("ERROR", f"{stage} | {type(err).__name__}: {err}")
     bash_log("TRACEBACK", tb)
 
-    _append_json_list(TB_FILE, entry)
+    _append_log(TRACEBACK_COLLECTION, entry)
 
 
 def is_message_after_start(msg: discord.Message, start_time: datetime) -> bool:
@@ -905,7 +890,7 @@ class PostCog(commands.Cog):
 
             try:
                 await interaction.followup.send(
-                    "❌ Щось зламалося. Помилка записана в logs/post_tracebacks.json і виведена в bash.",
+                    "❌ Щось зламалося. Помилка записана в MongoDB і виведена в bash.",
                     ephemeral=True
                 )
             except Exception:

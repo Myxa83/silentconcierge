@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-import os
-import json
 import random
 import datetime
 import aiohttp
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
+
+from data.mongo_store import append_event
 
 
 # Працюємо тільки на цьому сервері
@@ -26,31 +26,8 @@ BANNER_URLS = [
 ]
 
 
-def _ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
-
-
 def _log_json(event: dict) -> None:
-    _ensure_dir("logs")
-    day = datetime.datetime.utcnow().strftime("%Y-%m-%d")
-    fp = os.path.join("logs", f"banner_changes_{day}.json")
-
-    try:
-        if os.path.exists(fp):
-            with open(fp, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if not isinstance(data, list):
-                    data = []
-        else:
-            data = []
-
-        data.append(event)
-
-        with open(fp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        # Ніякого спаму в консоль, як ти любиш
-        pass
+    append_event("server_banner_logs", event)
 
 
 async def _download_bytes(url: str) -> bytes:
