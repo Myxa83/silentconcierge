@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # cogs/maty_off_cog.py
 
-import json
 import os
 import random
 import re
@@ -9,7 +8,6 @@ import unicodedata
 from calendar import monthrange
 from datetime import datetime
 from io import BytesIO
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import discord
@@ -17,12 +15,14 @@ from discord.ext import commands, tasks
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
+from data.mongo_store import load_state, save_state
+
 
 # =========================
 # НАЛАШТУВАННЯ
 # =========================
 
-STATE_FILE = Path("data/maty_off_stats.json")
+STATE_COLLECTION = "maty_off_state"
 MONGO_DATABASE = "silentconcierge"
 MONGO_COLLECTION = "maty_off_dictionary"
 MONGO_DOCUMENT_ID = "default"
@@ -710,43 +710,27 @@ class MatyOffCog(commands.Cog):
     # ---------- DATA ----------
 
     def load_data(self) -> dict:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        default = {
+            "months": {},
+            "awarded_months": [],
+            "last_winner_id": None,
+        }
+        data = load_state(
+            STATE_COLLECTION,
+            default,
+            legacy_path="data/maty_off_stats.json",
+        )
 
-        if not STATE_FILE.exists():
-            return {
-                "months": {},
-                "awarded_months": [],
-                "last_winner_id": None,
-            }
+        if not isinstance(data, dict):
+            return default
 
-        try:
-            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-
-            if not isinstance(data, dict):
-                raise ValueError("state file is not dict")
-
-            data.setdefault("months", {})
-            data.setdefault("awarded_months", [])
-            data.setdefault("last_winner_id", None)
-
-            return data
-
-        except Exception as e:
-            if LOG_TO_CONSOLE:
-                print(f"[MATY_OFF] Не вдалося прочитати state файл: {e}")
-
-            return {
-                "months": {},
-                "awarded_months": [],
-                "last_winner_id": None,
-            }
+        data.setdefault("months", {})
+        data.setdefault("awarded_months", [])
+        data.setdefault("last_winner_id", None)
+        return data
 
     def save_data(self):
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        save_state(STATE_COLLECTION, self.data)
 
     def add_swear_count(self, member: discord.Member, count: int):
         if count <= 0:
