@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 import asyncio
-import json
 import traceback
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from data.mongo_store import append_event
 
 
 # ---------------- CONFIG ----------------
@@ -22,7 +22,6 @@ FOOTER_TEXT = "Silent Concierge by Myxa"
 # Anti rate limit. 0.6-1.2 сек зазвичай ок.
 DM_DELAY_SECONDS = 1.0
 
-LOG_DIR = Path("logs")
 # ----------------------------------------
 
 
@@ -31,29 +30,7 @@ def _now_ts() -> int:
 
 
 def _write_json_log(entry: dict) -> None:
-    """
-    Пише в logs/YYYY-MM-DD.json (список записів).
-    Якщо logs/ нема, створює.
-    """
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        fn = LOG_DIR / f"{datetime.utcnow().strftime('%Y-%m-%d')}.json"
-
-        if fn.exists():
-            try:
-                data = json.loads(fn.read_text(encoding="utf-8"))
-                if not isinstance(data, list):
-                    data = []
-            except Exception:
-                data = []
-        else:
-            data = []
-
-        data.append(entry)
-        fn.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        # Логер не повинен валити бота
-        pass
+    append_event("announce_dm_logs", entry)
 
 
 class AnnounceDMCog(commands.Cog):
