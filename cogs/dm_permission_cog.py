@@ -12,16 +12,16 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
 from discord import app_commands
 
-# ========================= PATHS =========================
-DATA_PATH = Path("data/dm_permissions.json")
+from data.mongo_store import load_state, save_state
+
+# ========================= STORAGE =========================
+STATE_COLLECTION = "dm_permissions"
 
 # ========================= ROLES =========================
 # Хто може змінювати налаштування у dropdown
@@ -48,19 +48,15 @@ BOTTOM_IMAGE_URL = (
 
 # ========================= HELPERS =========================
 def load_data() -> dict:
-    if not DATA_PATH.exists():
-        return {}
-    try:
-        return json.loads(DATA_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    data = load_state(
+        STATE_COLLECTION,
+        {},
+        legacy_path="data/dm_permissions.json",
+    )
+    return data if isinstance(data, dict) else {}
 
 def save_data(data: dict) -> None:
-    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DATA_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    save_state(STATE_COLLECTION, data)
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
