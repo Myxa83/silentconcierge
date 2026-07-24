@@ -28,6 +28,7 @@ except Exception:
 GUILD_ID = int(os.getenv("GUILD_ID", "1323454227816906802"))
 STREAM_ANNOUNCE_CHANNEL_ID = int(os.getenv("STREAM_ANNOUNCE_CHANNEL_ID", "1395410247375655072"))
 NEW_VIDEO_MAX_AGE_HOURS = int(os.getenv("NEW_VIDEO_MAX_AGE_HOURS", "48"))
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("STREAM_REQUEST_TIMEOUT_SECONDS", "20"))
 
 STREAM_COLORS = [0xFF4000, 0xFFFF00, 0x00FF00, 0x00FF80, 0x00BFFF, 0x4000FF, 0x8000FF, 0xFF0040]
 
@@ -73,7 +74,8 @@ def _load_streamers() -> list:
         db  = _get_db()
         doc = db["streamers"].find_one({"_id": "main"})
         if doc:
-            return doc.get("list", [])
+            streamers = doc.get("list", [])
+            return streamers if isinstance(streamers, list) else []
     except Exception as e:
         print(f"[STREAM][ERROR] load streamers: {e}")
     return []
@@ -95,8 +97,12 @@ def _load_last_seen() -> dict:
     try:
         db  = _get_db()
         doc = db["stream_last_seen"].find_one({"_id": "main"})
-        if doc:
+        if isinstance(doc, dict):
             doc.pop("_id", None)
+            if not isinstance(doc.get("youtube"), dict):
+                doc["youtube"] = {}
+            if not isinstance(doc.get("twitch"), dict):
+                doc["twitch"] = {}
             return doc
     except Exception as e:
         print(f"[STREAM][ERROR] load last_seen: {e}")
@@ -120,7 +126,8 @@ def _load_game_icons() -> dict:
         db  = _get_db()
         doc = db["game_icons"].find_one({"_id": "main"})
         if doc:
-            return doc.get("icons", {})
+            icons = doc.get("icons", {})
+            return icons if isinstance(icons, dict) else {}
     except Exception as e:
         print(f"[STREAM][ERROR] load game_icons: {e}")
     return {}
@@ -153,7 +160,8 @@ async def _get_twitch_headers(session: aiohttp.ClientSession) -> Optional[dict]:
                 "grant_type": "client_credentials",
             },
         ) as resp:
-            data = await resp.json()
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
             _TWITCH_TOKEN     = data.get("access_token")
             _TWITCH_TOKEN_EXP = now + int(data.get("expires_in", 3600)) - 60
     if not _TWITCH_TOKEN:
@@ -232,34 +240,51 @@ class StreamCog(commands.Cog):
     def platform_assets(platform: str) -> Tuple[str, str]:
         return (TWITCH_ICON_IMG, TWITCH_EMOJI) if platform == "twitch" else (YOUTUBE_ICON_IMG, YOUTUBE_EMOJI)
 
-    def get_announce_channel(self):
-        return self.bot.get_channel(STREAM_ANNOUNCE_CHANNEL_ID)
+    async def get_announce_channel(self):
+        channel = self.bot.get_channel(STREAM_ANNOUNCE_CHANNEL_ID)
+        if channel is not None:
+            return channel
+
+        try:
+            return await self.bot.fetch_channel(STREAM_ANNOUNCE_CHANNEL_ID)
+        except Exception as e:
+            print(
+                f"[STREAM][ERROR] announce channel "
+                f"{STREAM_ANNOUNCE_CHANNEL_ID}: {type(e).__name__}: {e}"
+            )
+            return None
 
     async def _yt_resolve_channel_id(self, session, identifier: str) -> Optional[str]:
-        # Спробуємо через decapi
-        try:
-            async with session.get(f"https://decapi.me/youtube/channelid?search={identifier}") as r:
-                cid = (await r.text()).strip()
-                if cid.startswith("UC") and len(cid) > 10:
-                    return cid
-        except Exception:
-            pass
-        # Якщо identifier вже є channel_id
+        identifier = identifier.strip()
+
         if identifier.startswith("UC") and len(identifier) > 10:
             return identifier
-        # Спробуємо через RSS напряму з @handle
+
         try:
             handle = identifier.lstrip("@")
             async with session.get(
                 f"https://www.youtube.com/@{handle}",
                 headers={"User-Agent": "Mozilla/5.0"},
             ) as r:
+                r.raise_for_status()
                 text = await r.text()
-            m = re.search(r'"channelId":"(UC[\w-]+)"', text)
-            if m:
-                return m.group(1)
-        except Exception:
-            pass
+
+            patterns = (
+                r'"channelId":"(UC[\w-]{20,})"',
+                r'"externalId":"(UC[\w-]{20,})"',
+                r'<meta itemprop="channelId" content="(UC[\w-]{20,})"',
+            )
+
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if match:
+                    return match.group(1)
+        except Exception as e:
+            print(
+                f"[STREAM][ERROR] YouTube channel resolve "
+                f"{identifier}: {type(e).__name__}: {e}"
+            )
+
         return None
 
     async def _yt_latest_video_from_rss(self, session, channel_id: str) -> Optional[dict]:
@@ -301,7 +326,8 @@ class StreamCog(commands.Cog):
         if not headers:
             return None
         async with session.get(f"https://api.twitch.tv/helix/users?login={login}", headers=headers) as r:
-            jd = await r.json()
+            r.raise_for_status()
+            jd = await r.json(content_type=None)
         if isinstance(jd, dict) and jd.get("data"):
             return jd["data"][0].get("id")
         return None
@@ -317,7 +343,8 @@ class StreamCog(commands.Cog):
             f"https://api.twitch.tv/helix/videos?user_id={uid}&type=upload&first=1",
             headers=headers,
         ) as r:
-            jd = await r.json()
+            r.raise_for_status()
+            jd = await r.json(content_type=None)
         data = jd.get("data", []) if isinstance(jd, dict) else []
         if not data:
             return None
@@ -330,65 +357,179 @@ class StreamCog(commands.Cog):
             "created_at":    v.get("created_at"),
         }
 
+    async def _decapi_text(
+        self,
+        session: aiohttp.ClientSession,
+        endpoint: str,
+        username: str,
+    ) -> str:
+        async with session.get(
+            f"https://decapi.me/twitch/{endpoint}/{username}"
+        ) as response:
+            response.raise_for_status()
+            return (await response.text()).strip()
+
+    async def _twitch_live_info(
+        self,
+        session: aiohttp.ClientSession,
+        username: str,
+    ) -> Optional[dict]:
+        headers = None
+
+        try:
+            headers = await _get_twitch_headers(session)
+        except Exception as e:
+            print(
+                f"[STREAM][WARN] Twitch token unavailable, "
+                f"using DecAPI for {username}: {type(e).__name__}: {e}"
+            )
+
+        if headers:
+            try:
+                async with session.get(
+                    "https://api.twitch.tv/helix/streams",
+                    params={"user_login": username},
+                    headers=headers,
+                ) as response:
+                    response.raise_for_status()
+                    payload = await response.json(content_type=None)
+
+                streams = (
+                    payload.get("data", [])
+                    if isinstance(payload, dict)
+                    else []
+                )
+                return streams[0] if streams else None
+            except Exception as e:
+                print(
+                    f"[STREAM][WARN] Twitch Helix live check failed, "
+                    f"using DecAPI for {username}: {type(e).__name__}: {e}"
+                )
+
+        uptime = await self._decapi_text(session, "uptime", username)
+        normalized = uptime.casefold()
+        offline_markers = (
+            "offline",
+            "not live",
+            "not found",
+            "error",
+            "404",
+        )
+
+        if not uptime or any(marker in normalized for marker in offline_markers):
+            return None
+
+        return {}
+
     # ── Перевірка стрімів ────────────────────────────────────────────────────
 
-    @tasks.loop(minutes=2)
+    async def _check_streamer(
+        self,
+        session: aiohttp.ClientSession,
+        streamer: dict,
+    ) -> None:
+        if not isinstance(streamer, dict):
+            raise TypeError("streamer entry must be an object")
+
+        platform = str(streamer.get("platform", "")).casefold().strip()
+        username = str(streamer.get("username", "")).strip()
+        discord_id = streamer.get("discord_id")
+
+        if not platform or not username or not discord_id:
+            return
+
+        discord_id = int(discord_id)
+
+        if platform == "twitch":
+            live_info = await self._twitch_live_info(session, username)
+            live_key = (platform, username.casefold())
+
+            if live_info is not None:
+                if live_key not in self._checked_live:
+                    print(f"[STREAM] {username} live on Twitch!")
+                    await self.announce_stream(
+                        session,
+                        platform,
+                        username,
+                        discord_id,
+                        live_info=live_info,
+                    )
+                    self._checked_live.add(live_key)
+                return
+
+            self._checked_live.discard(live_key)
+            await self.check_twitch_upload(session, username, discord_id)
+            return
+
+        if platform == "youtube":
+            channel_id = streamer.get("yt_channel_id")
+
+            if not channel_id:
+                print(f"[STREAM] Resolving channel_id for {username}...")
+                channel_id = await self._yt_resolve_channel_id(
+                    session,
+                    username,
+                )
+
+                if channel_id:
+                    streamer["yt_channel_id"] = channel_id
+                    _save_streamers(self.streamers)
+                    print(f"[STREAM] Resolved: {username} → {channel_id}")
+                else:
+                    print(
+                        f"[STREAM] Could not resolve "
+                        f"channel_id for {username}"
+                    )
+                    return
+
+            await self.check_youtube_video(
+                session,
+                str(channel_id),
+                discord_id,
+            )
+
+    @tasks.loop(minutes=2, reconnect=True)
     async def check_streams(self):
-        # Перезавантажуємо з MongoDB кожен цикл
-        self.streamers  = _load_streamers()
-        self.last_seen  = _load_last_seen()
-        self.game_icons = _load_game_icons()
+        try:
+            self.streamers = _load_streamers()
+            self.last_seen = _load_last_seen()
+            self.game_icons = _load_game_icons()
 
-        async with aiohttp.ClientSession() as session:
-            for s in self.streamers:
-                platform   = s.get("platform")
-                username   = s.get("username")
-                discord_id = s.get("discord_id")
-                if not platform or not username or not discord_id:
-                    continue
+            timeout = aiohttp.ClientTimeout(
+                total=REQUEST_TIMEOUT_SECONDS
+            )
 
-                # Twitch live
-                if platform == "twitch":
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                for streamer in list(self.streamers):
                     try:
-                        async with session.get(f"https://decapi.me/twitch/uptime/{username}") as resp:
-                            text = (await resp.text()).lower().strip()
-                    except Exception:
-                        text = "offline"
-
-                    is_live = not any(w in text for w in ["offline", "not live", "404", "error", "not found"])
-
-                    if is_live:
-                        if (platform, username) not in self._checked_live:
-                            print(f"[STREAM] {username} live on Twitch!")
-                            await self.announce_stream(session, platform, username, discord_id)
-                            self._checked_live.add((platform, username))
-                        continue
-                    else:
-                        self._checked_live.discard((platform, username))
-
-                # Нові відео
-                try:
-                    if platform == "youtube":
-                        ch_id = s.get("yt_channel_id")
-                        if not ch_id:
-                            print(f"[STREAM] Resolving channel_id for {username}...")
-                            ch_id = await self._yt_resolve_channel_id(session, username)
-                            if ch_id:
-                                s["yt_channel_id"] = ch_id
-                                _save_streamers(self.streamers)
-                                print(f"[STREAM] Resolved: {username} → {ch_id}")
-                            else:
-                                print(f"[STREAM] Could not resolve channel_id for {username}")
-                        if ch_id:
-                            await self.check_youtube_video(session, ch_id, discord_id)
-                    elif platform == "twitch":
-                        await self.check_twitch_upload(session, username, discord_id)
-                except Exception as e:
-                    print(f"[STREAM] video check error {platform}:{username}: {e}")
+                        await self._check_streamer(session, streamer)
+                    except Exception as e:
+                        label = (
+                            f"{streamer.get('platform', '?')}:"
+                            f"{streamer.get('username', '?')}"
+                            if isinstance(streamer, dict)
+                            else repr(streamer)
+                        )
+                        print(
+                            f"[STREAM][ERROR] streamer {label}: "
+                            f"{type(e).__name__}: {e}"
+                        )
+        except Exception as e:
+            print(
+                f"[STREAM][ERROR] cycle survived: "
+                f"{type(e).__name__}: {e}"
+            )
 
     @check_streams.before_loop
     async def before_loop(self):
         await self.bot.wait_until_ready()
+
+    @check_streams.error
+    async def check_streams_error(self, error: BaseException):
+        print(
+            f"[STREAM][FATAL] background loop: "
+            f"{type(error).__name__}: {error}"
+        )
 
     async def check_youtube_video(self, session, channel_id: str, discord_id: int):
         latest = await self._yt_latest_video_from_rss(session, channel_id)
@@ -407,9 +548,15 @@ class StreamCog(commands.Cog):
         if last == vid:
             return
         print(f"[STREAM] New YouTube video: {latest['title']}")
+        await self.announce_video(
+            "youtube",
+            latest["title"],
+            latest["link"],
+            latest["thumb"],
+            discord_id,
+        )
         self.last_seen.setdefault("youtube", {})[channel_id] = vid
         _save_last_seen(self.last_seen)
-        await self.announce_video("youtube", latest["title"], latest["link"], latest["thumb"], discord_id)
 
     async def check_twitch_upload(self, session, login: str, discord_id: int):
         latest = await self._twitch_latest_upload(session, login)
@@ -426,9 +573,15 @@ class StreamCog(commands.Cog):
         if last == vid_id:
             return
         print(f"[STREAM] New Twitch upload: {latest['title']}")
+        await self.announce_video(
+            "twitch",
+            latest["title"],
+            latest["url"],
+            latest["thumbnail_url"],
+            discord_id,
+        )
         self.last_seen.setdefault("twitch", {})[login] = vid_id
         _save_last_seen(self.last_seen)
-        await self.announce_video("twitch", latest["title"], latest["url"], latest["thumbnail_url"], discord_id)
 
     # ── Анонси ───────────────────────────────────────────────────────────────
 
@@ -483,11 +636,14 @@ class StreamCog(commands.Cog):
         )
 
         avatar_url = self._get_member_avatar(discord_id)
-        channel    = self.get_announce_channel()
+        channel = await self.get_announce_channel()
         if not channel:
-            return
+            raise RuntimeError(
+                f"announce channel {STREAM_ANNOUNCE_CHANNEL_ID} unavailable"
+            )
 
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             files, ekw = await self._build_embed_files(session, avatar_url, platform, preview)
 
         if "thumbnail" in ekw:
@@ -501,31 +657,62 @@ class StreamCog(commands.Cog):
             files=files,
         )
 
-    async def announce_stream(self, session, platform: str, username: str, discord_id: int):
+    async def announce_stream(
+        self,
+        session,
+        platform: str,
+        username: str,
+        discord_id: int,
+        live_info: Optional[dict] = None,
+    ):
         if platform != "twitch":
             return
 
         stream_url = f"https://www.twitch.tv/{username}"
-        preview    = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{username}-640x360.jpg"
+        preview = (
+            (live_info or {}).get("thumbnail_url", "")
+            .replace("{width}", "640")
+            .replace("{height}", "360")
+            or (
+                "https://static-cdn.jtvnw.net/previews-ttv/"
+                f"live_user_{username}-640x360.jpg"
+            )
+        )
         _, plat_emoji = self.platform_assets(platform)
 
-        try:
-            async with session.get(f"https://decapi.me/twitch/game/{username}") as g:
-                game_name = (await g.text()).strip()
-        except Exception:
-            game_name = ""
+        game_name = str((live_info or {}).get("game_name") or "").strip()
+        viewers = str((live_info or {}).get("viewer_count") or "").strip()
+        title = str((live_info or {}).get("title") or "").strip()
 
-        try:
-            async with session.get(f"https://decapi.me/twitch/viewercount/{username}") as v:
-                viewers = (await v.text()).strip() or "0"
-        except Exception:
-            viewers = "0"
+        if not game_name:
+            try:
+                game_name = await self._decapi_text(
+                    session,
+                    "game",
+                    username,
+                )
+            except Exception:
+                game_name = ""
 
-        try:
-            async with session.get(f"https://decapi.me/twitch/status/{username}") as t:
-                title = (await t.text()).strip()
-        except Exception:
-            title = "🔴 LIVE"
+        if not viewers:
+            try:
+                viewers = await self._decapi_text(
+                    session,
+                    "viewercount",
+                    username,
+                )
+            except Exception:
+                viewers = "0"
+
+        if not title:
+            try:
+                title = await self._decapi_text(
+                    session,
+                    "status",
+                    username,
+                )
+            except Exception:
+                title = "🔴 LIVE"
 
         now_utc = datetime.now(timezone.utc)
         color   = random.choice(STREAM_COLORS)
@@ -545,9 +732,11 @@ class StreamCog(commands.Cog):
         )
 
         avatar_url = self._get_member_avatar(discord_id)
-        channel    = self.get_announce_channel()
+        channel = await self.get_announce_channel()
         if not channel:
-            return
+            raise RuntimeError(
+                f"announce channel {STREAM_ANNOUNCE_CHANNEL_ID} unavailable"
+            )
 
         files, ekw = await self._build_embed_files(session, avatar_url, platform, preview)
         if "thumbnail" in ekw:
