@@ -4,6 +4,7 @@
 import json
 import random
 import re
+import unicodedata
 from calendar import monthrange
 from datetime import datetime
 from io import BytesIO
@@ -147,6 +148,69 @@ SAFE_WORDS = {
 }
 
 
+# Додаткові безпечні основи. Вони захищають звичайні слова від широких regex.
+# Повний словник мови тут не потрібен: перевіряємо лише відомі конфлікти.
+SAFE_WORD_PREFIXES = (
+    "бляшк",
+    "стріля",
+    "пристріля",
+    "застріля",
+    "відстріля",
+    "постріля",
+    "мудр",
+    "сукн",
+    "сукуп",
+    "херсон",
+    "херувим",
+    "херес",
+    "херсонес",
+    "дерма",
+    "дермат",
+    "дермаль",
+    "лохин",
+    "лохвиц",
+    "лохмат",
+)
+
+
+# Точні образливі слова, для яких не можна використовувати пошук підрядка.
+# Джерела для звірки:
+# https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words
+# https://github.com/kateryna-bobrovnyk/obscene-ukr
+# Список адаптовано вручну, щоб прибрати медичні, нейтральні та двозначні слова.
+EXACT_SWEAR_WORDS = {
+    "asshole",
+    "bastard",
+    "bullshit",
+    "cunt",
+    "dickhead",
+    "motherfucker",
+    "slut",
+    "whore",
+    "виродок",
+    "гнида",
+    "дебіл",
+    "дебілка",
+    "довбень",
+    "довбенька",
+    "ідіот",
+    "ідіотка",
+    "лох",
+    "лошара",
+    "мерзота",
+    "мразь",
+    "падло",
+    "паскуда",
+    "покидьок",
+    "придурок",
+    "придурка",
+    "сволота",
+    "тварюка",
+    "ублюдок",
+    "чмо",
+}
+
+
 # =========================
 # REGEX
 # =========================
@@ -156,6 +220,13 @@ SEP = r"[\s\W_]*"
 
 URL_PATTERN = re.compile(
     r"https?://\S+|www\.\S+",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+
+EXACT_SWEAR_PATTERN = re.compile(
+    rf"(?<![{LETTER}])(?:" + "|".join(
+        re.escape(word) for word in sorted(EXACT_SWEAR_WORDS, key=len, reverse=True)
+    ) + rf")(?![{LETTER}])",
     flags=re.IGNORECASE | re.UNICODE,
 )
 
@@ -225,12 +296,38 @@ SWEAR_PATTERNS = [
     rf"(?<![{LETTER}])shit[a-zа-яіїєґё]*",
     rf"(?<![{LETTER}])s{SEP}h{SEP}i{SEP}t",
     rf"(?<![{LETTER}])bitch[a-zа-яіїєґё]*",
+
+    # додаткові українські, російські та транслітеровані форми
+    rf"(?<![{LETTER}])(?:курв|kurv)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:шлюх|шльондр|shalav)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:піда?р|підор|пидор|pidar|pedik)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:довбойоб|долбо[еє]б|dolboyeb)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:[еєї]блан|йобнут|yobnut)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:залуп|zalup)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:манда|мандовош|manda)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:гандон|gandon)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:жоп|zhop)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:дроч|droch)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:трах|trakh)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:ссать|сцяти|сцик|перд)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:asshole|motherfucker|bastard|cunt|whore|slut|dickhead|bullshit)[a-z]*",
+
+    # повторені літери та розділювачі: бблляя, ххууй, f-u-c-k
+    rf"(?<![{LETTER}])б+{SEP}л+{SEP}[яа@]+(?:{SEP}(?:д|т|х|ь|а))*",
+    rf"(?<![{LETTER}])[хx]+{SEP}[уy]+{SEP}[йяєїиеюi]+",
+    rf"(?<![{LETTER}])п+{SEP}[иіiы]+{SEP}[зz3]+{SEP}[дd]+",
+    rf"(?<![{LETTER}])(?:[еєe]+{SEP}[бb]+|ї+{SEP}[бb]+|й+{SEP}о+{SEP}[бb]+)",
+    rf"(?<![{LETTER}])f+{SEP}u+{SEP}c+{SEP}k+",
+    rf"(?<![{LETTER}])s+{SEP}h+{SEP}i+{SEP}t+",
 ]
 
 
 COMPILED_PATTERNS = [
-    re.compile(pattern, flags=re.IGNORECASE | re.UNICODE)
-    for pattern in SWEAR_PATTERNS
+    EXACT_SWEAR_PATTERN,
+    *[
+        re.compile(pattern, flags=re.IGNORECASE | re.UNICODE)
+        for pattern in SWEAR_PATTERNS
+    ],
 ]
 
 
@@ -248,7 +345,8 @@ def is_last_day_of_month(now: datetime) -> bool:
 
 
 def compact_word(value: str) -> str:
-    value = value.lower()
+    value = unicodedata.normalize("NFKC", value).casefold()
+    value = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", value)
 
     replacements = {
         "@": "а",
@@ -265,6 +363,15 @@ def compact_word(value: str) -> str:
 
     value = re.sub(r"[\s\W_]+", "", value, flags=re.UNICODE)
     return value
+
+
+def is_safe_word(value: str) -> bool:
+    compact = compact_word(value)
+
+    if compact in SAFE_WORDS:
+        return True
+
+    return any(compact.startswith(prefix) for prefix in SAFE_WORD_PREFIXES)
 
 
 def clean_message_text(text: str) -> tuple[str, int]:
@@ -285,9 +392,8 @@ def clean_message_text(text: str) -> tuple[str, int]:
         nonlocal total_count
 
         original = match.group(0)
-        compact = compact_word(original)
 
-        if compact in SAFE_WORDS:
+        if is_safe_word(original):
             return original
 
         total_count += 1
