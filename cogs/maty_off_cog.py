@@ -2,6 +2,7 @@
 # cogs/maty_off_cog.py
 
 import json
+import os
 import random
 import re
 import unicodedata
@@ -13,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
+from pymongo import MongoClient
+from pymongo.errors import PyMongoError
 
 
 # =========================
@@ -20,6 +23,9 @@ from discord.ext import commands, tasks
 # =========================
 
 STATE_FILE = Path("data/maty_off_stats.json")
+MONGO_DATABASE = "silentconcierge"
+MONGO_COLLECTION = "maty_off_dictionary"
+MONGO_DOCUMENT_ID = "default"
 
 TIMEZONE = ZoneInfo("Europe/London")
 
@@ -223,12 +229,21 @@ URL_PATTERN = re.compile(
     flags=re.IGNORECASE | re.UNICODE,
 )
 
-EXACT_SWEAR_PATTERN = re.compile(
-    rf"(?<![{LETTER}])(?:" + "|".join(
-        re.escape(word) for word in sorted(EXACT_SWEAR_WORDS, key=len, reverse=True)
-    ) + rf")(?![{LETTER}])",
-    flags=re.IGNORECASE | re.UNICODE,
-)
+def build_exact_swear_pattern(words: set[str]) -> re.Pattern:
+    body = "|".join(
+        re.escape(word) for word in sorted(words, key=len, reverse=True)
+    )
+
+    if not body:
+        return re.compile(r"(?!x)x")
+
+    return re.compile(
+        rf"(?<![{LETTER}])(?:{body})(?![{LETTER}])",
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+
+
+EXACT_SWEAR_PATTERN = build_exact_swear_pattern(EXACT_SWEAR_WORDS)
 
 
 SWEAR_PATTERNS = [
@@ -331,6 +346,19 @@ COMPILED_PATTERNS = [
 ]
 
 
+def rebuild_compiled_patterns() -> None:
+    global EXACT_SWEAR_PATTERN, COMPILED_PATTERNS
+
+    EXACT_SWEAR_PATTERN = build_exact_swear_pattern(EXACT_SWEAR_WORDS)
+    COMPILED_PATTERNS = [
+        EXACT_SWEAR_PATTERN,
+        *[
+            re.compile(pattern, flags=re.IGNORECASE | re.UNICODE)
+            for pattern in SWEAR_PATTERNS
+        ],
+    ]
+
+
 # =========================
 # ДОПОМІЖНІ ФУНКЦІЇ
 # =========================
@@ -372,6 +400,74 @@ def is_safe_word(value: str) -> bool:
         return True
 
     return any(compact.startswith(prefix) for prefix in SAFE_WORD_PREFIXES)
+
+
+def load_filter_dictionary_from_mongo() -> None:
+    global SAFE_WORD_PREFIXES
+
+    mongo_url = os.getenv("MONGODB_URL", "").strip()
+
+    if not mongo_url:
+        if LOG_TO_CONSOLE:
+            print("[MATY_OFF] MONGODB_URL не задано, використовую резервний словник.")
+        return
+
+    client = None
+
+    try:
+        client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
+        document = client[MONGO_DATABASE][MONGO_COLLECTION].find_one(
+            {"_id": MONGO_DOCUMENT_ID}
+        )
+    except PyMongoError as error:
+        if LOG_TO_CONSOLE:
+            print(f"[MATY_OFF] MongoDB недоступна, використовую резервний словник: {error}")
+        return
+    finally:
+        if client is not None:
+            client.close()
+
+    if not document:
+        if LOG_TO_CONSOLE:
+            print("[MATY_OFF] Документ словника не знайдено, використовую резервний словник.")
+        return
+
+    def normalized_strings(field: str) -> set[str]:
+        values = document.get(field, [])
+
+        if not isinstance(values, list):
+            return set()
+
+        return {
+            unicodedata.normalize("NFKC", value).casefold()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        }
+
+    safe_words = normalized_strings("safe_words")
+    safe_prefixes = normalized_strings("safe_prefixes")
+    exact_swear_words = normalized_strings("exact_swear_words")
+
+    if safe_words:
+        SAFE_WORDS.clear()
+        SAFE_WORDS.update(safe_words)
+
+    if safe_prefixes:
+        SAFE_WORD_PREFIXES = tuple(sorted(safe_prefixes, key=len, reverse=True))
+
+    if exact_swear_words:
+        EXACT_SWEAR_WORDS.clear()
+        EXACT_SWEAR_WORDS.update(exact_swear_words)
+
+    rebuild_compiled_patterns()
+
+    if LOG_TO_CONSOLE:
+        print(
+            "[MATY_OFF] Словник завантажено з MongoDB: "
+            f"{len(SAFE_WORDS)} безпечних слів, "
+            f"{len(SAFE_WORD_PREFIXES)} безпечних основ, "
+            f"{len(EXACT_SWEAR_WORDS)} заборонених слів."
+        )
 
 
 def clean_message_text(text: str) -> tuple[str, int]:
@@ -509,6 +605,7 @@ async def collect_attachment_files(message: discord.Message) -> tuple[list[disco
 class MatyOffCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        load_filter_dictionary_from_mongo()
         self.data = self.load_data()
         self.processed_message_ids: set[int] = set()
         self.monthly_award_loop.start()
