@@ -21,6 +21,36 @@ CHANNEL_ID = 1324474229437108264
 BDF_NEWS_URL = "https://www.blackdesertfoundry.com/category/all-news/"
 STATE_FILE = Path("data/bdf_news_seen.json")
 
+UKRAINIAN_MONTHS = (
+    "",
+    "січня",
+    "лютого",
+    "березня",
+    "квітня",
+    "травня",
+    "червня",
+    "липня",
+    "серпня",
+    "вересня",
+    "жовтня",
+    "листопада",
+    "грудня",
+)
+
+ASL = "<a:ASL:1447205981133209773>"
+RSL = "<a:RSL:1447204908494225529>"
+BULLET_POINT = "<a:bulletpoint:1447549436137046099>"
+DEFF = "<:def:1445058422234943732>"
+DIVIDER = DEFF * 16
+QUESTION_MARK = "<:QM:1445058301485121727>"
+EXCLAMATION_MARK = "<:EM:1445058338055393341>"
+BUBBLES = "<a:bulabubbles:1430618519166259211>"
+BOAT = "<a:boat:1469018496426840339>"
+NEWS_LOGO_URL = (
+    "https://cdn.discordapp.com/emojis/"
+    "1482553264825438330.webp?size=96&quality=lossless"
+)
+
 
 class BDFNewsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -74,9 +104,36 @@ class BDFNewsCog(commands.Cog):
         for tag in soup(["script", "style", "nav", "footer", "aside", "form"]):
             tag.decompose()
 
-        text = soup.get_text("\n", strip=True)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text
+        article = (
+            soup.select_one(".entry-content")
+            or soup.select_one(".post-content")
+            or soup.select_one(".td-post-content")
+            or soup.find("article")
+            or soup
+        )
+
+        lines = []
+        seen = set()
+
+        for node in article.find_all(["h2", "h3", "h4", "p", "li", "tr"]):
+            # Текст усередині пункту списку вже буде взято з самого <li>.
+            if node.name == "p" and node.find_parent("li"):
+                continue
+
+            text = re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+            key = text.casefold()
+
+            if not text or key in seen:
+                continue
+
+            seen.add(key)
+            lines.append(text)
+
+        if lines:
+            return "\n".join(lines)
+
+        text = article.get_text("\n", strip=True)
+        return re.sub(r"\n{2,}", "\n", text)
 
     def translate_uk(self, text: str) -> str:
         if not text:
@@ -88,12 +145,67 @@ class BDFNewsCog(commands.Cog):
             print(f"[BDFNewsCog] translate error: {e}")
             return text
 
+    def split_long_summary_item(
+        self,
+        text: str,
+        max_length: int = 320,
+    ) -> list[str]:
+        """
+        Ділить довгі пункти на читабельні частини.
+        Окремо враховує переліки предметів із кількостями на кшталт x250.
+        """
+        text = re.sub(
+            r"(x\d+(?:[.,]\d+)?)\s+(?=[A-ZА-ЯІЇЄҐ])",
+            r"\1\n",
+            text,
+        )
+
+        rough_parts = re.split(r"(?<=[.!?;])\s+|\n+", text)
+        parts = []
+
+        for rough_part in rough_parts:
+            rough_part = re.sub(r"\s+", " ", rough_part).strip(" •-\t")
+
+            if not rough_part:
+                continue
+
+            words = rough_part.split()
+            current = []
+            current_length = 0
+
+            for word in words:
+                extra = len(word) + (1 if current else 0)
+
+                if current and current_length + extra > max_length:
+                    parts.append(" ".join(current))
+                    current = [word]
+                    current_length = len(word)
+                else:
+                    current.append(word)
+                    current_length += extra
+
+            if current:
+                parts.append(" ".join(current))
+
+        return parts
+
+    def format_summary_item(self, text: str) -> str:
+        text = text.strip()
+        label_match = re.match(r"^([^:]{2,55}:)\s+(.+)$", text)
+
+        if label_match:
+            label, value = label_match.groups()
+            return f"{BULLET_POINT} **{label}** {value}"
+
+        return f"{BULLET_POINT} {text}"
+
     def make_bullets(self, text: str) -> str:
-        cleaned = re.sub(r"\s+", " ", text).strip()
-        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
-
+        blocks = [
+            re.sub(r"\s+", " ", block).strip()
+            for block in re.split(r"\n+", text)
+        ]
         lines = []
-
+        used_characters = 0
         blocked_words = [
             "cookie",
             "privacy",
@@ -105,28 +217,37 @@ class BDFNewsCog(commands.Cog):
             "leave a reply",
         ]
 
-        for sentence in sentences:
-            sentence = sentence.strip()
-
-            if len(sentence) < 45:
+        for block in blocks:
+            if len(block) < 35:
                 continue
 
-            if any(word in sentence.lower() for word in blocked_words):
+            if any(word in block.lower() for word in blocked_words):
                 continue
 
-            uk_sentence = self.translate_uk(sentence)
-            lines.append(f"• {uk_sentence}")
+            uk_block = self.translate_uk(block)
 
-            if len(lines) >= 5:
+            for part in self.split_long_summary_item(uk_block):
+                line = self.format_summary_item(part)
+
+                if used_characters + len(line) > 3000:
+                    break
+
+                lines.append(line)
+                used_characters += len(line)
+
+                if len(lines) >= 8:
+                    break
+
+            if len(lines) >= 8 or used_characters >= 3000:
                 break
 
         if not lines:
             return (
-                "• Нова публікація на Black Desert Foundry.\n"
-                "• Відкрий посилання, щоб прочитати повний текст."
+                f"{BULLET_POINT} Нова публікація на Black Desert Foundry.\n\n"
+                f"{BULLET_POINT} Відкрий посилання, щоб прочитати повний текст."
             )
 
-        return "\n".join(lines)
+        return "\n\n".join(lines)
 
     def extract_article_image(self, article_html: str) -> str | None:
         soup = BeautifulSoup(article_html, "lxml")
@@ -163,6 +284,23 @@ class BDFNewsCog(commands.Cog):
             return meta_date["content"]
 
         return "Дата не вказана"
+
+    def format_published_date(self, value: str) -> str:
+        value = value.strip()
+
+        if not value or value == "Дата не вказана":
+            return "Дата не вказана"
+
+        try:
+            published = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+
+        month = UKRAINIAN_MONTHS[published.month]
+        return (
+            f"{published.day} {month} {published.year} "
+            f"о {published.hour:02d}:{published.minute:02d}"
+        )
 
     async def image_to_png_file(self, image_url: str) -> discord.File | None:
         try:
@@ -259,34 +397,53 @@ class BDFNewsCog(commands.Cog):
         original_title = entry.title
         uk_title = self.translate_uk(original_title)
 
-        summary = self.make_bullets(article_text[:6000])
+        summary = self.make_bullets(article_text[:10000])
         image_url = self.extract_article_image(article_html)
-        published = self.extract_date_from_article(article_html)
+        published = self.format_published_date(
+            self.extract_date_from_article(article_html)
+        )
 
         channel = self.bot.get_channel(CHANNEL_ID)
         if channel is None:
             channel = await self.bot.fetch_channel(CHANNEL_ID)
 
+        title_limit = 256 - len(ASL) - len(RSL) - 2
+        formatted_title = f"{ASL} {uk_title[:title_limit]} {RSL}"
+
         embed = discord.Embed(
-            title=uk_title[:256],
+            title=formatted_title,
             url=link,
-            description=summary[:3500],
+            description=(
+                f"{EXCLAMATION_MARK} **Коротко про оновлення**\n\n"
+                f"{summary}\n\n"
+                f"{DIVIDER}"
+            )[:4000],
             color=discord.Color.teal(),
             timestamp=datetime.now(timezone.utc),
         )
 
         embed.add_field(
-            name="Оригінальна назва",
+            name=f"{BUBBLES} Оригінальна назва",
             value=original_title[:1024],
             inline=False,
         )
 
         embed.add_field(
-            name="Дата",
+            name=f"{BOAT} Опубліковано",
             value=published[:1024],
             inline=False,
         )
 
+        embed.add_field(
+            name=f"{QUESTION_MARK} Де прочитати повністю?",
+            value=f"[Відкрити на Black Desert Foundry]({link})",
+            inline=False,
+        )
+
+        embed.set_author(
+            name="Black Desert Foundry",
+            icon_url=NEWS_LOGO_URL,
+        )
         embed.set_footer(text="Silent Concierge by Myxa | Black Desert Foundry")
 
         file = None
