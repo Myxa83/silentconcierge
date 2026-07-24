@@ -151,6 +151,11 @@ SAFE_WORDS = {
     "сукупні",
     "сукупного",
     "сукупної",
+    "лохнесс",
+    "трахбах",
+    "трахтарах",
+    "трахтрах",
+    "єбрр",
 }
 
 
@@ -167,12 +172,46 @@ SAFE_WORD_PREFIXES = (
     "сукн",
     "сукуп",
     "херсон",
-    "херувим",
+    "херув",
     "херес",
     "херсонес",
+    "бляшан",
+    "блявк",
+    "блягузк",
+    "блякл",
+    "блямб",
+    "бляск",
+    "блях",
+    "хуейськ",
+    "хербст",
+    "херд",
+    "хере",
+    "херей",
+    "херлі",
+    "херман",
+    "херст",
+    "еббот",
+    "еббі",
+    "ебегнейл",
+    "ебен",
+    "ебер",
+    "ебол",
+    "ебоніт",
+    "ебро",
+    "ебулі",
+    "ебігейл",
+    "ебіґейл",
+    "йоббік",
     "дерма",
     "дермат",
     "дермаль",
+    "курвіметр",
+    "сучев",
+    "трахк",
+    "трахкот",
+    "турябистр",
+    "турєбистр",
+    "турїбистр",
     "лохин",
     "лохвиц",
     "лохмат",
@@ -247,12 +286,12 @@ EXACT_SWEAR_PATTERN = build_exact_swear_pattern(EXACT_SWEAR_WORDS)
 
 
 SWEAR_PATTERNS = [
-    # бля / бляд / блять / бляха, але НЕ бляшка
-    rf"(?<![{LETTER}])бля(?!ш)[{LETTER}]*",
-    rf"(?<![{LETTER}])б{SEP}л{SEP}[яа@](?!{SEP}ш)(?:{SEP}(?:д|т|х|ь|а))*",
+    # бля / бляд / блять, але НЕ бляшанка, бляшка, бляха чи бляклий
+    rf"(?<![{LETTER}])бля(?:(?:д|т|ц|ь)[{LETTER}]*)?(?![{LETTER}])",
+    rf"(?<![{LETTER}])б{SEP}л{SEP}[я@](?:{SEP}(?:д|т|ц|ь)[{LETTER}]*)?(?![{LETTER}])",
 
     # blya / bljad
-    rf"(?<![{LETTER}])blya[a-zа-яіїєґё]*",
+    rf"(?<![{LETTER}])blya(?:(?:d|t)[a-zа-яіїєґё]*)?(?![{LETTER}])",
     rf"(?<![{LETTER}])bljad[a-zа-яіїєґё]*",
     rf"(?<![{LETTER}])b{SEP}l{SEP}y{SEP}a(?:{SEP}(?:d|t))*",
 
@@ -287,7 +326,7 @@ SWEAR_PATTERNS = [
     rf"(?<![{LETTER}])suka[a-zа-яіїєґё]*",
 
     # сучка / сучий / сучара
-    rf"(?<![{LETTER}])с[уy]ч(?:ка|ки|ку|кою|ара|ари|ий|ого|ому|і|е)[{LETTER}]*",
+    rf"(?<![{LETTER}])с[уy]ч(?:ка|ки|ку|кою|ара|ари|ий|ого|ому)[{LETTER}]*",
 
     # мудак / мудило / мудозвон, але НЕ мудрий
     rf"(?<![{LETTER}])м[уy]д(?:ак|ака|аку|аком|аки|ило|ила|илу|озвон|озвін)[{LETTER}]*",
@@ -298,8 +337,8 @@ SWEAR_PATTERNS = [
     rf"(?<![{LETTER}])говн[{LETTER}]*",
     rf"(?<![{LETTER}])govn[a-zа-яіїєґё]*",
 
-    # дерьмо
-    rf"(?<![{LETTER}])дерь?м[{LETTER}]*",
+    # дерьмо, але НЕ дерма та медичні слова на дерм-
+    rf"(?<![{LETTER}])дерьм[{LETTER}]*",
 
     # срака / срати / сраний
     rf"(?<![{LETTER}])сра(?:к|т|н)[{LETTER}]*",
@@ -313,22 +352,34 @@ SWEAR_PATTERNS = [
     rf"(?<![{LETTER}])bitch[a-zа-яіїєґё]*",
 
     # додаткові українські, російські та транслітеровані форми
-    rf"(?<![{LETTER}])(?:курв|kurv)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:курв|kurv|kurw)[{LETTER}]*",
     rf"(?<![{LETTER}])(?:шлюх|шльондр|shalav)[{LETTER}]*",
-    rf"(?<![{LETTER}])(?:піда?р|підор|пидор|pidar|pedik)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:"
+    rf"підарас[{LETTER}]*|"
+    rf"підар(?:а|у|ом|е|и|ів|ові|ам|ами|ах|ськ[{LETTER}]*)?|"
+    rf"підор(?:а|у|ом|е|и|ів|ові|ам|ами|ах|ськ[{LETTER}]*)?|"
+    rf"пидор(?:а|у|ом|е|ы|ов|у|ам|ами|ах|ск[{LETTER}]*)?|"
+    rf"pidar(?:a|u|om|y|i|ov|am|ami|akh|sk[a-z]*)?|"
+    rf"pedik(?:a|u|om|y|i|ov|am|ami|akh)?"
+    rf")(?![{LETTER}])",
     rf"(?<![{LETTER}])(?:довбойоб|долбо[еє]б|dolboyeb)[{LETTER}]*",
     rf"(?<![{LETTER}])(?:[еєї]блан|йобнут|yobnut)[{LETTER}]*",
     rf"(?<![{LETTER}])(?:залуп|zalup)[{LETTER}]*",
-    rf"(?<![{LETTER}])(?:манда|мандовош|manda)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:"
+    rf"манда(?:|и|у|ою|і|ам|ами|ах)|"
+    rf"мандовош[{LETTER}]*|"
+    rf"manda(?:|s|u|oy|e|am|ami|akh)"
+    rf")(?![{LETTER}])",
     rf"(?<![{LETTER}])(?:гандон|gandon)[{LETTER}]*",
     rf"(?<![{LETTER}])(?:жоп|zhop)[{LETTER}]*",
     rf"(?<![{LETTER}])(?:дроч|droch)[{LETTER}]*",
-    rf"(?<![{LETTER}])(?:трах|trakh)[{LETTER}]*",
+    rf"(?<![{LETTER}])(?:трах(?![еоіт])[{LETTER}]*|trakh[a-zа-яіїєґё]*)",
     rf"(?<![{LETTER}])(?:ссать|сцяти|сцик|перд)[{LETTER}]*",
     rf"(?<![{LETTER}])(?:asshole|motherfucker|bastard|cunt|whore|slut|dickhead|bullshit)[a-z]*",
 
     # повторені літери та розділювачі: бблляя, ххууй, f-u-c-k
-    rf"(?<![{LETTER}])б+{SEP}л+{SEP}[яа@]+(?:{SEP}(?:д|т|х|ь|а))*",
+    rf"(?<![{LETTER}])б+{SEP}л+{SEP}[я@]+"
+    rf"(?:{SEP}(?:д|т|ц|ь)+[{LETTER}]*)?(?![{LETTER}])",
     rf"(?<![{LETTER}])[хx]+{SEP}[уy]+{SEP}[йяєїиеюi]+",
     rf"(?<![{LETTER}])п+{SEP}[иіiы]+{SEP}[зz3]+{SEP}[дd]+",
     rf"(?<![{LETTER}])(?:[еєe]+{SEP}[бb]+|ї+{SEP}[бb]+|й+{SEP}о+{SEP}[бb]+)",
@@ -402,6 +453,41 @@ def is_safe_word(value: str) -> bool:
     return any(compact.startswith(prefix) for prefix in SAFE_WORD_PREFIXES)
 
 
+def surrounding_word(match: re.Match) -> str:
+    """Повертає все слово, навіть якщо regex збігся лише з його початком."""
+    text = match.string
+    start, end = match.span()
+
+    while start > 0 and re.fullmatch(rf"[{LETTER}]", text[start - 1]):
+        start -= 1
+
+    while end < len(text) and re.fullmatch(rf"[{LETTER}]", text[end]):
+        end += 1
+
+    return text[start:end]
+
+
+def surrounding_compound(match: re.Match) -> str:
+    """Повертає складне слово разом із дефісами й апострофами."""
+    text = match.string
+    start, end = match.span()
+    connectors = "-'’ʼ"
+
+    while start > 0 and (
+        re.fullmatch(rf"[{LETTER}]", text[start - 1])
+        or text[start - 1] in connectors
+    ):
+        start -= 1
+
+    while end < len(text) and (
+        re.fullmatch(rf"[{LETTER}]", text[end])
+        or text[end] in connectors
+    ):
+        end += 1
+
+    return text[start:end]
+
+
 def load_filter_dictionary_from_mongo() -> None:
     global SAFE_WORD_PREFIXES
 
@@ -449,14 +535,18 @@ def load_filter_dictionary_from_mongo() -> None:
     exact_swear_words = normalized_strings("exact_swear_words")
 
     if safe_words:
-        SAFE_WORDS.clear()
         SAFE_WORDS.update(safe_words)
 
     if safe_prefixes:
-        SAFE_WORD_PREFIXES = tuple(sorted(safe_prefixes, key=len, reverse=True))
+        SAFE_WORD_PREFIXES = tuple(
+            sorted(
+                set(SAFE_WORD_PREFIXES).union(safe_prefixes),
+                key=len,
+                reverse=True,
+            )
+        )
 
     if exact_swear_words:
-        EXACT_SWEAR_WORDS.clear()
         EXACT_SWEAR_WORDS.update(exact_swear_words)
 
     rebuild_compiled_patterns()
@@ -489,7 +579,11 @@ def clean_message_text(text: str) -> tuple[str, int]:
 
         original = match.group(0)
 
-        if is_safe_word(original):
+        if (
+            is_safe_word(original)
+            or is_safe_word(surrounding_word(match))
+            or is_safe_word(surrounding_compound(match))
+        ):
             return original
 
         total_count += 1
