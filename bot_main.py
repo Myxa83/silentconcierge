@@ -2,17 +2,16 @@
 # bot_main.py
 
 import asyncio
-import json
 import os
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from config.loader import DISCORD_TOKEN, GUILD_ID
+from data.mongo_store import append_event, migrate_legacy_event_logs
 
 
 INTENTS = discord.Intents.default()
@@ -23,32 +22,12 @@ INTENTS.voice_states = True
 # Коги, команди яких синкуються ГЛОБАЛЬНО (для продажу іншим серверам)
 GLOBAL_COGS = {"bbf_cog_eng"}
 
-LOG_DIR = Path("logs")
-RUNTIME_LOG = LOG_DIR / "runtime_logs.json"
-
-
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _append_runtime_log(entry: dict) -> None:
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        data = []
-        if RUNTIME_LOG.exists():
-            try:
-                data = json.loads(RUNTIME_LOG.read_text(encoding="utf-8"))
-                if not isinstance(data, list):
-                    data = []
-            except Exception:
-                data = []
-        data.append(entry)
-        RUNTIME_LOG.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
+    append_event("runtime_logs", entry)
 
 
 def _get_global_cmd_names(bot: commands.Bot) -> set[str]:
@@ -140,6 +119,7 @@ class SilentBot(commands.Bot):
     async def setup_hook(self) -> None:
         print("[BOOT] bot_main.py started")
         print("[BOOT] CWD:", os.getcwd())
+        migrate_legacy_event_logs()
 
         # Визначаємо home guild
         try:
