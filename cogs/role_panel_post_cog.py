@@ -2,11 +2,12 @@
 # cogs/roles_panel_cog.py
 
 from __future__ import annotations
-import json
+import re
 import discord
-from pathlib import Path
 from discord.ext import commands
 from discord import app_commands
+
+from data.gear_store import get_member_gear
 
 # ========================= IDS =========================
 ROLE_SVITOCH = 1383410423704846396
@@ -22,6 +23,7 @@ ROLE_COOKIE_EATER = 1455029601238515869
 ROLE_MARILYN = 1448268130097958912
 ROLE_FOREMAN = 1455037068307861636
 ROLE_SUFFERING = 1406569206815658077 # Страждущі
+MIN_SUFFERING_AP = 290
 
 # ========================= DROPDOWN CONFIG =========================
 DROPDOWN_ROLES: dict[str, int] = {
@@ -33,6 +35,12 @@ DROPDOWN_ROLES: dict[str, int] = {
     "Прораб Іванич": ROLE_FOREMAN,
     "Страждущі": ROLE_SUFFERING,
 }
+
+
+def _parse_stat(value) -> int:
+    match = re.search(r"\d+", str(value or ""))
+    return int(match.group()) if match else 0
+
 
 # ========================= STYLE =========================
 ASL = "<a:ASL:1447205981133209773>"
@@ -63,7 +71,6 @@ class RoleSelect(discord.ui.Select):
 
         member = interaction.user
         guild = interaction.guild
-        user_id = str(member.id)
 
         # 1. Перевірка на роль Світоч
         if not any(r.id == ROLE_SVITOCH for r in member.roles):
@@ -73,31 +80,38 @@ class RoleSelect(discord.ui.Select):
         
         # 2. ПЕРЕВІРКА ГІРУ ДЛЯ "СТРАЖДУЩІ" (290+ AP)
         if str(ROLE_SUFFERING) in selected_values:
-            history_path = Path("data/garmoth_history.json")
-            has_gear = False
-            current_ap = 0
-            
-            if history_path.exists():
-                try:
-                    with open(history_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        user_history = data.get(user_id, [])
-                        if user_history and isinstance(user_history, list):
-                            last_entry = user_history[-1] # Останній запис
-                            current_ap = last_entry.get("ap", 0)
-                            if current_ap >= 290:
-                                has_gear = True
-                except Exception:
-                    pass
+            gear = get_member_gear(member.id)
+            current_ap = _parse_stat(gear.get("ap")) if gear else 0
 
-            if not has_gear:
+            if not gear:
                 msg = (
-                    f"❌ **Твій АП ({current_ap}) недостатній для ролі Страждущі (потрібно 290+).**\n\n"
-                    "Онови дані на [Garmoth](https://garmoth.com/) та надай скріншот у цьому каналі:\n"
-                    "https://discord.com/channels/1323454227816906802/1358443998603120824 \n\n"
-                    "Після оновлення даних у системі ти зможеш взяти цю роль."
+                    "❌ **Я ще не бачу твого гіру в базі.**\n\n"
+                    "Надішли актуальне посилання на свій профіль "
+                    "Garmoth у канал:\n"
+                    "https://discord.com/channels/"
+                    "1323454227816906802/1358443998603120824\n\n"
+                    "Після наступного оновлення бази спробуй "
+                    "обрати роль ще раз."
                 )
-                return await interaction.response.send_message(msg, ephemeral=True)
+                return await interaction.response.send_message(
+                    msg,
+                    ephemeral=True,
+                )
+
+            if current_ap < MIN_SUFFERING_AP:
+                msg = (
+                    f"❌ **Твій AP: {current_ap}. Для ролі Страждущі "
+                    f"потрібно {MIN_SUFFERING_AP}+ AP.**\n\n"
+                    "Онови профіль Garmoth і надішли актуальне "
+                    "посилання в канал:\n"
+                    "https://discord.com/channels/"
+                    "1323454227816906802/1358443998603120824\n\n"
+                    "Після наступного оновлення бази спробуй ще раз."
+                )
+                return await interaction.response.send_message(
+                    msg,
+                    ephemeral=True,
+                )
 
         # 3. Оновлення ролей
         selected_ids = {int(v) for v in selected_values}
