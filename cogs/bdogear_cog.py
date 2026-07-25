@@ -5,50 +5,13 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
-import re
 import os
+import re
+import shutil
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
-from pymongo import MongoClient
-
-# ─── MongoDB ─────────────────────────────────────────────────────────────────
-
-_mongo_client = None
-_mongo_db     = None
-
-def _get_db():
-    global _mongo_client, _mongo_db
-    if _mongo_db is None:
-        url = os.environ.get("MONGODB_URL", "")
-        _mongo_client = MongoClient(url, serverSelectionTimeoutMS=10000)
-        _mongo_db     = _mongo_client["silentconcierge"]
-    return _mongo_db
-
-
-def _load_gear() -> dict:
-    try:
-        db  = _get_db()
-        doc = db["members_gear"].find_one({"_id": "main"})
-        if doc:
-            doc.pop("_id", None)
-            return doc
-    except Exception as e:
-        print(f"[GEAR][ERROR] load: {e}")
-    return {}
-
-
-def _save_gear(data: dict) -> None:
-    try:
-        db = _get_db()
-        db["members_gear"].replace_one(
-            {"_id": "main"},
-            {"_id": "main", **data},
-            upsert=True,
-        )
-        print(f"[GEAR] Збережено гравців: {len(data)}")
-    except Exception as e:
-        print(f"[GEAR][ERROR] save: {e}")
+from data.gear_store import load_gear, save_gear
 
 # ─── Cog ──────────────────────────────────────────────────────────────────────
 
@@ -57,130 +20,367 @@ class BdoGear(commands.Cog):
         self.bot              = bot
         self.delays           = [20, 41, 37, 12, 23, 5, 11, 14, 31, 38]
         self.target_channel_id = 1358443998603120824
+        self.update_lock = asyncio.Lock()
+        self.collect_running = False
+        self.collect_stop_requested = False
+        self.collect_stop_event = asyncio.Event()
+        self.collect_owner_id = None
 
-    async def fetch_stats_playwright(self, url: str) -> dict | None:
-        """Парсинг статсів через Playwright."""
+    @staticmethod
+    def _extract_garmoth_link(content: str) -> str | None:
+        pattern = (
+            r"https?://(?:www\.)?garmoth\.com/character/"
+            r"[A-Za-z0-9_-]+"
+        )
+        links = re.findall(pattern, content or "")
+        return links[-1] if links else None
+
+    @staticmethod
+    def _gear_entry(member, link: str, stats: dict) -> dict:
+        return {
+            "display_name": member.display_name,
+            "link": link,
+            "gs": stats["gs"],
+            "ap": stats["ap"],
+            "aap": stats["aap"],
+            "dp": stats["dp"],
+            "user_id": member.id,
+            "updated": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+    @staticmethod
+    def _chrome_options():
+        from selenium.webdriver.chrome.options import Options
+
+        options = Options()
+        options.page_load_strategy = "eager"
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+
+        browser_binary = (
+            os.getenv("CHROME_BIN")
+            or os.getenv("GOOGLE_CHROME_BIN")
+            or shutil.which("google-chrome")
+            or shutil.which("google-chrome-stable")
+            or shutil.which("chromium")
+            or shutil.which("chromium-browser")
+        )
+        if browser_binary:
+            options.binary_location = browser_binary
+
+        return options
+
+    @classmethod
+    def _fetch_stats_selenium_sync(cls, url: str) -> dict | None:
+        """Синхронно читає AP, AAP, DP і GS через Selenium."""
         try:
-            from playwright.async_api import async_playwright
-            from bs4 import BeautifulSoup
-        except ImportError as e:
-            print(f"[GEAR] Import error: {e}")
+            from selenium import webdriver
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.support.ui import WebDriverWait
+        except ImportError as error:
+            print(f"[GEAR][ERROR] Selenium import: {error}")
             return None
 
-        async with async_playwright() as p:
-            browser = None
+        driver = None
+        try:
             try:
-                browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    )
+                driver = webdriver.Chrome(options=cls._chrome_options())
+            except Exception as selenium_manager_error:
+                from selenium.webdriver.chrome.service import Service
+                from webdriver_manager.chrome import ChromeDriverManager
+
+                print(
+                    "[GEAR] Selenium Manager fallback: "
+                    f"{type(selenium_manager_error).__name__}: "
+                    f"{selenium_manager_error}"
                 )
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_selector(".grid-cols-4 .text-2xl", timeout=20000)
-                await asyncio.sleep(2)
+                driver = webdriver.Chrome(
+                    service=Service(ChromeDriverManager().install()),
+                    options=cls._chrome_options(),
+                )
 
-                content = await page.content()
-                from bs4 import BeautifulSoup
-                soup            = BeautifulSoup(content, "html.parser")
-                stats_container = soup.find("div", class_="grid-cols-4")
+            driver.set_page_load_timeout(60)
+            driver.get(url)
 
-                if stats_container:
-                    values = stats_container.find_all("p", class_="text-2xl")
-                    if len(values) >= 4:
-                        return {
-                            "ap":  values[0].get_text(strip=True),
-                            "aap": values[1].get_text(strip=True),
-                            "dp":  values[2].get_text(strip=True),
-                            "gs":  values[3].get_text(strip=True),
-                        }
-            except Exception as e:
-                print(f"[GEAR] Помилка збору {url}: {e}")
-            finally:
-                if browser:
-                    await browser.close()
+            values = WebDriverWait(driver, 30).until(
+                EC.presence_of_all_elements_located(
+                    (By.CSS_SELECTOR, ".grid-cols-4 .text-2xl")
+                )
+            )
+            texts = [value.text.strip() for value in values]
+            if len(texts) >= 4 and all(texts[:4]):
+                return {
+                    "ap": texts[0],
+                    "aap": texts[1],
+                    "dp": texts[2],
+                    "gs": texts[3],
+                }
+        except Exception as error:
+            print(
+                f"[GEAR][ERROR] Selenium {url}: "
+                f"{type(error).__name__}: {error}"
+            )
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+
         return None
+
+    async def fetch_stats_selenium(self, url: str) -> dict | None:
+        """Не блокує Discord під час роботи Selenium."""
+        return await asyncio.to_thread(
+            self._fetch_stats_selenium_sync,
+            url,
+        )
+
+    async def update_member_gear(
+        self,
+        member,
+        link: str,
+    ) -> dict | None:
+        """Зчитує Garmoth і зберігає актуальний гір за Discord ID."""
+        async with self.update_lock:
+            stats = await self.fetch_stats_selenium(link)
+            if not stats:
+                return None
+
+            gear_data = load_gear()
+            gear_data[str(member.id)] = self._gear_entry(
+                member,
+                link,
+                stats,
+            )
+            return stats if save_gear(gear_data) else None
 
     async def run_mass_collect(self, interaction: discord.Interaction, channel: discord.TextChannel):
         """Масовий збір статсів."""
         await interaction.followup.send(f"⚙️ **Запуск...** Отримую дані з #{channel.name}")
 
-        gear_data = _load_gear()
+        gear_data = load_gear()
         count     = 0
-        pattern   = r"https?://(?:www\.)?garmoth\.com/character/\S+"
+        stopped   = False
 
-        messages       = [msg async for msg in channel.history(limit=500)]
-        valid_messages = [m for m in messages if "garmoth.com/character/" in m.content]
-        valid_messages.reverse()  # старі → нові
+        messages = [msg async for msg in channel.history(limit=500)]
+        valid_messages = [
+            message
+            for message in messages
+            if self._extract_garmoth_link(message.content)
+        ]
+        valid_messages.reverse()
 
-        for message in valid_messages:
-            links = re.findall(pattern, message.content)
-            if not links:
-                continue
+        try:
+            for message in valid_messages:
+                if self.collect_stop_requested:
+                    stopped = True
+                    break
 
-            author_name = message.author.display_name
-            link        = links[-1]
-            count      += 1
-            stats       = await self.fetch_stats_playwright(link)
-            unix_time   = int(time.time())
-            wait_time   = self.delays[(count - 1) % len(self.delays)]
+                link = self._extract_garmoth_link(message.content)
+                if not link:
+                    continue
 
-            embed = discord.Embed(
-                title       = "✨ Garmoth Profile Updated",
-                description = f"Дані гравця **{author_name}** оновлено.",
-                color       = discord.Color.blue(),
-                timestamp   = datetime.now(),
+                author_name = message.author.display_name
+                count      += 1
+                stats       = await self.fetch_stats_selenium(link)
+                unix_time   = int(time.time())
+                wait_time   = self.delays[
+                    (count - 1) % len(self.delays)
+                ]
+
+                embed = discord.Embed(
+                    title="✨ Garmoth Profile Updated",
+                    description=(
+                        f"Дані гравця **{author_name}** оновлено."
+                    ),
+                    color=discord.Color.blue(),
+                    timestamp=datetime.now(),
+                )
+
+                if stats:
+                    embed.add_field(
+                        name="⚔️ AP/AAP",
+                        value=f"{stats['ap']} / {stats['aap']}",
+                        inline=True,
+                    )
+                    embed.add_field(
+                        name="🛡️ DP",
+                        value=stats["dp"],
+                        inline=True,
+                    )
+                    embed.add_field(
+                        name="🌟 GS",
+                        value=f"**{stats['gs']}**",
+                        inline=True,
+                    )
+                    gear_data[str(message.author.id)] = (
+                        self._gear_entry(
+                            message.author,
+                            link,
+                            stats,
+                        )
+                    )
+                else:
+                    embed.add_field(
+                        name="Статус",
+                        value=(
+                            "❌ Не вдалося зчитати Garmoth. "
+                            "Це технічна помилка, а не ознака "
+                            "приватного профілю."
+                        ),
+                        inline=False,
+                    )
+
+                embed.add_field(
+                    name="🕒 Час",
+                    value=f"<t:{unix_time}:f>",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="🔗 Посилання",
+                    value=f"[Garmoth]({link})",
+                    inline=False,
+                )
+                embed.set_footer(
+                    text=(
+                        f"Прогрес: {count} | "
+                        f"Очікування: {wait_time}с"
+                    ),
+                    icon_url=message.author.display_avatar.url,
+                )
+
+                await interaction.channel.send(embed=embed)
+
+                if self.collect_stop_requested:
+                    stopped = True
+                    break
+
+                try:
+                    await asyncio.wait_for(
+                        self.collect_stop_event.wait(),
+                        timeout=wait_time,
+                    )
+                    stopped = True
+                    break
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            save_gear(gear_data)
+            self.collect_running = False
+            self.collect_stop_requested = False
+            self.collect_stop_event.clear()
+            self.collect_owner_id = None
+
+        players_count = len(load_gear())
+        if stopped:
+            await interaction.channel.send(
+                f"⏹️ **Збір зупинено.** Оброблено профілів: "
+                f"{count}. У базі гравців: {players_count}"
             )
-
-            if stats:
-                embed.add_field(name="⚔️ AP/AAP", value=f"{stats['ap']} / {stats['aap']}", inline=True)
-                embed.add_field(name="🛡️ DP",     value=stats["dp"],                        inline=True)
-                embed.add_field(name="🌟 GS",      value=f"**{stats['gs']}**",               inline=True)
-
-                gear_data[author_name.lower()] = {
-                    "display_name": author_name,
-                    "link":         link,
-                    "gs":           stats["gs"],
-                    "ap":           stats["ap"],
-                    "aap":          stats["aap"],
-                    "dp":           stats["dp"],
-                    "user_id":      message.author.id,
-                    "updated":      datetime.now().strftime("%d.%m.%Y %H:%M"),
-                }
-            else:
-                embed.add_field(name="Статус", value="❌ Не вдалося зчитати (Private?)", inline=False)
-
-            embed.add_field(name="🕒 Час",       value=f"<t:{unix_time}:f>",          inline=False)
-            embed.add_field(name="🔗 Посилання", value=f"[Garmoth]({link})",          inline=False)
-            embed.set_footer(
-                text     = f"Прогрес: {count} | Очікування: {wait_time}с",
-                icon_url = message.author.display_avatar.url,
+        else:
+            await interaction.channel.send(
+                f"✅ **Парсинг завершено!** В базі тепер гравців: "
+                f"{players_count}"
             )
-
-            await interaction.channel.send(embed=embed)
-            await asyncio.sleep(wait_time)
-
-        _save_gear(gear_data)
-        await interaction.channel.send(
-            f"✅ **Парсинг завершено!** В базі тепер гравців: {len(gear_data)}"
-        )
 
     # ── Slash команди ────────────────────────────────────────────────────────
 
     @app_commands.command(name="collect", description="Масовий збір статсів гільдії")
     async def collect(self, interaction: discord.Interaction):
+        if self.collect_running:
+            await interaction.response.send_message(
+                "⚠️ Збір уже працює. Для зупинки використай "
+                "`/collect_stop`.",
+                ephemeral=True,
+            )
+            return
+
+        self.collect_running = True
+        self.collect_stop_requested = False
+        self.collect_stop_event.clear()
+        self.collect_owner_id = interaction.user.id
         await interaction.response.defer()
-        channel = self.bot.get_channel(self.target_channel_id) or await self.bot.fetch_channel(self.target_channel_id)
-        await self.run_mass_collect(interaction, channel)
+        try:
+            channel = (
+                self.bot.get_channel(self.target_channel_id)
+                or await self.bot.fetch_channel(
+                    self.target_channel_id
+                )
+            )
+            await self.run_mass_collect(interaction, channel)
+        except Exception:
+            self.collect_running = False
+            self.collect_stop_requested = False
+            self.collect_stop_event.clear()
+            self.collect_owner_id = None
+            raise
+
+    @app_commands.command(
+        name="collect_stop",
+        description="Безпечно зупинити поточний збір Garmoth",
+    )
+    async def collect_stop(self, interaction: discord.Interaction):
+        if not self.collect_running:
+            await interaction.response.send_message(
+                "ℹ️ Збір зараз не запущений.",
+                ephemeral=True,
+            )
+            return
+
+        permissions = getattr(
+            interaction.user,
+            "guild_permissions",
+            None,
+        )
+        can_stop = (
+            interaction.user.id == self.collect_owner_id
+            or bool(
+                permissions
+                and permissions.manage_guild
+            )
+        )
+        if not can_stop:
+            await interaction.response.send_message(
+                "❌ Зупинити збір може той, хто його запустив, "
+                "або адміністратор.",
+                ephemeral=True,
+            )
+            return
+
+        self.collect_stop_requested = True
+        self.collect_stop_event.set()
+        await interaction.response.send_message(
+            "⏹️ Зупинку прийнято. Завершую поточний профіль, "
+            "зберігаю дані й не переходжу до наступного.",
+            ephemeral=True,
+        )
 
     @app_commands.command(name="gear_find", description="Знайти ГС гравця за нікнеймом")
     @app_commands.describe(nickname="Нікнейм гравця в Discord")
     async def gear_find(self, interaction: discord.Interaction, nickname: str):
-        gear_data = _load_gear()
-        user_info = gear_data.get(nickname.lower())
+        gear_data = load_gear()
+        nickname_key = nickname.casefold()
+        user_info = next(
+            (
+                value
+                for value in gear_data.values()
+                if str(value.get("display_name", "")).casefold()
+                == nickname_key
+            ),
+            None,
+        )
 
         if not user_info:
             await interaction.response.send_message(
@@ -204,7 +404,7 @@ class BdoGear(commands.Cog):
 
     @app_commands.command(name="gear_list", description="Показати всіх гравців у базі")
     async def gear_list(self, interaction: discord.Interaction):
-        gear_data = _load_gear()
+        gear_data = load_gear()
         if not gear_data:
             await interaction.response.send_message("ℹ️ База порожня. Запустіть `/collect`.", ephemeral=True)
             return
@@ -243,24 +443,17 @@ class BdoGear(commands.Cog):
             await interaction.followup.send("❌ Невірне посилання. Потрібно garmoth.com/character/...", ephemeral=True)
             return
 
-        stats = await self.fetch_stats_playwright(посилання)
+        stats = await self.update_member_gear(
+            interaction.user,
+            посилання,
+        )
         if not stats:
-            await interaction.followup.send("❌ Не вдалося зчитати дані (профіль приватний?)", ephemeral=True)
+            await interaction.followup.send(
+                "❌ Не вдалося зчитати Garmoth через технічну помилку. "
+                "Профіль може бути публічним.",
+                ephemeral=True,
+            )
             return
-
-        gear_data   = _load_gear()
-        author_name = interaction.user.display_name
-        gear_data[author_name.lower()] = {
-            "display_name": author_name,
-            "link":         посилання,
-            "gs":           stats["gs"],
-            "ap":           stats["ap"],
-            "aap":          stats["aap"],
-            "dp":           stats["dp"],
-            "user_id":      interaction.user.id,
-            "updated":      datetime.now().strftime("%d.%m.%Y %H:%M"),
-        }
-        _save_gear(gear_data)
 
         await interaction.followup.send(
             f"✅ Твої дані оновлено!\n"
