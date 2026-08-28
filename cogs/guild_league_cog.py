@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
 from discord.ext import commands
-
-from data.mongo_store import load_state, save_state
 
 
 GUILD_ID = 1323454227816906802
@@ -24,6 +24,8 @@ TZ = ZoneInfo("Europe/Berlin")
 COLOR = 0x3F3A78
 FOOTER = "Silent Concierge by Myxa | Ліга гільдій"
 
+DATA_FILE = Path("data/guild_league.json")
+
 ROLES = {
     "tank": ("🛡️", "Tank"),
     "dps": ("⚔️", "DPS"),
@@ -31,7 +33,7 @@ ROLES = {
 }
 
 
-def fresh() -> dict:
+def fresh_state() -> dict:
     return {
         "channel_id": CHANNEL_ID,
         "message_id": None,
@@ -45,18 +47,65 @@ def role_text(key: str | None) -> str:
     return f"{value[0]} {value[1]}" if value else "❔ роль не обрана"
 
 
+def load_json_state() -> dict:
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not DATA_FILE.exists():
+        return fresh_state()
+
+    try:
+        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("root is not an object")
+    except Exception as exc:
+        print(f"[GUILD_LEAGUE][JSON][LOAD ERROR] {type(exc).__name__}: {exc}")
+        return fresh_state()
+
+    base = fresh_state()
+    for key, value in base.items():
+        data.setdefault(key, value)
+
+    if not isinstance(data.get("packs"), list):
+        data["packs"] = []
+    if not isinstance(data.get("roles"), dict):
+        data["roles"] = {}
+
+    for p in data["packs"]:
+        p.setdefault("members", [])
+        p.setdefault("pending", [])
+        p.setdefault("leader_role", None)
+        p.setdefault("start_ts", None)
+
+    return data
+
+
+def save_json_state(state: dict) -> None:
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DATA_FILE.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(DATA_FILE)
+
+
 def get_pack(state: dict, number: int) -> dict | None:
-    return next((p for p in state["packs"] if p["number"] == number), None)
+    return next(
+        (p for p in state["packs"] if int(p["number"]) == int(number)),
+        None,
+    )
 
 
-def user_pack(state: dict, user_id: int | str) -> tuple[dict | None, str | None]:
+def user_pack(
+    state: dict,
+    user_id: int | str,
+) -> tuple[dict | None, str | None]:
     uid = str(user_id)
     for p in state["packs"]:
-        if p.get("leader_id") == uid:
+        if str(p.get("leader_id")) == uid:
             return p, "leader"
-        if any(x["user_id"] == uid for x in p.get("members", [])):
+        if any(str(x.get("user_id")) == uid for x in p.get("members", [])):
             return p, "member"
-        if any(x["user_id"] == uid for x in p.get("pending", [])):
+        if any(str(x.get("user_id")) == uid for x in p.get("pending", [])):
             return p, "pending"
     return None, None
 
@@ -80,13 +129,18 @@ def date_options() -> list[discord.SelectOption]:
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
     now = datetime.now(TZ)
     result = []
+
     for offset in range(14):
         day = (now + timedelta(days=offset)).date()
         result.append(
             discord.SelectOption(
-                label=f"{day_names[day.weekday()]}, {day.strftime('%d.%m.%Y')}",
+                label=f"{day_names[day.weekday()]}, {day:%d.%m.%Y}",
                 value=day.isoformat(),
-                description="слоти з 13:00" if day.weekday() >= 5 else "слоти з 17:00",
+                description=(
+                    "слоти з 13:00 до 01:00"
+                    if day.weekday() >= 5
+                    else "слоти з 17:00 до 01:00"
+                ),
             )
         )
     return result
@@ -116,35 +170,53 @@ def time_slots(day_iso: str) -> list[tuple[str, int]]:
     result = []
     while current <= end:
         suffix = " (+1 день)" if current.date() != day else ""
-        result.append((f"{current:%H:%M}{suffix}", int(current.timestamp())))
+        result.append(
+            (
+                f"{current:%H:%M}{suffix}",
+                int(current.timestamp()),
+            )
+        )
         current += timedelta(minutes=20)
+
     return result
 
 
-def pack_embed(number: int, p: dict | None, bot_user) -> discord.Embed:
+def pack_embed(
+    number: int,
+    p: dict | None,
+    bot_user,
+) -> discord.Embed:
     if p is None:
         embed = discord.Embed(
             title=f"Пачка {number}",
             description="*Ще не створена.*\nНатисніть **Створити пачку**.",
             color=COLOR,
         )
-        embed.add_field(name="Учасники", value="0/10", inline=True)
-        embed.add_field(name="PL", value="-", inline=True)
+        embed.add_field(
+            name="Учасники",
+            value="0/10",
+            inline=True,
+        )
+        embed.add_field(
+            name="PL",
+            value="-",
+            inline=True,
+        )
         embed.set_footer(
             text=FOOTER,
             icon_url=bot_user.display_avatar.url if bot_user else None,
         )
         return embed
 
-    leader_id = p["leader_id"]
+    leader_id = str(p["leader_id"])
     leader_role = p.get("leader_role")
     start_ts = p.get("start_ts")
 
     if start_ts:
         local = datetime.fromtimestamp(
             int(start_ts),
-            timezone.utc,
-        ).astimezone(TZ)
+            TZ,
+        )
         description = (
             f"**День і час:** <t:{int(start_ts)}:F>\n"
             f"**Час Ліги:** {local:%H:%M} {local.tzname()}\n"
@@ -163,11 +235,14 @@ def pack_embed(number: int, p: dict | None, bot_user) -> discord.Embed:
         color=COLOR,
     )
 
-    lines = [f"`01.` 👑 {role_text(leader_role)} <@{leader_id}>"]
+    lines = [
+        f"`01.` 👑 {role_text(leader_role)} <@{leader_id}>"
+    ]
     lines.extend(
-        f"`{index:02}.` {role_text(entry['role'])} <@{entry['user_id']}>"
+        f"`{index:02}.` {role_text(entry.get('role'))} <@{entry['user_id']}>"
         for index, entry in enumerate(p.get("members", []), 2)
     )
+
     embed.add_field(
         name=f"Учасники ({confirmed_count(p)}/10)",
         value="\n".join(lines),
@@ -175,19 +250,24 @@ def pack_embed(number: int, p: dict | None, bot_user) -> discord.Embed:
     )
 
     pending = p.get("pending", [])
-    pending_text = (
-        "\n".join(
-            f"⏳ {role_text(entry['role'])} <@{entry['user_id']}>"
+    if pending:
+        pending_text = "\n".join(
+            f"⏳ {role_text(entry.get('role'))} <@{entry['user_id']}>"
             for entry in pending
         )
-        if pending
-        else "Немає"
-    )
+        pending_text += (
+            "\n\n**PL:** відкрий `Керування PL` → "
+            "`Підтвердити заявку`."
+        )
+    else:
+        pending_text = "Немає"
+
     embed.add_field(
         name=f"Заявки PL ({len(pending)})",
         value=pending_text[:1024],
         inline=False,
     )
+
     embed.set_footer(
         text=FOOTER,
         icon_url=bot_user.display_avatar.url if bot_user else None,
@@ -215,7 +295,10 @@ class SimpleSelect(discord.ui.Select):
         self.kind = kind
         self.meta = meta or {}
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ):
         value = self.values[0]
 
         if self.kind == "pack":
@@ -264,8 +347,12 @@ class TimeView(discord.ui.View):
         slots = time_slots(day)
 
         options = [
-            discord.SelectOption(label=label, value=str(timestamp))
-            for label, timestamp in slots[page * 25 : (page + 1) * 25]
+            discord.SelectOption(
+                label=label,
+                value=str(timestamp),
+            )
+            for label, timestamp
+            in slots[page * 25 : (page + 1) * 25]
         ]
 
         select = discord.ui.Select(
@@ -273,10 +360,15 @@ class TimeView(discord.ui.View):
             options=options,
         )
 
-        async def chosen(interaction: discord.Interaction):
+        async def chosen(
+            interaction: discord.Interaction,
+        ):
             timestamp = int(select.values[0])
             if meta["mode"] == "create":
-                await cog.create_finish(interaction, timestamp)
+                await cog.create_finish(
+                    interaction,
+                    timestamp,
+                )
             else:
                 await cog.reschedule_finish(
                     interaction,
@@ -297,7 +389,9 @@ class TimeView(discord.ui.View):
                 disabled=(page + 1) * 25 >= len(slots),
             )
 
-            async def go_previous(interaction: discord.Interaction):
+            async def go_previous(
+                interaction: discord.Interaction,
+            ):
                 await interaction.response.edit_message(
                     view=TimeView(
                         cog,
@@ -307,7 +401,9 @@ class TimeView(discord.ui.View):
                     )
                 )
 
-            async def go_next(interaction: discord.Interaction):
+            async def go_next(
+                interaction: discord.Interaction,
+            ):
                 await interaction.response.edit_message(
                     view=TimeView(
                         cog,
@@ -326,13 +422,13 @@ class TimeView(discord.ui.View):
 class PLSelect(discord.ui.Select):
     def __init__(self, cog):
         actions = [
-            ("🔄", "Оновити повідомлення", "refresh"),
-            ("📋", "Переглянути заявки", "pending"),
-            ("✅", "Підтвердити учасника", "approve"),
+            ("✅", "Підтвердити заявку", "approve"),
             ("❌", "Відхилити заявку", "reject"),
+            ("📋", "Переглянути заявки", "pending"),
             ("🗑️", "Видалити учасника", "remove"),
             ("📅", "Змінити день / час", "reschedule"),
             ("👑", "Передати PL", "leader"),
+            ("🔄", "Оновити повідомлення", "refresh"),
             ("⛔", "Скасувати пачку", "cancel"),
         ]
         super().__init__(
@@ -350,7 +446,10 @@ class PLSelect(discord.ui.Select):
         )
         self.cog = cog
 
-    async def callback(self, interaction: discord.Interaction):
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ):
         await self.cog.pl_action(
             interaction,
             self.values[0],
@@ -366,6 +465,7 @@ class MainView(discord.ui.View):
             ("dps", discord.ButtonStyle.danger),
             ("shai", discord.ButtonStyle.success),
         )
+
         for key, style in role_buttons:
             button = discord.ui.Button(
                 label=ROLES[key][1],
@@ -379,7 +479,10 @@ class MainView(discord.ui.View):
                 interaction: discord.Interaction,
                 selected=key,
             ):
-                await cog.set_role(interaction, selected)
+                await cog.set_role(
+                    interaction,
+                    selected,
+                )
 
             button.callback = choose_role
             self.add_item(button)
@@ -390,14 +493,20 @@ class MainView(discord.ui.View):
                 "✅",
                 discord.ButtonStyle.success,
                 "league_signup",
-                lambda interaction: cog.begin_signup(interaction, False),
+                lambda interaction: cog.begin_signup(
+                    interaction,
+                    False,
+                ),
             ),
             (
                 "Перейти",
                 "🔁",
                 discord.ButtonStyle.primary,
                 "league_move",
-                lambda interaction: cog.begin_signup(interaction, True),
+                lambda interaction: cog.begin_signup(
+                    interaction,
+                    True,
+                ),
             ),
             (
                 "Відписатися",
@@ -415,13 +524,23 @@ class MainView(discord.ui.View):
             ),
         ]
 
-        for label, emoji, style, custom_id, callback in actions:
+        for (
+            label,
+            emoji,
+            style,
+            custom_id,
+            callback,
+        ) in actions:
             button = discord.ui.Button(
                 label=label,
                 emoji=emoji,
                 style=style,
                 custom_id=custom_id,
-                row=1 if custom_id != "league_create" else 2,
+                row=(
+                    1
+                    if custom_id != "league_create"
+                    else 2
+                ),
             )
             button.callback = callback
             self.add_item(button)
@@ -456,6 +575,7 @@ class CancelView(discord.ui.View):
                 ephemeral=True,
             )
             return
+
         await self.cog.cancel(
             interaction,
             self.number,
@@ -477,35 +597,22 @@ class CancelView(discord.ui.View):
 
 
 class GuildLeagueCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+    def __init__(
+        self,
+        bot: commands.Bot,
+    ):
         self.bot = bot
-        self.state = (
-            load_state(
-                "guild_league",
-                fresh(),
-                document_id="main",
-            )
-            or fresh()
-        )
+        self.state = load_json_state()
         self.lock = asyncio.Lock()
 
-        for key, value in fresh().items():
-            self.state.setdefault(key, value)
-
-        for p in self.state.get("packs", []):
-            p.setdefault("members", [])
-            p.setdefault("pending", [])
-            p.setdefault("leader_role", None)
-            p.setdefault("start_ts", None)
-
     async def cog_load(self):
-        self.bot.add_view(MainView(self))
+        self.bot.add_view(
+            MainView(self)
+        )
 
     def save(self):
-        save_state(
-            "guild_league",
-            self.state,
-            document_id="main",
+        save_json_state(
+            self.state
         )
 
     async def ok_channel(
@@ -524,30 +631,45 @@ class GuildLeagueCog(commands.Cog):
         )
         return False
 
-    async def refresh(self):
+    async def fetch_panel_message(
+        self,
+    ) -> discord.Message | None:
         message_id = self.state.get("message_id")
         if not message_id:
-            return
+            return None
 
         channel = (
             self.bot.get_channel(CHANNEL_ID)
             or await self.bot.fetch_channel(CHANNEL_ID)
         )
+
         try:
-            message = await channel.fetch_message(
+            return await channel.fetch_message(
                 int(message_id)
             )
         except Exception:
+            return None
+
+    async def refresh(self):
+        message = await self.fetch_panel_message()
+        if message is None:
             return
 
         await message.edit(
             embeds=[
                 pack_embed(
                     number,
-                    get_pack(self.state, number),
+                    get_pack(
+                        self.state,
+                        number,
+                    ),
                     self.bot.user,
                 )
-                for number in range(1, MAX_PACKS + 1)
+                for number
+                in range(
+                    1,
+                    MAX_PACKS + 1,
+                )
             ],
             view=MainView(self),
         )
@@ -557,23 +679,38 @@ class GuildLeagueCog(commands.Cog):
         interaction: discord.Interaction,
         key: str,
     ):
-        if not await self.ok_channel(interaction):
+        if not await self.ok_channel(
+            interaction
+        ):
             return
 
-        uid = str(interaction.user.id)
+        uid = str(
+            interaction.user.id
+        )
         self.state["roles"][uid] = key
 
-        p, status = user_pack(self.state, uid)
+        p, membership = user_pack(
+            self.state,
+            uid,
+        )
+
         if p:
-            if status == "leader":
+            if membership == "leader":
                 p["leader_role"] = key
             else:
-                for entry in p["members"] + p["pending"]:
-                    if entry["user_id"] == uid:
+                for entry in (
+                    p.get("members", [])
+                    + p.get("pending", [])
+                ):
+                    if (
+                        str(entry["user_id"])
+                        == uid
+                    ):
                         entry["role"] = key
 
         self.save()
         await self.refresh()
+
         await interaction.response.send_message(
             f"Обрано **{role_text(key)}**.",
             ephemeral=True,
@@ -584,14 +721,22 @@ class GuildLeagueCog(commands.Cog):
         interaction: discord.Interaction,
         move: bool,
     ):
-        if not await self.ok_channel(interaction):
+        if not await self.ok_channel(
+            interaction
+        ):
             return
 
-        uid = str(interaction.user.id)
-        selected_role = self.state["roles"].get(uid)
-        current, current_status = user_pack(
-            self.state,
-            uid,
+        uid = str(
+            interaction.user.id
+        )
+        selected_role = (
+            self.state["roles"].get(uid)
+        )
+        current, current_status = (
+            user_pack(
+                self.state,
+                uid,
+            )
         )
 
         if not selected_role:
@@ -608,7 +753,10 @@ class GuildLeagueCog(commands.Cog):
             )
             return
 
-        if move and current_status == "leader":
+        if (
+            move
+            and current_status == "leader"
+        ):
             await interaction.response.send_message(
                 "PL спочатку має передати PL або скасувати пачку.",
                 ephemeral=True,
@@ -617,7 +765,10 @@ class GuildLeagueCog(commands.Cog):
 
         if not move and current:
             await interaction.response.send_message(
-                f"Ви вже в Пачці {current['number']}. Використайте Перейти.",
+                (
+                    f"Ви вже в Пачці {current['number']}. "
+                    "Використайте Перейти."
+                ),
                 ephemeral=True,
             )
             return
@@ -629,7 +780,8 @@ class GuildLeagueCog(commands.Cog):
             and confirmed_count(p) < MAX_MEMBERS
             and (
                 current is None
-                or p["number"] != current["number"]
+                or p["number"]
+                != current["number"]
             )
         ]
 
@@ -646,19 +798,26 @@ class GuildLeagueCog(commands.Cog):
                     f"Пачка {p['number']} | "
                     f"{confirmed_count(p)}/10"
                 ),
-                value=str(p["number"]),
+                value=str(
+                    p["number"]
+                ),
             )
             for p in available
         ]
 
         await interaction.response.send_message(
-            "Оберіть пачку. PL має підтвердити заявку:",
+            (
+                "Оберіть пачку. "
+                "Після цього заявка з'явиться у PL."
+            ),
             view=OneSelectView(
                 SimpleSelect(
                     self,
                     "pack",
                     options,
-                    meta={"move": move},
+                    meta={
+                        "move": move,
+                    },
                 )
             ),
             ephemeral=True,
@@ -671,18 +830,28 @@ class GuildLeagueCog(commands.Cog):
         move: bool,
     ):
         async with self.lock:
-            p = get_pack(self.state, number)
-            uid = str(interaction.user.id)
-            selected_role = self.state["roles"].get(uid)
-            current, current_status = user_pack(
+            p = get_pack(
                 self.state,
-                uid,
+                number,
+            )
+            uid = str(
+                interaction.user.id
+            )
+            selected_role = (
+                self.state["roles"].get(uid)
+            )
+            current, current_status = (
+                user_pack(
+                    self.state,
+                    uid,
+                )
             )
 
             if (
                 not p
                 or not p.get("start_ts")
-                or confirmed_count(p) >= MAX_MEMBERS
+                or confirmed_count(p)
+                >= MAX_MEMBERS
             ):
                 await interaction.response.edit_message(
                     content="Пачка недоступна.",
@@ -700,28 +869,69 @@ class GuildLeagueCog(commands.Cog):
             if current:
                 current["members"] = [
                     x
-                    for x in current["members"]
-                    if x["user_id"] != uid
+                    for x in current.get(
+                        "members",
+                        [],
+                    )
+                    if str(x["user_id"])
+                    != uid
                 ]
                 current["pending"] = [
                     x
-                    for x in current["pending"]
-                    if x["user_id"] != uid
+                    for x in current.get(
+                        "pending",
+                        [],
+                    )
+                    if str(x["user_id"])
+                    != uid
                 ]
 
+            p["pending"] = [
+                x
+                for x in p.get(
+                    "pending",
+                    [],
+                )
+                if str(x["user_id"])
+                != uid
+            ]
             p["pending"].append(
                 {
                     "user_id": uid,
                     "role": selected_role,
                 }
             )
+
             self.save()
             await self.refresh()
+
+            channel = (
+                self.bot.get_channel(
+                    CHANNEL_ID
+                )
+                or await self.bot.fetch_channel(
+                    CHANNEL_ID
+                )
+            )
+            await channel.send(
+                (
+                    f"<@{p['leader_id']}> нова заявка "
+                    f"до **Пачки {number}** від "
+                    f"<@{uid}> як **{role_text(selected_role)}**.\n"
+                    "Відкрий **Керування PL** → "
+                    "**Підтвердити заявку**."
+                ),
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                ),
+            )
 
         await interaction.response.edit_message(
             content=(
                 f"Заявку до **Пачки {number}** "
-                f"надіслано PL <@{p['leader_id']}>."
+                f"збережено. PL: <@{p['leader_id']}>."
             ),
             view=None,
         )
@@ -730,13 +940,16 @@ class GuildLeagueCog(commands.Cog):
         self,
         interaction: discord.Interaction,
     ):
-        if not await self.ok_channel(interaction):
+        if not await self.ok_channel(
+            interaction
+        ):
             return
 
-        p, status = user_pack(
+        p, membership = user_pack(
             self.state,
             interaction.user.id,
         )
+
         if not p:
             await interaction.response.send_message(
                 "Ви ніде не записані.",
@@ -744,29 +957,38 @@ class GuildLeagueCog(commands.Cog):
             )
             return
 
-        if status == "leader":
+        if membership == "leader":
             await interaction.response.send_message(
-                "PL має передати PL або скасувати пачку.",
+                (
+                    "PL має передати PL "
+                    "або скасувати пачку."
+                ),
                 ephemeral=True,
             )
             return
 
-        uid = str(interaction.user.id)
+        uid = str(
+            interaction.user.id
+        )
         p["members"] = [
             x
-            for x in p["members"]
-            if x["user_id"] != uid
+            for x in p.get("members", [])
+            if str(x["user_id"]) != uid
         ]
         p["pending"] = [
             x
-            for x in p["pending"]
-            if x["user_id"] != uid
+            for x in p.get("pending", [])
+            if str(x["user_id"]) != uid
         ]
 
         self.save()
         await self.refresh()
+
         await interaction.response.send_message(
-            f"Ви відписалися від Пачки {p['number']}.",
+            (
+                f"Ви відписалися "
+                f"від Пачки {p['number']}."
+            ),
             ephemeral=True,
         )
 
@@ -774,19 +996,30 @@ class GuildLeagueCog(commands.Cog):
         self,
         interaction: discord.Interaction,
     ):
-        if not await self.ok_channel(interaction):
+        if not await self.ok_channel(
+            interaction
+        ):
             return
 
-        uid = str(interaction.user.id)
-        selected_role = self.state["roles"].get(uid)
-        current, current_status = user_pack(
-            self.state,
-            uid,
+        uid = str(
+            interaction.user.id
+        )
+        selected_role = (
+            self.state["roles"].get(uid)
+        )
+        current, current_status = (
+            user_pack(
+                self.state,
+                uid,
+            )
         )
 
         if not selected_role:
             await interaction.response.send_message(
-                "Спочатку оберіть Tank, DPS або Shai. PL входить у 10 людей.",
+                (
+                    "Спочатку оберіть Tank, DPS або Shai. "
+                    "PL входить у 10 людей."
+                ),
                 ephemeral=True,
             )
             return
@@ -807,15 +1040,23 @@ class GuildLeagueCog(commands.Cog):
                 placeholder="Оберіть день",
             )
             await interaction.response.send_message(
-                f"Налаштування **Пачки {current['number']}**. Оберіть день:",
-                view=OneSelectView(select),
+                (
+                    f"Налаштування **Пачки {current['number']}**. "
+                    "Оберіть день:"
+                ),
+                view=OneSelectView(
+                    select
+                ),
                 ephemeral=True,
             )
             return
 
         if current:
             await interaction.response.send_message(
-                "Щоб стати PL нової пачки, спочатку вийдіть з поточної.",
+                (
+                    "Щоб стати PL нової пачки, "
+                    "спочатку вийдіть з поточної."
+                ),
                 ephemeral=True,
             )
             return
@@ -827,16 +1068,41 @@ class GuildLeagueCog(commands.Cog):
             )
             return
 
+        number = len(
+            self.state["packs"]
+        ) + 1
+
+        self.state["packs"].append(
+            {
+                "number": number,
+                "leader_id": uid,
+                "leader_role": selected_role,
+                "start_ts": None,
+                "members": [],
+                "pending": [],
+            }
+        )
+        self.save()
+        await self.refresh()
+
         select = SimpleSelect(
             self,
             "date",
             date_options(),
-            meta={"mode": "create"},
+            meta={
+                "mode": "create",
+                "pack": number,
+            },
             placeholder="Оберіть день",
         )
         await interaction.response.send_message(
-            "Оберіть день:",
-            view=OneSelectView(select),
+            (
+                f"Ви стали PL **Пачки {number}**. "
+                "Оберіть день:"
+            ),
+            view=OneSelectView(
+                select
+            ),
             ephemeral=True,
         )
 
@@ -846,12 +1112,31 @@ class GuildLeagueCog(commands.Cog):
         timestamp: int,
     ):
         async with self.lock:
-            uid = str(interaction.user.id)
-            selected_role = self.state["roles"].get(uid)
-            current, current_status = user_pack(
-                self.state,
-                uid,
+            uid = str(
+                interaction.user.id
             )
+            selected_role = (
+                self.state["roles"].get(uid)
+            )
+            current, current_status = (
+                user_pack(
+                    self.state,
+                    uid,
+                )
+            )
+
+            if (
+                not current
+                or current_status != "leader"
+            ):
+                await interaction.response.edit_message(
+                    content=(
+                        "Ця пачка більше "
+                        "не належить вам."
+                    ),
+                    view=None,
+                )
+                return
 
             if not selected_role:
                 await interaction.response.edit_message(
@@ -860,72 +1145,20 @@ class GuildLeagueCog(commands.Cog):
                 )
                 return
 
-            if (
-                current
-                and current_status == "leader"
-                and not current.get("start_ts")
-            ):
-                current["leader_role"] = selected_role
-                current["start_ts"] = timestamp
-                number = current["number"]
-                self.save()
-                await self.refresh()
+            current["leader_role"] = selected_role
+            current["start_ts"] = timestamp
+            number = current["number"]
 
-                channel = (
-                    self.bot.get_channel(CHANNEL_ID)
-                    or await self.bot.fetch_channel(CHANNEL_ID)
-                )
-                await channel.send(
-                    (
-                        f"<@&{LEAGUE_ROLE_ID}> створено "
-                        f"**Пачку {number}** на "
-                        f"<t:{timestamp}:F>. "
-                        f"PL: <@{uid}>."
-                    ),
-                    allowed_mentions=discord.AllowedMentions(
-                        roles=True,
-                        users=True,
-                    ),
-                )
-                await interaction.response.edit_message(
-                    content=(
-                        f"**Пачку {number}** створено. "
-                        "Ви PL і перший учасник."
-                    ),
-                    view=None,
-                )
-                return
-
-            if current:
-                await interaction.response.edit_message(
-                    content="Ви вже в іншій пачці.",
-                    view=None,
-                )
-                return
-
-            if len(self.state["packs"]) >= MAX_PACKS:
-                await interaction.response.edit_message(
-                    content="Уже 3 пачки.",
-                    view=None,
-                )
-                return
-
-            number = len(self.state["packs"]) + 1
-            p = {
-                "number": number,
-                "leader_id": uid,
-                "leader_role": selected_role,
-                "start_ts": timestamp,
-                "members": [],
-                "pending": [],
-            }
-            self.state["packs"].append(p)
             self.save()
             await self.refresh()
 
             channel = (
-                self.bot.get_channel(CHANNEL_ID)
-                or await self.bot.fetch_channel(CHANNEL_ID)
+                self.bot.get_channel(
+                    CHANNEL_ID
+                )
+                or await self.bot.fetch_channel(
+                    CHANNEL_ID
+                )
             )
             await channel.send(
                 (
@@ -953,22 +1186,17 @@ class GuildLeagueCog(commands.Cog):
         interaction: discord.Interaction,
         action: str,
     ):
-        if not await self.ok_channel(interaction):
-            return
-
-        if action == "refresh":
-            await self.refresh()
-            await interaction.response.send_message(
-                "Оновлено.",
-                ephemeral=True,
-            )
+        if not await self.ok_channel(
+            interaction
+        ):
             return
 
         p = next(
             (
                 item
                 for item in self.state["packs"]
-                if item["leader_id"] == str(interaction.user.id)
+                if str(item.get("leader_id"))
+                == str(interaction.user.id)
             ),
             None,
         )
@@ -982,44 +1210,118 @@ class GuildLeagueCog(commands.Cog):
 
         number = p["number"]
 
-        if action == "pending":
-            text = (
-                "\n".join(
-                    f"{role_text(x['role'])} <@{x['user_id']}>"
-                    for x in p["pending"]
-                )
-                or "Заявок немає."
-            )
+        if action == "refresh":
+            await self.refresh()
             await interaction.response.send_message(
-                text,
+                "Оновлено.",
                 ephemeral=True,
             )
             return
 
-        if action in ("approve", "reject"):
-            entries = p["pending"]
-        elif action in ("remove", "leader"):
-            entries = p["members"]
-        else:
-            entries = []
-
-        if action in ("approve", "reject", "remove", "leader"):
-            if not entries:
+        if action == "pending":
+            pending = p.get(
+                "pending",
+                [],
+            )
+            if not pending:
                 await interaction.response.send_message(
-                    "Немає кого обирати.",
+                    "Заявок немає.",
                     ephemeral=True,
                 )
                 return
 
-            options = [
-                discord.SelectOption(
-                    label=f"{role_text(x['role'])} | {x['user_id']}",
-                    value=x["user_id"],
+            text = "\n".join(
+                (
+                    f"{role_text(x.get('role'))} "
+                    f"<@{x['user_id']}>"
                 )
-                for x in entries[:25]
-            ]
+                for x in pending
+            )
             await interaction.response.send_message(
-                "Оберіть учасника:",
+                (
+                    f"**Заявки до Пачки {number}:**\n"
+                    f"{text}\n\n"
+                    "Для прийняття обери в "
+                    "**Керування PL** пункт "
+                    "**Підтвердити заявку**."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if action in (
+            "approve",
+            "reject",
+        ):
+            entries = p.get(
+                "pending",
+                [],
+            )
+        elif action in (
+            "remove",
+            "leader",
+        ):
+            entries = p.get(
+                "members",
+                [],
+            )
+        else:
+            entries = []
+
+        if action in (
+            "approve",
+            "reject",
+            "remove",
+            "leader",
+        ):
+            if not entries:
+                await interaction.response.send_message(
+                    (
+                        "Заявок немає."
+                        if action in (
+                            "approve",
+                            "reject",
+                        )
+                        else "Немає кого обирати."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            options = []
+            for entry in entries[:25]:
+                member = (
+                    interaction.guild.get_member(
+                        int(entry["user_id"])
+                    )
+                    if interaction.guild
+                    else None
+                )
+                name = (
+                    member.display_name
+                    if member
+                    else str(
+                        entry["user_id"]
+                    )
+                )
+                options.append(
+                    discord.SelectOption(
+                        label=f"{name} | {role_text(entry.get('role'))}"[:100],
+                        value=str(
+                            entry["user_id"]
+                        ),
+                    )
+                )
+
+            prompt = {
+                "approve": "Кого підтвердити?",
+                "reject": "Чию заявку відхилити?",
+                "remove": "Кого видалити з пачки?",
+                "leader": "Кому передати PL?",
+            }[action]
+
+            await interaction.response.send_message(
+                prompt,
                 view=OneSelectView(
                     SimpleSelect(
                         self,
@@ -1048,7 +1350,9 @@ class GuildLeagueCog(commands.Cog):
             )
             await interaction.response.send_message(
                 "Оберіть новий день:",
-                view=OneSelectView(select),
+                view=OneSelectView(
+                    select
+                ),
                 ephemeral=True,
             )
             return
@@ -1072,10 +1376,19 @@ class GuildLeagueCog(commands.Cog):
         target: int,
     ):
         async with self.lock:
-            p = get_pack(self.state, number)
-            uid = str(target)
+            p = get_pack(
+                self.state,
+                number,
+            )
+            uid = str(
+                target
+            )
 
-            if not p or p["leader_id"] != str(interaction.user.id):
+            if (
+                not p
+                or str(p.get("leader_id"))
+                != str(interaction.user.id)
+            ):
                 await interaction.response.edit_message(
                     content="Ви вже не PL.",
                     view=None,
@@ -1083,9 +1396,12 @@ class GuildLeagueCog(commands.Cog):
                 return
 
             if action == "approve":
-                if confirmed_count(p) >= MAX_MEMBERS:
+                if (
+                    confirmed_count(p)
+                    >= MAX_MEMBERS
+                ):
                     await interaction.response.edit_message(
-                        content="Пачка 10/10.",
+                        content="Пачка вже 10/10.",
                         view=None,
                     )
                     return
@@ -1093,8 +1409,12 @@ class GuildLeagueCog(commands.Cog):
                 entry = next(
                     (
                         x
-                        for x in p["pending"]
-                        if x["user_id"] == uid
+                        for x in p.get(
+                            "pending",
+                            [],
+                        )
+                        if str(x["user_id"])
+                        == uid
                     ),
                     None,
                 )
@@ -1105,32 +1425,56 @@ class GuildLeagueCog(commands.Cog):
                     )
                     return
 
-                p["pending"].remove(entry)
-                p["members"].append(entry)
-                message = f"<@{uid}> підтверджено."
+                p["pending"].remove(
+                    entry
+                )
+                p["members"].append(
+                    entry
+                )
+                message = (
+                    f"<@{uid}> підтверджено "
+                    f"в Пачку {number}."
+                )
 
             elif action == "reject":
                 p["pending"] = [
                     x
-                    for x in p["pending"]
-                    if x["user_id"] != uid
+                    for x in p.get(
+                        "pending",
+                        [],
+                    )
+                    if str(x["user_id"])
+                    != uid
                 ]
-                message = "Заявку відхилено."
+                message = (
+                    "Заявку відхилено."
+                )
 
             elif action == "remove":
                 p["members"] = [
                     x
-                    for x in p["members"]
-                    if x["user_id"] != uid
+                    for x in p.get(
+                        "members",
+                        [],
+                    )
+                    if str(x["user_id"])
+                    != uid
                 ]
-                message = f"<@{uid}> видалено."
+                message = (
+                    f"<@{uid}> видалено "
+                    f"з Пачки {number}."
+                )
 
-            else:
+            elif action == "leader":
                 entry = next(
                     (
                         x
-                        for x in p["members"]
-                        if x["user_id"] == uid
+                        for x in p.get(
+                            "members",
+                            [],
+                        )
+                        if str(x["user_id"])
+                        == uid
                     ),
                     None,
                 )
@@ -1142,14 +1486,34 @@ class GuildLeagueCog(commands.Cog):
                     return
 
                 old_leader = {
-                    "user_id": p["leader_id"],
-                    "role": p.get("leader_role"),
+                    "user_id": str(
+                        p["leader_id"]
+                    ),
+                    "role": p.get(
+                        "leader_role"
+                    ),
                 }
-                p["members"].remove(entry)
-                p["members"].insert(0, old_leader)
+
+                p["members"].remove(
+                    entry
+                )
+                p["members"].insert(
+                    0,
+                    old_leader,
+                )
                 p["leader_id"] = uid
-                p["leader_role"] = entry["role"]
-                message = f"PL передано <@{uid}>."
+                p["leader_role"] = (
+                    entry.get("role")
+                )
+                message = (
+                    f"PL передано <@{uid}>."
+                )
+            else:
+                await interaction.response.edit_message(
+                    content="Невідома дія.",
+                    view=None,
+                )
+                return
 
             self.save()
             await self.refresh()
@@ -1165,8 +1529,15 @@ class GuildLeagueCog(commands.Cog):
         number: int,
         timestamp: int,
     ):
-        p = get_pack(self.state, number)
-        if not p or p["leader_id"] != str(interaction.user.id):
+        p = get_pack(
+            self.state,
+            number,
+        )
+        if (
+            not p
+            or str(p.get("leader_id"))
+            != str(interaction.user.id)
+        ):
             await interaction.response.edit_message(
                 content="Ви вже не PL.",
                 view=None,
@@ -1176,8 +1547,12 @@ class GuildLeagueCog(commands.Cog):
         p["start_ts"] = timestamp
         self.save()
         await self.refresh()
+
         await interaction.response.edit_message(
-            content=f"Час змінено на <t:{timestamp}:F>.",
+            content=(
+                f"Час змінено на "
+                f"<t:{timestamp}:F>."
+            ),
             view=None,
         )
 
@@ -1186,8 +1561,15 @@ class GuildLeagueCog(commands.Cog):
         interaction: discord.Interaction,
         number: int,
     ):
-        p = get_pack(self.state, number)
-        if not p or p["leader_id"] != str(interaction.user.id):
+        p = get_pack(
+            self.state,
+            number,
+        )
+        if (
+            not p
+            or str(p.get("leader_id"))
+            != str(interaction.user.id)
+        ):
             await interaction.response.edit_message(
                 content="Ви вже не PL.",
                 view=None,
@@ -1197,80 +1579,159 @@ class GuildLeagueCog(commands.Cog):
         self.state["packs"] = [
             item
             for item in self.state["packs"]
-            if item["number"] != number
+            if int(item["number"])
+            != int(number)
         ]
-        for index, item in enumerate(self.state["packs"], 1):
+
+        for index, item in enumerate(
+            self.state["packs"],
+            1,
+        ):
             item["number"] = index
 
         self.save()
         await self.refresh()
+
         await interaction.response.edit_message(
-            content=f"Пачку {number} скасовано. Нумерацію оновлено.",
+            content=(
+                f"Пачку {number} скасовано. "
+                "Нумерацію оновлено."
+            ),
             view=None,
         )
 
+    async def ensure_first_pack(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if self.state["packs"]:
+            return
+
+        uid = str(
+            interaction.user.id
+        )
+        self.state["packs"].append(
+            {
+                "number": 1,
+                "leader_id": uid,
+                "leader_role": (
+                    self.state["roles"].get(
+                        uid
+                    )
+                ),
+                "start_ts": None,
+                "members": [],
+                "pending": [],
+            }
+        )
+        self.save()
+
     @app_commands.command(
         name="guild_league_panel",
-        description="Створити панель Ліги гільдій",
+        description="Створити або оновити панель Ліги гільдій",
     )
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    @app_commands.guilds(
+        discord.Object(
+            id=GUILD_ID
+        )
+    )
     async def panel(
         self,
         interaction: discord.Interaction,
     ):
-        is_admin = interaction.user.guild_permissions.administrator
+        is_admin = (
+            interaction.user
+            .guild_permissions
+            .administrator
+        )
         has_league_role = (
-            isinstance(interaction.user, discord.Member)
+            isinstance(
+                interaction.user,
+                discord.Member,
+            )
             and any(
-                role.id == LEAGUE_ROLE_ID
-                for role in interaction.user.roles
+                role.id
+                == LEAGUE_ROLE_ID
+                for role
+                in interaction.user.roles
             )
         )
 
-        if not (is_admin or has_league_role):
+        if not (
+            is_admin
+            or has_league_role
+        ):
             await interaction.response.send_message(
-                f"Команда доступна учасникам <@&{LEAGUE_ROLE_ID}>.",
+                (
+                    "Команда доступна учасникам "
+                    f"<@&{LEAGUE_ROLE_ID}>."
+                ),
                 ephemeral=True,
             )
             return
 
-        if interaction.channel_id != CHANNEL_ID:
+        if (
+            interaction.channel_id
+            != CHANNEL_ID
+        ):
             await interaction.response.send_message(
                 f"Запустіть у <#{CHANNEL_ID}>.",
                 ephemeral=True,
             )
             return
 
-        if not self.state["packs"]:
-            uid = str(interaction.user.id)
-            self.state["packs"].append(
-                {
-                    "number": 1,
-                    "leader_id": uid,
-                    "leader_role": self.state["roles"].get(uid),
-                    "start_ts": None,
-                    "members": [],
-                    "pending": [],
-                }
+        await self.ensure_first_pack(
+            interaction
+        )
+
+        existing = await self.fetch_panel_message()
+        embeds = [
+            pack_embed(
+                number,
+                get_pack(
+                    self.state,
+                    number,
+                ),
+                self.bot.user,
             )
-            self.save()
+            for number
+            in range(
+                1,
+                MAX_PACKS + 1,
+            )
+        ]
+
+        if existing:
+            await existing.edit(
+                embeds=embeds,
+                view=MainView(self),
+            )
+            await interaction.response.send_message(
+                (
+                    "Панель Ліги оновлено. "
+                    f"{existing.jump_url}"
+                ),
+                ephemeral=True,
+            )
+            return
 
         await interaction.response.send_message(
-            embeds=[
-                pack_embed(
-                    number,
-                    get_pack(self.state, number),
-                    self.bot.user,
-                )
-                for number in range(1, MAX_PACKS + 1)
-            ],
+            embeds=embeds,
             view=MainView(self),
         )
 
-        message = await interaction.original_response()
-        self.state["message_id"] = message.id
+        message = (
+            await interaction.original_response()
+        )
+        self.state["message_id"] = (
+            message.id
+        )
         self.save()
 
 
-async def setup(bot: commands.Bot):
-    await bot.add_cog(GuildLeagueCog(bot))
+async def setup(
+    bot: commands.Bot,
+):
+    await bot.add_cog(
+        GuildLeagueCog(bot)
+    )
