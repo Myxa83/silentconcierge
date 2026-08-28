@@ -87,7 +87,7 @@ def pack_embed(no, p, bot):
         local = datetime.fromtimestamp(ts, timezone.utc).astimezone(TZ)
         e = discord.Embed(title=f"Пачка {no} | {status(p)}", color=COLOR,
             description=f"**День і час:** <t:{ts}:F>\n**Час Ліги:** {local:%H:%M} {local.tzname()}\n**PL:** <@{p['leader_id']}> | {role_text(p['leader_role'])}")
-        lines = [f"`01.` 👑 {role_text(p['leader_role'])} <@{p['leader_id']}>"]
+        lines = [f"`01.` 👑 {role_text(p['leader_role'])} <@{p['leader_id']}>" ]
         lines += [f"`{i:02}.` {role_text(x['role'])} <@{x['user_id']}>" for i, x in enumerate(p["members"], 2)]
         e.add_field(name=f"Учасники ({count(p)}/10)", value="\n".join(lines), inline=False)
         pend = "\n".join(f"⏳ {role_text(x['role'])} <@{x['user_id']}>" for x in p["pending"]) or "Немає"
@@ -315,7 +315,10 @@ class GuildLeagueCog(commands.Cog):
     @app_commands.command(name="guild_league_panel", description="Створити панель Ліги гільдій")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def panel(self,itx):
-        if not itx.user.guild_permissions.administrator: return await itx.response.send_message("Тільки для адміністратора.",ephemeral=True)
+        is_admin = itx.user.guild_permissions.administrator
+        has_league_role = isinstance(itx.user, discord.Member) and any(r.id == LEAGUE_ROLE_ID for r in itx.user.roles)
+        if not (is_admin or has_league_role):
+            return await itx.response.send_message(f"Команда доступна учасникам <@&{LEAGUE_ROLE_ID}>.", ephemeral=True)
         if itx.channel_id!=CHANNEL_ID: return await itx.response.send_message(f"Запустіть у <#{CHANNEL_ID}>.",ephemeral=True)
         await itx.response.send_message(embeds=[pack_embed(i,pack(self.state,i),self.bot.user) for i in range(1,4)],view=MainView(self))
         msg=await itx.original_response(); self.state["message_id"]=msg.id; self.save()
