@@ -8,321 +8,1269 @@ from zoneinfo import ZoneInfo
 import discord
 from discord import app_commands
 from discord.ext import commands
+
 from data.mongo_store import load_state, save_state
+
 
 GUILD_ID = 1323454227816906802
 CHANNEL_ID = 1534917454977962076
 LEAGUE_ROLE_ID = 1450893024379797514
-MAX_PACKS, MIN_MEMBERS, MAX_MEMBERS = 3, 8, 10
+
+MAX_PACKS = 3
+MIN_MEMBERS = 8
+MAX_MEMBERS = 10
+
 TZ = ZoneInfo("Europe/Berlin")
 COLOR = 0x3F3A78
 FOOTER = "Silent Concierge by Myxa | Ліга гільдій"
-ROLES = {"tank": ("🛡️", "Tank"), "dps": ("⚔️", "DPS"), "shai": ("🧪", "Shai")}
+
+ROLES = {
+    "tank": ("🛡️", "Tank"),
+    "dps": ("⚔️", "DPS"),
+    "shai": ("🧪", "Shai"),
+}
 
 
-def fresh():
-    return {"channel_id": CHANNEL_ID, "message_id": None, "packs": [], "roles": {}}
+def fresh() -> dict:
+    return {
+        "channel_id": CHANNEL_ID,
+        "message_id": None,
+        "packs": [],
+        "roles": {},
+    }
 
 
-def role_text(key):
-    x = ROLES.get(key)
-    return f"{x[0]} {x[1]}" if x else "❔"
+def role_text(key: str | None) -> str:
+    value = ROLES.get(key or "")
+    return f"{value[0]} {value[1]}" if value else "❔ роль не обрана"
 
 
-def pack(state, no):
-    return next((p for p in state["packs"] if p["number"] == no), None)
+def get_pack(state: dict, number: int) -> dict | None:
+    return next((p for p in state["packs"] if p["number"] == number), None)
 
 
-def user_pack(state, uid):
-    uid = str(uid)
+def user_pack(state: dict, user_id: int | str) -> tuple[dict | None, str | None]:
+    uid = str(user_id)
     for p in state["packs"]:
-        if p["leader_id"] == uid:
+        if p.get("leader_id") == uid:
             return p, "leader"
-        if any(x["user_id"] == uid for x in p["members"]):
+        if any(x["user_id"] == uid for x in p.get("members", [])):
             return p, "member"
-        if any(x["user_id"] == uid for x in p["pending"]):
+        if any(x["user_id"] == uid for x in p.get("pending", [])):
             return p, "pending"
     return None, None
 
 
-def count(p):
-    return 1 + len(p["members"])
+def confirmed_count(p: dict) -> int:
+    return 1 + len(p.get("members", []))
 
 
-def status(p):
-    n = count(p)
-    return "🟢 Повна" if n >= 10 else "🟢 Готова" if n >= 8 else "🟡 Формується"
+def pack_status(p: dict) -> str:
+    if not p.get("start_ts"):
+        return "🟣 Налаштування"
+    total = confirmed_count(p)
+    if total >= MAX_MEMBERS:
+        return "🟢 Повна"
+    if total >= MIN_MEMBERS:
+        return "🟢 Готова"
+    return "🟡 Формується"
 
 
-def date_options():
-    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+def date_options() -> list[discord.SelectOption]:
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
     now = datetime.now(TZ)
-    out = []
-    for i in range(14):
-        d = (now + timedelta(days=i)).date()
-        out.append(discord.SelectOption(
-            label=f"{days[d.weekday()]}, {d.strftime('%d.%m.%Y')}", value=d.isoformat(),
-            description="з 13:00" if d.weekday() >= 5 else "з 17:00"))
-    return out
+    result = []
+    for offset in range(14):
+        day = (now + timedelta(days=offset)).date()
+        result.append(
+            discord.SelectOption(
+                label=f"{day_names[day.weekday()]}, {day.strftime('%d.%m.%Y')}",
+                value=day.isoformat(),
+                description="слоти з 13:00" if day.weekday() >= 5 else "слоти з 17:00",
+            )
+        )
+    return result
 
 
-def time_slots(day_iso):
-    d = datetime.fromisoformat(day_iso).date()
-    start = datetime(d.year, d.month, d.day, 13 if d.weekday() >= 5 else 17, tzinfo=TZ)
-    end = datetime(d.year, d.month, d.day, 1, tzinfo=TZ) + timedelta(days=1)
-    out = []
-    while start <= end:
-        out.append((start.strftime("%H:%M") + (" (+1 день)" if start.date() != d else ""), int(start.timestamp())))
-        start += timedelta(minutes=20)
-    return out
+def time_slots(day_iso: str) -> list[tuple[str, int]]:
+    day = datetime.fromisoformat(day_iso).date()
+    start_hour = 13 if day.weekday() >= 5 else 17
+
+    current = datetime(
+        day.year,
+        day.month,
+        day.day,
+        start_hour,
+        0,
+        tzinfo=TZ,
+    )
+    end = datetime(
+        day.year,
+        day.month,
+        day.day,
+        1,
+        0,
+        tzinfo=TZ,
+    ) + timedelta(days=1)
+
+    result = []
+    while current <= end:
+        suffix = " (+1 день)" if current.date() != day else ""
+        result.append((f"{current:%H:%M}{suffix}", int(current.timestamp())))
+        current += timedelta(minutes=20)
+    return result
 
 
-def pack_embed(no, p, bot):
-    if not p:
-        e = discord.Embed(title=f"Пачка {no}", description="*Ще не створена.*\nНатисніть **Створити пачку**.", color=COLOR)
-        e.add_field(name="Учасники", value="0/10", inline=True)
-        e.add_field(name="PL", value="-", inline=True)
+def pack_embed(number: int, p: dict | None, bot_user) -> discord.Embed:
+    if p is None:
+        embed = discord.Embed(
+            title=f"Пачка {number}",
+            description="*Ще не створена.*\nНатисніть **Створити пачку**.",
+            color=COLOR,
+        )
+        embed.add_field(name="Учасники", value="0/10", inline=True)
+        embed.add_field(name="PL", value="-", inline=True)
+        embed.set_footer(
+            text=FOOTER,
+            icon_url=bot_user.display_avatar.url if bot_user else None,
+        )
+        return embed
+
+    leader_id = p["leader_id"]
+    leader_role = p.get("leader_role")
+    start_ts = p.get("start_ts")
+
+    if start_ts:
+        local = datetime.fromtimestamp(
+            int(start_ts),
+            timezone.utc,
+        ).astimezone(TZ)
+        description = (
+            f"**День і час:** <t:{int(start_ts)}:F>\n"
+            f"**Час Ліги:** {local:%H:%M} {local.tzname()}\n"
+            f"**PL:** <@{leader_id}> | {role_text(leader_role)}"
+        )
     else:
-        ts = p["start_ts"]
-        local = datetime.fromtimestamp(ts, timezone.utc).astimezone(TZ)
-        e = discord.Embed(title=f"Пачка {no} | {status(p)}", color=COLOR,
-            description=f"**День і час:** <t:{ts}:F>\n**Час Ліги:** {local:%H:%M} {local.tzname()}\n**PL:** <@{p['leader_id']}> | {role_text(p['leader_role'])}")
-        lines = [f"`01.` 👑 {role_text(p['leader_role'])} <@{p['leader_id']}>" ]
-        lines += [f"`{i:02}.` {role_text(x['role'])} <@{x['user_id']}>" for i, x in enumerate(p["members"], 2)]
-        e.add_field(name=f"Учасники ({count(p)}/10)", value="\n".join(lines), inline=False)
-        pend = "\n".join(f"⏳ {role_text(x['role'])} <@{x['user_id']}>" for x in p["pending"]) or "Немає"
-        e.add_field(name=f"Заявки PL ({len(p['pending'])})", value=pend[:1024], inline=False)
-    e.set_footer(text=FOOTER, icon_url=bot.display_avatar.url if bot else None)
-    return e
+        description = (
+            f"**PL:** <@{leader_id}> | {role_text(leader_role)}\n"
+            "**День і час:** ще не обрані\n"
+            "PL має обрати роль і натиснути **Створити пачку**."
+        )
+
+    embed = discord.Embed(
+        title=f"Пачка {number} | {pack_status(p)}",
+        description=description,
+        color=COLOR,
+    )
+
+    lines = [f"`01.` 👑 {role_text(leader_role)} <@{leader_id}>"]
+    lines.extend(
+        f"`{index:02}.` {role_text(entry['role'])} <@{entry['user_id']}>"
+        for index, entry in enumerate(p.get("members", []), 2)
+    )
+    embed.add_field(
+        name=f"Учасники ({confirmed_count(p)}/10)",
+        value="\n".join(lines),
+        inline=False,
+    )
+
+    pending = p.get("pending", [])
+    pending_text = (
+        "\n".join(
+            f"⏳ {role_text(entry['role'])} <@{entry['user_id']}>"
+            for entry in pending
+        )
+        if pending
+        else "Немає"
+    )
+    embed.add_field(
+        name=f"Заявки PL ({len(pending)})",
+        value=pending_text[:1024],
+        inline=False,
+    )
+    embed.set_footer(
+        text=FOOTER,
+        icon_url=bot_user.display_avatar.url if bot_user else None,
+    )
+    return embed
 
 
 class SimpleSelect(discord.ui.Select):
-    def __init__(self, cog, kind, options, *, meta=None, placeholder="Оберіть"):
-        super().__init__(placeholder=placeholder, options=options, min_values=1, max_values=1)
-        self.cog, self.kind, self.meta = cog, kind, meta or {}
+    def __init__(
+        self,
+        cog,
+        kind: str,
+        options: list[discord.SelectOption],
+        *,
+        meta: dict | None = None,
+        placeholder: str = "Оберіть",
+    ):
+        super().__init__(
+            placeholder=placeholder,
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+        self.cog = cog
+        self.kind = kind
+        self.meta = meta or {}
 
-    async def callback(self, itx):
-        v = self.values[0]
+    async def callback(self, interaction: discord.Interaction):
+        value = self.values[0]
+
         if self.kind == "pack":
-            await self.cog.signup_to(itx, int(v), self.meta["move"])
-        elif self.kind == "date":
-            await itx.response.edit_message(content="Оберіть час:", view=TimeView(self.cog, v, self.meta))
-        elif self.kind == "member":
-            await self.cog.member_action(itx, self.meta["pack"], self.meta["action"], int(v))
+            await self.cog.signup_to(
+                interaction,
+                int(value),
+                self.meta["move"],
+            )
+            return
+
+        if self.kind == "date":
+            await interaction.response.edit_message(
+                content="Оберіть час:",
+                view=TimeView(
+                    self.cog,
+                    value,
+                    self.meta,
+                ),
+            )
+            return
+
+        if self.kind == "member":
+            await self.cog.member_action(
+                interaction,
+                self.meta["pack"],
+                self.meta["action"],
+                int(value),
+            )
 
 
 class OneSelectView(discord.ui.View):
-    def __init__(self, select):
+    def __init__(self, select: discord.ui.Select):
         super().__init__(timeout=180)
         self.add_item(select)
 
 
 class TimeView(discord.ui.View):
-    def __init__(self, cog, day, meta, page=0):
+    def __init__(
+        self,
+        cog,
+        day: str,
+        meta: dict,
+        page: int = 0,
+    ):
         super().__init__(timeout=180)
         slots = time_slots(day)
-        opts = [discord.SelectOption(label=a, value=str(b)) for a, b in slots[page*25:(page+1)*25]]
-        s = discord.ui.Select(placeholder="Оберіть час", options=opts)
-        async def chosen(itx):
-            ts = int(s.values[0])
-            await (cog.create_finish(itx, ts) if meta["mode"] == "create" else cog.reschedule_finish(itx, meta["pack"], ts))
-        s.callback = chosen
-        self.add_item(s)
+
+        options = [
+            discord.SelectOption(label=label, value=str(timestamp))
+            for label, timestamp in slots[page * 25 : (page + 1) * 25]
+        ]
+
+        select = discord.ui.Select(
+            placeholder="Оберіть час",
+            options=options,
+        )
+
+        async def chosen(interaction: discord.Interaction):
+            timestamp = int(select.values[0])
+            if meta["mode"] == "create":
+                await cog.create_finish(interaction, timestamp)
+            else:
+                await cog.reschedule_finish(
+                    interaction,
+                    meta["pack"],
+                    timestamp,
+                )
+
+        select.callback = chosen
+        self.add_item(select)
+
         if len(slots) > 25:
-            prev = discord.ui.Button(label="Раніше", disabled=page == 0)
-            nxt = discord.ui.Button(label="Пізніше", disabled=(page+1)*25 >= len(slots))
-            async def go_prev(itx): await itx.response.edit_message(view=TimeView(cog, day, meta, max(0, page-1)))
-            async def go_next(itx): await itx.response.edit_message(view=TimeView(cog, day, meta, page+1))
-            prev.callback, nxt.callback = go_prev, go_next
-            self.add_item(prev); self.add_item(nxt)
+            previous = discord.ui.Button(
+                label="Раніше",
+                disabled=page == 0,
+            )
+            next_page = discord.ui.Button(
+                label="Пізніше",
+                disabled=(page + 1) * 25 >= len(slots),
+            )
+
+            async def go_previous(interaction: discord.Interaction):
+                await interaction.response.edit_message(
+                    view=TimeView(
+                        cog,
+                        day,
+                        meta,
+                        max(0, page - 1),
+                    )
+                )
+
+            async def go_next(interaction: discord.Interaction):
+                await interaction.response.edit_message(
+                    view=TimeView(
+                        cog,
+                        day,
+                        meta,
+                        page + 1,
+                    )
+                )
+
+            previous.callback = go_previous
+            next_page.callback = go_next
+            self.add_item(previous)
+            self.add_item(next_page)
 
 
 class PLSelect(discord.ui.Select):
     def __init__(self, cog):
-        opts = [
-            ("🔄", "Оновити повідомлення", "refresh"), ("📋", "Переглянути заявки", "pending"),
-            ("✅", "Підтвердити учасника", "approve"), ("❌", "Відхилити заявку", "reject"),
-            ("🗑️", "Видалити учасника", "remove"), ("📅", "Змінити день / час", "reschedule"),
-            ("👑", "Передати PL", "leader"), ("⛔", "Скасувати пачку", "cancel")]
-        super().__init__(placeholder="Керування PL", custom_id="league_pl", row=3,
-            options=[discord.SelectOption(emoji=e, label=l, value=v) for e,l,v in opts])
+        actions = [
+            ("🔄", "Оновити повідомлення", "refresh"),
+            ("📋", "Переглянути заявки", "pending"),
+            ("✅", "Підтвердити учасника", "approve"),
+            ("❌", "Відхилити заявку", "reject"),
+            ("🗑️", "Видалити учасника", "remove"),
+            ("📅", "Змінити день / час", "reschedule"),
+            ("👑", "Передати PL", "leader"),
+            ("⛔", "Скасувати пачку", "cancel"),
+        ]
+        super().__init__(
+            placeholder="Керування PL",
+            custom_id="league_pl",
+            row=3,
+            options=[
+                discord.SelectOption(
+                    emoji=emoji,
+                    label=label,
+                    value=value,
+                )
+                for emoji, label, value in actions
+            ],
+        )
         self.cog = cog
-    async def callback(self, itx): await self.cog.pl_action(itx, self.values[0])
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.pl_action(
+            interaction,
+            self.values[0],
+        )
 
 
 class MainView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
-        for key, style in (("tank", discord.ButtonStyle.primary), ("dps", discord.ButtonStyle.danger), ("shai", discord.ButtonStyle.success)):
-            b = discord.ui.Button(label=ROLES[key][1], emoji=ROLES[key][0], style=style, custom_id=f"league_role_{key}", row=0)
-            async def cb(itx, k=key): await cog.set_role(itx, k)
-            b.callback = cb; self.add_item(b)
-        for label, emoji, style, cid, fn in [
-            ("Записатися","✅",discord.ButtonStyle.success,"league_signup",lambda i:cog.begin_signup(i,False)),
-            ("Перейти","🔁",discord.ButtonStyle.primary,"league_move",lambda i:cog.begin_signup(i,True)),
-            ("Відписатися","✖️",discord.ButtonStyle.danger,"league_leave",cog.leave),
-            ("Створити пачку","➕",discord.ButtonStyle.secondary,"league_create",cog.begin_create)]:
-            b = discord.ui.Button(label=label, emoji=emoji, style=style, custom_id=cid, row=1 if cid != "league_create" else 2)
-            b.callback = fn; self.add_item(b)
+
+        role_buttons = (
+            ("tank", discord.ButtonStyle.primary),
+            ("dps", discord.ButtonStyle.danger),
+            ("shai", discord.ButtonStyle.success),
+        )
+        for key, style in role_buttons:
+            button = discord.ui.Button(
+                label=ROLES[key][1],
+                emoji=ROLES[key][0],
+                style=style,
+                custom_id=f"league_role_{key}",
+                row=0,
+            )
+
+            async def choose_role(
+                interaction: discord.Interaction,
+                selected=key,
+            ):
+                await cog.set_role(interaction, selected)
+
+            button.callback = choose_role
+            self.add_item(button)
+
+        actions = [
+            (
+                "Записатися",
+                "✅",
+                discord.ButtonStyle.success,
+                "league_signup",
+                lambda interaction: cog.begin_signup(interaction, False),
+            ),
+            (
+                "Перейти",
+                "🔁",
+                discord.ButtonStyle.primary,
+                "league_move",
+                lambda interaction: cog.begin_signup(interaction, True),
+            ),
+            (
+                "Відписатися",
+                "✖️",
+                discord.ButtonStyle.danger,
+                "league_leave",
+                cog.leave,
+            ),
+            (
+                "Створити пачку",
+                "➕",
+                discord.ButtonStyle.secondary,
+                "league_create",
+                cog.begin_create,
+            ),
+        ]
+
+        for label, emoji, style, custom_id, callback in actions:
+            button = discord.ui.Button(
+                label=label,
+                emoji=emoji,
+                style=style,
+                custom_id=custom_id,
+                row=1 if custom_id != "league_create" else 2,
+            )
+            button.callback = callback
+            self.add_item(button)
+
         self.add_item(PLSelect(cog))
 
 
 class CancelView(discord.ui.View):
-    def __init__(self, cog, no, uid):
-        super().__init__(timeout=60); self.cog, self.no, self.uid = cog, no, uid
-    @discord.ui.button(label="Так, скасувати", style=discord.ButtonStyle.danger)
-    async def yes(self, itx, _):
-        if itx.user.id != self.uid: return await itx.response.send_message("Не ваше підтвердження.", ephemeral=True)
-        await self.cog.cancel(itx, self.no)
-    @discord.ui.button(label="Ні", style=discord.ButtonStyle.secondary)
-    async def no(self, itx, _): await itx.response.edit_message(content="Скасування відмінено.", view=None)
+    def __init__(
+        self,
+        cog,
+        number: int,
+        user_id: int,
+    ):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.number = number
+        self.user_id = user_id
+
+    @discord.ui.button(
+        label="Так, скасувати",
+        style=discord.ButtonStyle.danger,
+    )
+    async def yes(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "Не ваше підтвердження.",
+                ephemeral=True,
+            )
+            return
+        await self.cog.cancel(
+            interaction,
+            self.number,
+        )
+
+    @discord.ui.button(
+        label="Ні",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def no(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ):
+        await interaction.response.edit_message(
+            content="Скасування відмінено.",
+            view=None,
+        )
 
 
 class GuildLeagueCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot; self.state = load_state("guild_league", fresh(), document_id="main") or fresh(); self.lock = asyncio.Lock()
-        for k,v in fresh().items(): self.state.setdefault(k,v)
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.state = (
+            load_state(
+                "guild_league",
+                fresh(),
+                document_id="main",
+            )
+            or fresh()
+        )
+        self.lock = asyncio.Lock()
 
-    async def cog_load(self): self.bot.add_view(MainView(self))
-    def save(self): save_state("guild_league", self.state, document_id="main")
+        for key, value in fresh().items():
+            self.state.setdefault(key, value)
 
-    async def ok_channel(self, itx):
-        if itx.guild_id == GUILD_ID and itx.channel_id == CHANNEL_ID: return True
-        await itx.response.send_message(f"Працює тільки в <#{CHANNEL_ID}>.", ephemeral=True); return False
+        for p in self.state.get("packs", []):
+            p.setdefault("members", [])
+            p.setdefault("pending", [])
+            p.setdefault("leader_role", None)
+            p.setdefault("start_ts", None)
+
+    async def cog_load(self):
+        self.bot.add_view(MainView(self))
+
+    def save(self):
+        save_state(
+            "guild_league",
+            self.state,
+            document_id="main",
+        )
+
+    async def ok_channel(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if (
+            interaction.guild_id == GUILD_ID
+            and interaction.channel_id == CHANNEL_ID
+        ):
+            return True
+
+        await interaction.response.send_message(
+            f"Працює тільки в <#{CHANNEL_ID}>.",
+            ephemeral=True,
+        )
+        return False
 
     async def refresh(self):
-        mid = self.state.get("message_id")
-        if not mid: return
-        ch = self.bot.get_channel(CHANNEL_ID) or await self.bot.fetch_channel(CHANNEL_ID)
-        try: msg = await ch.fetch_message(int(mid))
-        except Exception: return
-        await msg.edit(embeds=[pack_embed(i, pack(self.state,i), self.bot.user) for i in range(1,4)], view=MainView(self))
+        message_id = self.state.get("message_id")
+        if not message_id:
+            return
 
-    async def set_role(self, itx, key):
-        if not await self.ok_channel(itx): return
-        uid = str(itx.user.id); self.state["roles"][uid] = key
-        p, s = user_pack(self.state, uid)
+        channel = (
+            self.bot.get_channel(CHANNEL_ID)
+            or await self.bot.fetch_channel(CHANNEL_ID)
+        )
+        try:
+            message = await channel.fetch_message(
+                int(message_id)
+            )
+        except Exception:
+            return
+
+        await message.edit(
+            embeds=[
+                pack_embed(
+                    number,
+                    get_pack(self.state, number),
+                    self.bot.user,
+                )
+                for number in range(1, MAX_PACKS + 1)
+            ],
+            view=MainView(self),
+        )
+
+    async def set_role(
+        self,
+        interaction: discord.Interaction,
+        key: str,
+    ):
+        if not await self.ok_channel(interaction):
+            return
+
+        uid = str(interaction.user.id)
+        self.state["roles"][uid] = key
+
+        p, status = user_pack(self.state, uid)
         if p:
-            if s == "leader": p["leader_role"] = key
+            if status == "leader":
+                p["leader_role"] = key
             else:
-                for x in p["members"] + p["pending"]:
-                    if x["user_id"] == uid: x["role"] = key
-        self.save(); await self.refresh(); await itx.response.send_message(f"Обрано **{role_text(key)}**.", ephemeral=True)
+                for entry in p["members"] + p["pending"]:
+                    if entry["user_id"] == uid:
+                        entry["role"] = key
 
-    async def begin_signup(self, itx, move):
-        if not await self.ok_channel(itx): return
-        uid = str(itx.user.id); role = self.state["roles"].get(uid); cur, s = user_pack(self.state, uid)
-        if not role: return await itx.response.send_message("Спочатку оберіть Tank, DPS або Shai.", ephemeral=True)
-        if move and not cur: return await itx.response.send_message("Ви ще ніде не записані.", ephemeral=True)
-        if move and s == "leader": return await itx.response.send_message("PL спочатку має передати PL або скасувати пачку.", ephemeral=True)
-        if not move and cur: return await itx.response.send_message(f"Ви вже в Пачці {cur['number']}. Використайте Перейти.", ephemeral=True)
-        nums = [p["number"] for p in self.state["packs"] if count(p) < 10 and (not cur or p["number"] != cur["number"])]
-        if not nums: return await itx.response.send_message("Немає доступної пачки.", ephemeral=True)
-        opts = [discord.SelectOption(label=f"Пачка {n} | {count(pack(self.state,n))}/10", value=str(n)) for n in nums]
-        await itx.response.send_message("Оберіть пачку. PL має підтвердити заявку:", view=OneSelectView(SimpleSelect(self,"pack",opts,meta={"move":move})), ephemeral=True)
+        self.save()
+        await self.refresh()
+        await interaction.response.send_message(
+            f"Обрано **{role_text(key)}**.",
+            ephemeral=True,
+        )
 
-    async def signup_to(self, itx, no, move):
+    async def begin_signup(
+        self,
+        interaction: discord.Interaction,
+        move: bool,
+    ):
+        if not await self.ok_channel(interaction):
+            return
+
+        uid = str(interaction.user.id)
+        selected_role = self.state["roles"].get(uid)
+        current, current_status = user_pack(
+            self.state,
+            uid,
+        )
+
+        if not selected_role:
+            await interaction.response.send_message(
+                "Спочатку оберіть Tank, DPS або Shai.",
+                ephemeral=True,
+            )
+            return
+
+        if move and not current:
+            await interaction.response.send_message(
+                "Ви ще ніде не записані.",
+                ephemeral=True,
+            )
+            return
+
+        if move and current_status == "leader":
+            await interaction.response.send_message(
+                "PL спочатку має передати PL або скасувати пачку.",
+                ephemeral=True,
+            )
+            return
+
+        if not move and current:
+            await interaction.response.send_message(
+                f"Ви вже в Пачці {current['number']}. Використайте Перейти.",
+                ephemeral=True,
+            )
+            return
+
+        available = [
+            p
+            for p in self.state["packs"]
+            if p.get("start_ts")
+            and confirmed_count(p) < MAX_MEMBERS
+            and (
+                current is None
+                or p["number"] != current["number"]
+            )
+        ]
+
+        if not available:
+            await interaction.response.send_message(
+                "Немає доступної створеної пачки.",
+                ephemeral=True,
+            )
+            return
+
+        options = [
+            discord.SelectOption(
+                label=(
+                    f"Пачка {p['number']} | "
+                    f"{confirmed_count(p)}/10"
+                ),
+                value=str(p["number"]),
+            )
+            for p in available
+        ]
+
+        await interaction.response.send_message(
+            "Оберіть пачку. PL має підтвердити заявку:",
+            view=OneSelectView(
+                SimpleSelect(
+                    self,
+                    "pack",
+                    options,
+                    meta={"move": move},
+                )
+            ),
+            ephemeral=True,
+        )
+
+    async def signup_to(
+        self,
+        interaction: discord.Interaction,
+        number: int,
+        move: bool,
+    ):
         async with self.lock:
-            p = pack(self.state,no); uid = str(itx.user.id); role = self.state["roles"].get(uid); cur,s = user_pack(self.state,uid)
-            if not p or count(p) >= 10: return await itx.response.edit_message(content="Пачка недоступна.", view=None)
-            if s == "leader": return await itx.response.edit_message(content="PL не може перейти напряму.", view=None)
-            if cur:
-                cur["members"] = [x for x in cur["members"] if x["user_id"] != uid]
-                cur["pending"] = [x for x in cur["pending"] if x["user_id"] != uid]
-            p["pending"].append({"user_id":uid,"role":role}); self.save(); await self.refresh()
-        await itx.response.edit_message(content=f"Заявку до **Пачки {no}** надіслано PL <@{p['leader_id']}>.", view=None)
+            p = get_pack(self.state, number)
+            uid = str(interaction.user.id)
+            selected_role = self.state["roles"].get(uid)
+            current, current_status = user_pack(
+                self.state,
+                uid,
+            )
 
-    async def leave(self, itx):
-        if not await self.ok_channel(itx): return
-        p,s = user_pack(self.state,itx.user.id)
-        if not p: return await itx.response.send_message("Ви ніде не записані.", ephemeral=True)
-        if s == "leader": return await itx.response.send_message("PL має передати PL або скасувати пачку.", ephemeral=True)
-        uid = str(itx.user.id); p["members"]=[x for x in p["members"] if x["user_id"]!=uid]; p["pending"]=[x for x in p["pending"] if x["user_id"]!=uid]
-        self.save(); await self.refresh(); await itx.response.send_message(f"Ви відписалися від Пачки {p['number']}.", ephemeral=True)
+            if (
+                not p
+                or not p.get("start_ts")
+                or confirmed_count(p) >= MAX_MEMBERS
+            ):
+                await interaction.response.edit_message(
+                    content="Пачка недоступна.",
+                    view=None,
+                )
+                return
 
-    async def begin_create(self, itx):
-        if not await self.ok_channel(itx): return
-        if len(self.state["packs"]) >= 3: return await itx.response.send_message("Уже створено всі 3 пачки.", ephemeral=True)
-        uid=str(itx.user.id)
-        if not self.state["roles"].get(uid): return await itx.response.send_message("Спочатку оберіть Tank, DPS або Shai. PL входить у 10 людей.", ephemeral=True)
-        if user_pack(self.state,uid)[0]: return await itx.response.send_message("Щоб стати PL нової пачки, спочатку вийдіть з поточної.", ephemeral=True)
-        s=SimpleSelect(self,"date",date_options(),meta={"mode":"create"},placeholder="Оберіть день")
-        await itx.response.send_message("Оберіть день:", view=OneSelectView(s), ephemeral=True)
+            if current_status == "leader":
+                await interaction.response.edit_message(
+                    content="PL не може перейти напряму.",
+                    view=None,
+                )
+                return
 
-    async def create_finish(self, itx, ts):
+            if current:
+                current["members"] = [
+                    x
+                    for x in current["members"]
+                    if x["user_id"] != uid
+                ]
+                current["pending"] = [
+                    x
+                    for x in current["pending"]
+                    if x["user_id"] != uid
+                ]
+
+            p["pending"].append(
+                {
+                    "user_id": uid,
+                    "role": selected_role,
+                }
+            )
+            self.save()
+            await self.refresh()
+
+        await interaction.response.edit_message(
+            content=(
+                f"Заявку до **Пачки {number}** "
+                f"надіслано PL <@{p['leader_id']}>."
+            ),
+            view=None,
+        )
+
+    async def leave(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if not await self.ok_channel(interaction):
+            return
+
+        p, status = user_pack(
+            self.state,
+            interaction.user.id,
+        )
+        if not p:
+            await interaction.response.send_message(
+                "Ви ніде не записані.",
+                ephemeral=True,
+            )
+            return
+
+        if status == "leader":
+            await interaction.response.send_message(
+                "PL має передати PL або скасувати пачку.",
+                ephemeral=True,
+            )
+            return
+
+        uid = str(interaction.user.id)
+        p["members"] = [
+            x
+            for x in p["members"]
+            if x["user_id"] != uid
+        ]
+        p["pending"] = [
+            x
+            for x in p["pending"]
+            if x["user_id"] != uid
+        ]
+
+        self.save()
+        await self.refresh()
+        await interaction.response.send_message(
+            f"Ви відписалися від Пачки {p['number']}.",
+            ephemeral=True,
+        )
+
+    async def begin_create(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if not await self.ok_channel(interaction):
+            return
+
+        uid = str(interaction.user.id)
+        selected_role = self.state["roles"].get(uid)
+        current, current_status = user_pack(
+            self.state,
+            uid,
+        )
+
+        if not selected_role:
+            await interaction.response.send_message(
+                "Спочатку оберіть Tank, DPS або Shai. PL входить у 10 людей.",
+                ephemeral=True,
+            )
+            return
+
+        if (
+            current
+            and current_status == "leader"
+            and not current.get("start_ts")
+        ):
+            select = SimpleSelect(
+                self,
+                "date",
+                date_options(),
+                meta={
+                    "mode": "create",
+                    "pack": current["number"],
+                },
+                placeholder="Оберіть день",
+            )
+            await interaction.response.send_message(
+                f"Налаштування **Пачки {current['number']}**. Оберіть день:",
+                view=OneSelectView(select),
+                ephemeral=True,
+            )
+            return
+
+        if current:
+            await interaction.response.send_message(
+                "Щоб стати PL нової пачки, спочатку вийдіть з поточної.",
+                ephemeral=True,
+            )
+            return
+
+        if len(self.state["packs"]) >= MAX_PACKS:
+            await interaction.response.send_message(
+                "Уже створено всі 3 пачки.",
+                ephemeral=True,
+            )
+            return
+
+        select = SimpleSelect(
+            self,
+            "date",
+            date_options(),
+            meta={"mode": "create"},
+            placeholder="Оберіть день",
+        )
+        await interaction.response.send_message(
+            "Оберіть день:",
+            view=OneSelectView(select),
+            ephemeral=True,
+        )
+
+    async def create_finish(
+        self,
+        interaction: discord.Interaction,
+        timestamp: int,
+    ):
         async with self.lock:
-            if len(self.state["packs"]) >= 3: return await itx.response.edit_message(content="Уже 3 пачки.", view=None)
-            uid=str(itx.user.id)
-            if user_pack(self.state,uid)[0]: return await itx.response.edit_message(content="Ви вже в іншій пачці.", view=None)
-            no=len(self.state["packs"])+1; p={"number":no,"leader_id":uid,"leader_role":self.state["roles"][uid],"start_ts":ts,"members":[],"pending":[]}
-            self.state["packs"].append(p); self.save(); await self.refresh()
-            ch=self.bot.get_channel(CHANNEL_ID); await ch.send(f"<@&{LEAGUE_ROLE_ID}> створено **Пачку {no}** на <t:{ts}:F>. PL: <@{uid}>.", allowed_mentions=discord.AllowedMentions(roles=True,users=True))
-        await itx.response.edit_message(content=f"**Пачку {no}** створено. Ви PL і перший учасник.", view=None)
+            uid = str(interaction.user.id)
+            selected_role = self.state["roles"].get(uid)
+            current, current_status = user_pack(
+                self.state,
+                uid,
+            )
 
-    async def pl_action(self, itx, action):
-        if not await self.ok_channel(itx): return
-        if action == "refresh": await self.refresh(); return await itx.response.send_message("Оновлено.", ephemeral=True)
-        p = next((x for x in self.state["packs"] if x["leader_id"]==str(itx.user.id)),None)
-        if not p: return await itx.response.send_message("Доступно тільки PL.", ephemeral=True)
-        no=p["number"]
-        if action=="pending":
-            t="\n".join(f"{role_text(x['role'])} <@{x['user_id']}>" for x in p["pending"]) or "Заявок немає."
-            return await itx.response.send_message(t, ephemeral=True)
-        if action in ("approve","reject"):
-            arr=p["pending"]
-        elif action in ("remove","leader"):
-            arr=p["members"]
-        else: arr=[]
-        if action in ("approve","reject","remove","leader"):
-            if not arr: return await itx.response.send_message("Немає кого обирати.", ephemeral=True)
-            opts=[discord.SelectOption(label=f"{role_text(x['role'])} | {x['user_id']}",value=x["user_id"]) for x in arr[:25]]
-            return await itx.response.send_message("Оберіть учасника:", view=OneSelectView(SimpleSelect(self,"member",opts,meta={"pack":no,"action":action})), ephemeral=True)
-        if action=="reschedule":
-            s=SimpleSelect(self,"date",date_options(),meta={"mode":"reschedule","pack":no},placeholder="Оберіть день")
-            return await itx.response.send_message("Оберіть новий день:", view=OneSelectView(s), ephemeral=True)
-        if action=="cancel": return await itx.response.send_message(f"Скасувати Пачку {no}?", view=CancelView(self,no,itx.user.id), ephemeral=True)
+            if not selected_role:
+                await interaction.response.edit_message(
+                    content="Спочатку оберіть роль.",
+                    view=None,
+                )
+                return
 
-    async def member_action(self,itx,no,action,target):
+            if (
+                current
+                and current_status == "leader"
+                and not current.get("start_ts")
+            ):
+                current["leader_role"] = selected_role
+                current["start_ts"] = timestamp
+                number = current["number"]
+                self.save()
+                await self.refresh()
+
+                channel = (
+                    self.bot.get_channel(CHANNEL_ID)
+                    or await self.bot.fetch_channel(CHANNEL_ID)
+                )
+                await channel.send(
+                    (
+                        f"<@&{LEAGUE_ROLE_ID}> створено "
+                        f"**Пачку {number}** на "
+                        f"<t:{timestamp}:F>. "
+                        f"PL: <@{uid}>."
+                    ),
+                    allowed_mentions=discord.AllowedMentions(
+                        roles=True,
+                        users=True,
+                    ),
+                )
+                await interaction.response.edit_message(
+                    content=(
+                        f"**Пачку {number}** створено. "
+                        "Ви PL і перший учасник."
+                    ),
+                    view=None,
+                )
+                return
+
+            if current:
+                await interaction.response.edit_message(
+                    content="Ви вже в іншій пачці.",
+                    view=None,
+                )
+                return
+
+            if len(self.state["packs"]) >= MAX_PACKS:
+                await interaction.response.edit_message(
+                    content="Уже 3 пачки.",
+                    view=None,
+                )
+                return
+
+            number = len(self.state["packs"]) + 1
+            p = {
+                "number": number,
+                "leader_id": uid,
+                "leader_role": selected_role,
+                "start_ts": timestamp,
+                "members": [],
+                "pending": [],
+            }
+            self.state["packs"].append(p)
+            self.save()
+            await self.refresh()
+
+            channel = (
+                self.bot.get_channel(CHANNEL_ID)
+                or await self.bot.fetch_channel(CHANNEL_ID)
+            )
+            await channel.send(
+                (
+                    f"<@&{LEAGUE_ROLE_ID}> створено "
+                    f"**Пачку {number}** на "
+                    f"<t:{timestamp}:F>. "
+                    f"PL: <@{uid}>."
+                ),
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True,
+                    users=True,
+                ),
+            )
+
+        await interaction.response.edit_message(
+            content=(
+                f"**Пачку {number}** створено. "
+                "Ви PL і перший учасник."
+            ),
+            view=None,
+        )
+
+    async def pl_action(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ):
+        if not await self.ok_channel(interaction):
+            return
+
+        if action == "refresh":
+            await self.refresh()
+            await interaction.response.send_message(
+                "Оновлено.",
+                ephemeral=True,
+            )
+            return
+
+        p = next(
+            (
+                item
+                for item in self.state["packs"]
+                if item["leader_id"] == str(interaction.user.id)
+            ),
+            None,
+        )
+
+        if not p:
+            await interaction.response.send_message(
+                "Доступно тільки PL.",
+                ephemeral=True,
+            )
+            return
+
+        number = p["number"]
+
+        if action == "pending":
+            text = (
+                "\n".join(
+                    f"{role_text(x['role'])} <@{x['user_id']}>"
+                    for x in p["pending"]
+                )
+                or "Заявок немає."
+            )
+            await interaction.response.send_message(
+                text,
+                ephemeral=True,
+            )
+            return
+
+        if action in ("approve", "reject"):
+            entries = p["pending"]
+        elif action in ("remove", "leader"):
+            entries = p["members"]
+        else:
+            entries = []
+
+        if action in ("approve", "reject", "remove", "leader"):
+            if not entries:
+                await interaction.response.send_message(
+                    "Немає кого обирати.",
+                    ephemeral=True,
+                )
+                return
+
+            options = [
+                discord.SelectOption(
+                    label=f"{role_text(x['role'])} | {x['user_id']}",
+                    value=x["user_id"],
+                )
+                for x in entries[:25]
+            ]
+            await interaction.response.send_message(
+                "Оберіть учасника:",
+                view=OneSelectView(
+                    SimpleSelect(
+                        self,
+                        "member",
+                        options,
+                        meta={
+                            "pack": number,
+                            "action": action,
+                        },
+                    )
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if action == "reschedule":
+            select = SimpleSelect(
+                self,
+                "date",
+                date_options(),
+                meta={
+                    "mode": "reschedule",
+                    "pack": number,
+                },
+                placeholder="Оберіть день",
+            )
+            await interaction.response.send_message(
+                "Оберіть новий день:",
+                view=OneSelectView(select),
+                ephemeral=True,
+            )
+            return
+
+        if action == "cancel":
+            await interaction.response.send_message(
+                f"Скасувати Пачку {number}?",
+                view=CancelView(
+                    self,
+                    number,
+                    interaction.user.id,
+                ),
+                ephemeral=True,
+            )
+
+    async def member_action(
+        self,
+        interaction: discord.Interaction,
+        number: int,
+        action: str,
+        target: int,
+    ):
         async with self.lock:
-            p=pack(self.state,no); uid=str(target)
-            if not p or p["leader_id"]!=str(itx.user.id): return await itx.response.edit_message(content="Ви вже не PL.",view=None)
-            if action=="approve":
-                if count(p)>=10: return await itx.response.edit_message(content="Пачка 10/10.",view=None)
-                x=next((x for x in p["pending"] if x["user_id"]==uid),None)
-                if not x: return await itx.response.edit_message(content="Заявку вже оброблено.",view=None)
-                p["pending"].remove(x); p["members"].append(x); msg=f"<@{uid}> підтверджено."
-            elif action=="reject": p["pending"]=[x for x in p["pending"] if x["user_id"]!=uid]; msg="Заявку відхилено."
-            elif action=="remove": p["members"]=[x for x in p["members"] if x["user_id"]!=uid]; msg=f"<@{uid}> видалено."
+            p = get_pack(self.state, number)
+            uid = str(target)
+
+            if not p or p["leader_id"] != str(interaction.user.id):
+                await interaction.response.edit_message(
+                    content="Ви вже не PL.",
+                    view=None,
+                )
+                return
+
+            if action == "approve":
+                if confirmed_count(p) >= MAX_MEMBERS:
+                    await interaction.response.edit_message(
+                        content="Пачка 10/10.",
+                        view=None,
+                    )
+                    return
+
+                entry = next(
+                    (
+                        x
+                        for x in p["pending"]
+                        if x["user_id"] == uid
+                    ),
+                    None,
+                )
+                if not entry:
+                    await interaction.response.edit_message(
+                        content="Заявку вже оброблено.",
+                        view=None,
+                    )
+                    return
+
+                p["pending"].remove(entry)
+                p["members"].append(entry)
+                message = f"<@{uid}> підтверджено."
+
+            elif action == "reject":
+                p["pending"] = [
+                    x
+                    for x in p["pending"]
+                    if x["user_id"] != uid
+                ]
+                message = "Заявку відхилено."
+
+            elif action == "remove":
+                p["members"] = [
+                    x
+                    for x in p["members"]
+                    if x["user_id"] != uid
+                ]
+                message = f"<@{uid}> видалено."
+
             else:
-                x=next((x for x in p["members"] if x["user_id"]==uid),None)
-                if not x: return await itx.response.edit_message(content="Учасника вже немає.",view=None)
-                old={"user_id":p["leader_id"],"role":p["leader_role"]}; p["members"].remove(x); p["members"].insert(0,old); p["leader_id"],p["leader_role"]=uid,x["role"]; msg=f"PL передано <@{uid}>."
-            self.save(); await self.refresh()
-        await itx.response.edit_message(content=msg,view=None)
+                entry = next(
+                    (
+                        x
+                        for x in p["members"]
+                        if x["user_id"] == uid
+                    ),
+                    None,
+                )
+                if not entry:
+                    await interaction.response.edit_message(
+                        content="Учасника вже немає.",
+                        view=None,
+                    )
+                    return
 
-    async def reschedule_finish(self,itx,no,ts):
-        p=pack(self.state,no)
-        if not p or p["leader_id"]!=str(itx.user.id): return await itx.response.edit_message(content="Ви вже не PL.",view=None)
-        p["start_ts"]=ts; self.save(); await self.refresh(); await itx.response.edit_message(content=f"Час змінено на <t:{ts}:F>.",view=None)
+                old_leader = {
+                    "user_id": p["leader_id"],
+                    "role": p.get("leader_role"),
+                }
+                p["members"].remove(entry)
+                p["members"].insert(0, old_leader)
+                p["leader_id"] = uid
+                p["leader_role"] = entry["role"]
+                message = f"PL передано <@{uid}>."
 
-    async def cancel(self,itx,no):
-        p=pack(self.state,no)
-        if not p or p["leader_id"]!=str(itx.user.id): return await itx.response.edit_message(content="Ви вже не PL.",view=None)
-        self.state["packs"]=[x for x in self.state["packs"] if x["number"]!=no]
-        for i,x in enumerate(self.state["packs"],1): x["number"]=i
-        self.save(); await self.refresh(); await itx.response.edit_message(content=f"Пачку {no} скасовано. Нумерацію оновлено.",view=None)
+            self.save()
+            await self.refresh()
 
-    @app_commands.command(name="guild_league_panel", description="Створити панель Ліги гільдій")
+        await interaction.response.edit_message(
+            content=message,
+            view=None,
+        )
+
+    async def reschedule_finish(
+        self,
+        interaction: discord.Interaction,
+        number: int,
+        timestamp: int,
+    ):
+        p = get_pack(self.state, number)
+        if not p or p["leader_id"] != str(interaction.user.id):
+            await interaction.response.edit_message(
+                content="Ви вже не PL.",
+                view=None,
+            )
+            return
+
+        p["start_ts"] = timestamp
+        self.save()
+        await self.refresh()
+        await interaction.response.edit_message(
+            content=f"Час змінено на <t:{timestamp}:F>.",
+            view=None,
+        )
+
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        number: int,
+    ):
+        p = get_pack(self.state, number)
+        if not p or p["leader_id"] != str(interaction.user.id):
+            await interaction.response.edit_message(
+                content="Ви вже не PL.",
+                view=None,
+            )
+            return
+
+        self.state["packs"] = [
+            item
+            for item in self.state["packs"]
+            if item["number"] != number
+        ]
+        for index, item in enumerate(self.state["packs"], 1):
+            item["number"] = index
+
+        self.save()
+        await self.refresh()
+        await interaction.response.edit_message(
+            content=f"Пачку {number} скасовано. Нумерацію оновлено.",
+            view=None,
+        )
+
+    @app_commands.command(
+        name="guild_league_panel",
+        description="Створити панель Ліги гільдій",
+    )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def panel(self,itx):
-        is_admin = itx.user.guild_permissions.administrator
-        has_league_role = isinstance(itx.user, discord.Member) and any(r.id == LEAGUE_ROLE_ID for r in itx.user.roles)
+    async def panel(
+        self,
+        interaction: discord.Interaction,
+    ):
+        is_admin = interaction.user.guild_permissions.administrator
+        has_league_role = (
+            isinstance(interaction.user, discord.Member)
+            and any(
+                role.id == LEAGUE_ROLE_ID
+                for role in interaction.user.roles
+            )
+        )
+
         if not (is_admin or has_league_role):
-            return await itx.response.send_message(f"Команда доступна учасникам <@&{LEAGUE_ROLE_ID}>.", ephemeral=True)
-        if itx.channel_id!=CHANNEL_ID: return await itx.response.send_message(f"Запустіть у <#{CHANNEL_ID}>.",ephemeral=True)
-        await itx.response.send_message(embeds=[pack_embed(i,pack(self.state,i),self.bot.user) for i in range(1,4)],view=MainView(self))
-        msg=await itx.original_response(); self.state["message_id"]=msg.id; self.save()
+            await interaction.response.send_message(
+                f"Команда доступна учасникам <@&{LEAGUE_ROLE_ID}>.",
+                ephemeral=True,
+            )
+            return
+
+        if interaction.channel_id != CHANNEL_ID:
+            await interaction.response.send_message(
+                f"Запустіть у <#{CHANNEL_ID}>.",
+                ephemeral=True,
+            )
+            return
+
+        if not self.state["packs"]:
+            uid = str(interaction.user.id)
+            self.state["packs"].append(
+                {
+                    "number": 1,
+                    "leader_id": uid,
+                    "leader_role": self.state["roles"].get(uid),
+                    "start_ts": None,
+                    "members": [],
+                    "pending": [],
+                }
+            )
+            self.save()
+
+        await interaction.response.send_message(
+            embeds=[
+                pack_embed(
+                    number,
+                    get_pack(self.state, number),
+                    self.bot.user,
+                )
+                for number in range(1, MAX_PACKS + 1)
+            ],
+            view=MainView(self),
+        )
+
+        message = await interaction.original_response()
+        self.state["message_id"] = message.id
+        self.save()
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot):
     await bot.add_cog(GuildLeagueCog(bot))
