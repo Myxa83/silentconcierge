@@ -26,10 +26,14 @@ def _cleanup_previous_days(module, cog) -> int:
     for party in state.get("packs", []):
         ts = party.get("start_ts")
         if ts:
-            party_day = _league_day(datetime.fromtimestamp(int(ts), TZ))
+            party_day = _league_day(
+                datetime.fromtimestamp(int(ts), TZ)
+            )
             if party_day < today:
                 archived = dict(party)
-                archived["archived_at"] = int(datetime.now(TZ).timestamp())
+                archived["archived_at"] = int(
+                    datetime.now(TZ).timestamp()
+                )
                 history.append(archived)
                 moved += 1
                 continue
@@ -39,8 +43,16 @@ def _cleanup_previous_days(module, cog) -> int:
         # На новий актуальний список нумерація знову компактна: 1 -> 2 -> 3.
         for index, party in enumerate(active, 1):
             party["number"] = index
+
         state["packs"] = active[: module.MAX_PARTIES]
         state["history"] = history[-HISTORY_LIMIT:]
+
+        # Відповідь "Не можу" стосується конкретного ігрового дня.
+        # На новий день її треба скинути. Ті, хто вже записаний
+        # у майбутні паті, все одно визначаються як такі, що відповіли,
+        # за самим складом / заявками.
+        state["responses"] = {}
+
         module.save_state(state)
 
     return moved
@@ -85,4 +97,7 @@ async def setup(bot):
 
     league.GuildLeagueCog.ok_channel = ok_channel
 
-    print("[GUILD_LEAGUE] time guard enabled: past slots hidden, previous days archived")
+    print(
+        "[GUILD_LEAGUE] time guard enabled: "
+        "past slots hidden, previous days archived"
+    )
