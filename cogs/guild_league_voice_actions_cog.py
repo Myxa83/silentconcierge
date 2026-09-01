@@ -13,25 +13,37 @@ def _next_party(league):
     now_ts = int(datetime.now(league.TZ).timestamp())
     parties = [
         party
-        for party in league_state_packs(league)
+        for party in league_state_parties(league)
         if party.get("start_ts")
     ]
     if not parties:
         return None
 
-    future = [p for p in parties if int(p["start_ts"]) >= now_ts]
+    future = [
+        party
+        for party in parties
+        if int(party["start_ts"]) >= now_ts
+    ]
     if future:
-        return min(future, key=lambda p: int(p["start_ts"]))
+        return min(
+            future,
+            key=lambda party: int(party["start_ts"]),
+        )
 
     # Дозволяємо пінг поточного матчу ще 20 хв після його старту.
     recent = [
-        p for p in parties
-        if 0 <= now_ts - int(p["start_ts"]) <= 20 * 60
+        party
+        for party in parties
+        if 0 <= now_ts - int(party["start_ts"]) <= 20 * 60
     ]
-    return max(recent, key=lambda p: int(p["start_ts"])) if recent else None
+    return (
+        max(recent, key=lambda party: int(party["start_ts"]))
+        if recent
+        else None
+    )
 
 
-def league_state_packs(league):
+def league_state_parties(league):
     cog = getattr(league, "_voice_actions_cog_instance", None)
     if cog is None:
         return []
@@ -39,7 +51,8 @@ def league_state_packs(league):
 
 
 async def setup(bot):
-    # Завантажується після guild_league_cog.py і додає дві дії до того ж PL dropdown.
+    # Завантажується після основного когу й додає голосові дії
+    # до того самого меню PL.
     from cogs import guild_league_cog as league
 
     if getattr(league, "_voice_actions_installed", False):
@@ -56,8 +69,23 @@ async def setup(bot):
         def __init__(self, league_cog):
             actions = [
                 ("🔄", "Оновити повідомлення", "refresh"),
-                ("💤", "Пінг відсутніх у голосовому", "ping_missing_voice"),
-                ("🔔", "Пінг усіх наступного паті", "ping_all_next"),
+                (
+                    "💤",
+                    "Пінг відсутніх у голосовому",
+                    "ping_missing_voice",
+                ),
+                (
+                    "🔔",
+                    "Пінг усіх учасників наступного паті",
+                    "ping_all_next",
+                ),
+                (
+                    "👋",
+                    "Пінг тих, хто не відповів",
+                    "ping_no_response",
+                ),
+                ("📝", "Порядок запису", "signup_order"),
+                ("🗓️", "Керування слотами", "slots"),
                 ("➕", "Створити наступне паті", "create"),
                 ("✅", "Прийняти заявку", "approve"),
                 ("❌", "Відхилити заявку", "reject"),
@@ -72,24 +100,41 @@ async def setup(bot):
                 custom_id="guild_league_pl_actions",
                 row=3,
                 options=[
-                    discord.SelectOption(emoji=emoji, label=label, value=value)
+                    discord.SelectOption(
+                        emoji=emoji,
+                        label=label,
+                        value=value,
+                    )
                     for emoji, label, value in actions
                 ],
             )
             self.cog = league_cog
 
-        async def callback(self, interaction: discord.Interaction):
-            await self.cog.pl_action(interaction, self.values[0])
+        async def callback(self, interaction):
+            await self.cog.pl_action(
+                interaction,
+                self.values[0],
+            )
 
-    # MainView шукає PLMenu у globals під час побудови, тому наступне оновлення
-    # панелі одразу отримає нові пункти меню.
+    # MainView шукає PLMenu у globals під час побудови.
     league.PLMenu = VoicePLMenu
 
     original_pl_action = league.GuildLeagueCog.pl_action
 
-    async def voice_pl_action(self, interaction: discord.Interaction, action: str):
-        if action not in ("ping_missing_voice", "ping_all_next"):
-            return await original_pl_action(self, interaction, action)
+    async def voice_pl_action(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ):
+        if action not in (
+            "ping_missing_voice",
+            "ping_all_next",
+        ):
+            return await original_pl_action(
+                self,
+                interaction,
+                action,
+            )
 
         if not await self.ok_channel(interaction):
             return
@@ -116,40 +161,62 @@ async def setup(bot):
             )
             return
 
-        channel = interaction.guild.get_channel(VOICE_CHANNEL_ID)
+        channel = interaction.guild.get_channel(
+            VOICE_CHANNEL_ID
+        )
         if channel is None:
             try:
-                channel = await interaction.guild.fetch_channel(VOICE_CHANNEL_ID)
+                channel = await interaction.guild.fetch_channel(
+                    VOICE_CHANNEL_ID
+                )
             except Exception:
                 channel = None
 
         if action == "ping_missing_voice":
-            if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+            if not isinstance(
+                channel,
+                (discord.VoiceChannel, discord.StageChannel),
+            ):
                 await interaction.response.send_message(
-                    f"Не можу прочитати голосовий канал <#{VOICE_CHANNEL_ID}>.",
+                    (
+                        "Не можу прочитати голосовий канал "
+                        f"<#{VOICE_CHANNEL_ID}>."
+                    ),
                     ephemeral=True,
                 )
                 return
 
-            present_ids = {member.id for member in channel.members}
+            present_ids = {
+                member.id
+                for member in channel.members
+            }
             missing = [
                 entry
                 for entry in members
-                if int(entry.get("user_id", 0)) not in present_ids
+                if int(entry.get("user_id", 0))
+                not in present_ids
             ]
 
             if not missing:
                 await interaction.response.send_message(
-                    f"Усі учасники **Паті {party['number']}** вже в <#{VOICE_CHANNEL_ID}>.",
+                    (
+                        f"Усі учасники **Паті {party['number']}** "
+                        f"вже в <#{VOICE_CHANNEL_ID}>."
+                    ),
                     ephemeral=True,
                 )
                 return
 
-            mentions = " ".join(f"<@{entry['user_id']}>" for entry in missing)
+            mentions = " ".join(
+                f"<@{entry['user_id']}>"
+                for entry in missing
+            )
             await interaction.response.send_message(
                 (
-                    f"💤 **Паті {party['number']} • {league.discord_date_time(party['start_ts'])}**\n"
-                    f"Ще не в <#{VOICE_CHANNEL_ID}>: {mentions}"
+                    f"💤 **Паті {party['number']} • "
+                    f"{league.discord_date_time(party['start_ts'])}**\n"
+                    f"Ще не в <#{VOICE_CHANNEL_ID}>: "
+                    f"{mentions}"
                 ),
                 allowed_mentions=discord.AllowedMentions(
                     users=True,
@@ -159,12 +226,16 @@ async def setup(bot):
             )
             return
 
-        mentions = " ".join(f"<@{entry['user_id']}>" for entry in members)
+        mentions = " ".join(
+            f"<@{entry['user_id']}>"
+            for entry in members
+        )
         await interaction.response.send_message(
             (
-                f"🔔 **Паті {party['number']} • {league.discord_date_time(party['start_ts'])}**\n"
+                f"🔔 **Паті {party['number']} • "
+                f"{league.discord_date_time(party['start_ts'])}**\n"
                 f"Учасники: {mentions}\n"
-                f"Голосовий: <#{VOICE_CHANNEL_ID}>"
+                f"Голосовий канал: <#{VOICE_CHANNEL_ID}>"
             ),
             allowed_mentions=discord.AllowedMentions(
                 users=True,
@@ -175,11 +246,15 @@ async def setup(bot):
 
     league.GuildLeagueCog.pl_action = voice_pl_action
 
-    # Перемальовуємо існуючу панель, щоб нове меню з'явилося одразу після деплою.
+    # Одразу перемальовуємо панель після деплою,
+    # щоб нові пункти меню з'явилися без ручного перезапуску команди.
     try:
         await cog.refresh()
     except Exception as exc:
-        print(f"[GUILD_LEAGUE][VOICE][REFRESH] {type(exc).__name__}: {exc}")
+        print(
+            f"[GUILD_LEAGUE][VOICE][REFRESH] "
+            f"{type(exc).__name__}: {exc}"
+        )
 
     print(
         "[GUILD_LEAGUE] voice actions enabled: "
