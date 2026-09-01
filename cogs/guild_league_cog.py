@@ -210,7 +210,7 @@ def header_embed(state: dict) -> discord.Embed:
         title="Запис на Лігу гільдій",
         description=(
             "Обери **Tank / DPS / Shai**, потім натисни **Записатися**, "
-            "щоб обрати або змінити пачку."
+            "щоб обрати або змінити паті."
         ),
         color=COLOR,
     )
@@ -229,14 +229,14 @@ def pack_field(
     number: int,
 ) -> tuple[str, str]:
     if not pack:
-        return f"{number}  Не створена", "—"
+        return f"Паті {number}  Не створено", "—"
 
     ts = pack.get("start_ts")
     count = pack_count(pack)
     name = (
-        f"{number}  {discord_time(ts)} ({count}/{MAX_MEMBERS})"
+        f"Паті {number}  {discord_time(ts)} ({count}/{MAX_MEMBERS})"
         if ts
-        else f"{number}  Час не обраний ({count}/{MAX_MEMBERS})"
+        else f"Паті {number}  Час не обраний ({count}/{MAX_MEMBERS})"
     )
 
     lines = [
@@ -412,14 +412,14 @@ class PLMenu(discord.ui.Select):
     def __init__(self, cog):
         actions = [
             ("🔄", "Оновити повідомлення", "refresh"),
-            ("➕", "Створити наступну пачку", "create"),
+            ("➕", "Створити наступне паті", "create"),
             ("✅", "Прийняти заявку", "approve"),
             ("❌", "Відхилити заявку", "reject"),
             ("📋", "Переглянути заявки", "pending"),
             ("🗑️", "Видалити учасника", "remove"),
             ("📅", "Змінити день / час", "reschedule"),
             ("👑", "Передати PL", "transfer"),
-            ("⛔", "Скасувати пачку", "cancel"),
+            ("⛔", "Скасувати паті", "cancel"),
         ]
         super().__init__(
             placeholder="Дії PL",
@@ -646,7 +646,7 @@ class GuildLeagueCog(commands.Cog):
 
         if not available:
             await interaction.response.send_message(
-                "Зараз немає доступної пачки з обраним часом.",
+                "Зараз немає доступного паті з обраним часом.",
                 ephemeral=True,
             )
             return
@@ -657,25 +657,25 @@ class GuildLeagueCog(commands.Cog):
             number = pack["number"]
             marker = " • зараз тут" if current_pack is pack else ""
             lines.append(
-                f"**{number}.** {discord_date_time(pack['start_ts'])} "
+                f"**Паті {number}.** {discord_date_time(pack['start_ts'])} "
                 f"• {pack_count(pack)}/{MAX_MEMBERS}{marker}"
             )
             options.append(
                 discord.SelectOption(
-                    label=f"Пачка {number} • {pack_count(pack)}/{MAX_MEMBERS}",
+                    label=f"Паті {number} • {pack_count(pack)}/{MAX_MEMBERS}",
                     value=str(number),
-                    description="Обрати цю пачку",
+                    description="Обрати це паті",
                 )
             )
 
         await interaction.response.send_message(
-            "\n".join(lines) + "\n\n**Обери пачку:**",
+            "\n".join(lines) + "\n\n**Обери паті:**",
             view=OneSelectView(
                 Select(
                     self,
                     "pack_signup",
                     options,
-                    placeholder="Пачка",
+                    placeholder="Паті",
                 )
             ),
             ephemeral=True,
@@ -697,7 +697,7 @@ class GuildLeagueCog(commands.Cog):
                 or pack_count(pack) >= MAX_MEMBERS
             ):
                 await interaction.response.edit_message(
-                    content="Ця пачка вже недоступна.",
+                    content="Це паті вже недоступне.",
                     view=None,
                 )
                 return
@@ -715,7 +715,7 @@ class GuildLeagueCog(commands.Cog):
                     content=(
                         f"Ти вже "
                         f"{'у складі' if current_kind == 'member' else 'подав заявку'} "
-                        f"**Пачки {number}**.\n"
+                        f"**Паті {number}**.\n"
                         f"🕒 {discord_date_time(pack['start_ts'])}"
                     ),
                     view=None,
@@ -754,7 +754,7 @@ class GuildLeagueCog(commands.Cog):
             if pl:
                 await channel.send(
                     (
-                        f"<@{pl}> нова заявка в **Пачку {number}**\n"
+                        f"<@{pl}> нова заявка в **Паті {number}**\n"
                         f"{role_text(role_key)} <@{uid}> • "
                         f"{discord_date_time(pack['start_ts'])}"
                     ),
@@ -767,7 +767,7 @@ class GuildLeagueCog(commands.Cog):
 
         await interaction.response.edit_message(
             content=(
-                f"✅ Заявку в **Пачку {number}** надіслано.\n"
+                f"✅ Заявку в **Паті {number}** надіслано.\n"
                 f"🕒 {discord_date_time(pack['start_ts'])}\n"
                 f"Роль: **{role_text(role_key)}**"
             ),
@@ -781,7 +781,7 @@ class GuildLeagueCog(commands.Cog):
         pack, membership = find_user(self.state, interaction.user.id)
         if not pack:
             await interaction.response.send_message(
-                "Ти не записаний у жодну пачку.",
+                "Ти не записаний у жодне паті.",
                 ephemeral=True,
             )
             return
@@ -804,7 +804,7 @@ class GuildLeagueCog(commands.Cog):
         self.save()
         await self.refresh()
         await interaction.response.send_message(
-            f"Твій запис у **Пачку {number}** скасовано.",
+            f"Твій запис у **Паті {number}** скасовано.",
             ephemeral=True,
         )
 
@@ -816,7 +816,7 @@ class GuildLeagueCog(commands.Cog):
                 "**Як записатися:**\n"
                 "1. Обери **Tank**, **DPS** або **Shai**.\n"
                 "2. Натисни **Записатися**.\n"
-                "3. Обери пачку з потрібним часом.\n\n"
+                "3. Обери паті з потрібним часом.\n\n"
                 "**Не можу** скасовує твою заявку або участь.\n"
                 "Час Discord автоматично показується у твоєму часовому поясі."
             ),
@@ -879,7 +879,7 @@ class GuildLeagueCog(commands.Cog):
 
         options = [
             discord.SelectOption(
-                label=f"Пачка {pack['number']}",
+                label=f"Паті {pack['number']}",
                 value=str(pack["number"]),
                 description=(
                     f"{discord_time(pack['start_ts'])} • "
@@ -891,14 +891,14 @@ class GuildLeagueCog(commands.Cog):
             for pack in candidates
         ]
         await interaction.response.send_message(
-            "**Обери пачку:**",
+            "**Обери паті:**",
             view=OneSelectView(
                 Select(
                     self,
                     "pl_pack",
                     options,
                     meta={"action": action},
-                    placeholder="Пачка",
+                    placeholder="Паті",
                 )
             ),
             ephemeral=True,
@@ -920,7 +920,7 @@ class GuildLeagueCog(commands.Cog):
         pack = get_pack(self.state, number)
         if not pack:
             await interaction.response.send_message(
-                "Пачки вже немає.",
+                "Паті вже немає.",
                 ephemeral=True,
             )
             return
@@ -939,7 +939,7 @@ class GuildLeagueCog(commands.Cog):
             )
             await interaction.response.send_message(
                 (
-                    f"**Пачка {number} • заявки**\n"
+                    f"**Паті {number} • заявки**\n"
                     f"{discord_date_time(pack['start_ts'])}\n\n{text}"
                 ),
                 ephemeral=True,
@@ -1004,7 +1004,7 @@ class GuildLeagueCog(commands.Cog):
 
         if action == "reschedule":
             await interaction.response.send_message(
-                f"**Пачка {number}: зміна часу**\n**1/2. Обери день:**",
+                f"**Паті {number}: зміна часу**\n**1/2. Обери день:**",
                 view=OneSelectView(
                     Select(
                         self,
@@ -1020,7 +1020,7 @@ class GuildLeagueCog(commands.Cog):
 
         if action == "cancel":
             await interaction.response.send_message(
-                f"Скасувати **Пачку {number}**?",
+                f"Скасувати **Паті {number}**?",
                 view=ConfirmCancelView(
                     self,
                     number,
@@ -1047,7 +1047,7 @@ class GuildLeagueCog(commands.Cog):
             pack = get_pack(self.state, number)
             if not pack:
                 await interaction.response.edit_message(
-                    content="Пачки вже немає.",
+                    content="Паті вже немає.",
                     view=None,
                 )
                 return
@@ -1056,7 +1056,7 @@ class GuildLeagueCog(commands.Cog):
             if action == "approve":
                 if pack_count(pack) >= MAX_MEMBERS:
                     await interaction.response.edit_message(
-                        content=f"Пачка вже {MAX_MEMBERS}/{MAX_MEMBERS}.",
+                        content=f"Паті вже {MAX_MEMBERS}/{MAX_MEMBERS}.",
                         view=None,
                     )
                     return
@@ -1077,7 +1077,7 @@ class GuildLeagueCog(commands.Cog):
                 pack["pending"].remove(entry)
                 pack["members"].append(entry)
                 message = (
-                    f"✅ <@{uid}> прийнято в **Пачку {number}** "
+                    f"✅ <@{uid}> прийнято в **Паті {number}** "
                     f"({pack_count(pack)}/{MAX_MEMBERS})."
                 )
             elif action == "reject":
@@ -1093,7 +1093,7 @@ class GuildLeagueCog(commands.Cog):
                     for x in pack.get("members", [])
                     if str(x.get("user_id")) != uid
                 ]
-                message = f"🗑️ <@{uid}> видалено з **Пачки {number}**."
+                message = f"🗑️ <@{uid}> видалено з **Паті {number}**."
             else:
                 await interaction.response.edit_message(
                     content="Невідома дія.",
@@ -1112,13 +1112,13 @@ class GuildLeagueCog(commands.Cog):
     async def begin_create(self, interaction: discord.Interaction):
         if not self.is_pl(interaction):
             await interaction.response.send_message(
-                "Тільки PL може створювати пачки.",
+                "Тільки PL може створювати паті.",
                 ephemeral=True,
             )
             return
         if len(self.state["packs"]) >= MAX_PACKS:
             await interaction.response.send_message(
-                "Уже створені всі 3 пачки.",
+                "Уже створені всі 3 паті.",
                 ephemeral=True,
             )
             return
@@ -1135,7 +1135,7 @@ class GuildLeagueCog(commands.Cog):
         self.save()
         await self.refresh()
         await interaction.response.send_message(
-            f"**Пачка {number}**\n**1/2. Обери день:**",
+            f"**Паті {number}**\n**1/2. Обери день:**",
             view=OneSelectView(
                 Select(
                     self,
@@ -1164,7 +1164,7 @@ class GuildLeagueCog(commands.Cog):
         pack = get_pack(self.state, number)
         if not pack:
             await interaction.response.edit_message(
-                content="Пачки вже немає.",
+                content="Паті вже немає.",
                 view=None,
             )
             return
@@ -1179,7 +1179,7 @@ class GuildLeagueCog(commands.Cog):
         )
         await channel.send(
             (
-                f"<@&{LEAGUE_ROLE_ID}> створена **Пачка {number}**\n"
+                f"<@&{LEAGUE_ROLE_ID}> створено **Паті {number}**\n"
                 f"🕒 {discord_date_time(timestamp)}\n"
                 "Для участі обери роль і натисни **Записатися**."
             ),
@@ -1191,7 +1191,7 @@ class GuildLeagueCog(commands.Cog):
         )
         await interaction.response.edit_message(
             content=(
-                f"✅ **Пачка {number} створена.**\n"
+                f"✅ **Паті {number} створено.**\n"
                 f"🕒 {discord_date_time(timestamp)}"
             ),
             view=None,
@@ -1213,7 +1213,7 @@ class GuildLeagueCog(commands.Cog):
         pack = get_pack(self.state, number)
         if not pack:
             await interaction.response.edit_message(
-                content="Пачки вже немає.",
+                content="Паті вже немає.",
                 view=None,
             )
             return
@@ -1223,7 +1223,7 @@ class GuildLeagueCog(commands.Cog):
         await self.refresh()
         await interaction.response.edit_message(
             content=(
-                f"✅ Час **Пачки {number}** змінено.\n"
+                f"✅ Час **Паті {number}** змінено.\n"
                 f"🕒 {discord_date_time(timestamp)}"
             ),
             view=None,
@@ -1252,7 +1252,7 @@ class GuildLeagueCog(commands.Cog):
         self.save()
         await self.refresh()
         await interaction.response.edit_message(
-            content=f"Пачку {number} скасовано.",
+            content=f"Паті {number} скасовано.",
             view=None,
         )
 
