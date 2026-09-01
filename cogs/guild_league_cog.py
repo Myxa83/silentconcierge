@@ -9,7 +9,7 @@ from discord.ext import commands
 GUILD_ID=1323454227816906802
 CHANNEL_ID=1534917454977962076
 LEAGUE_ROLE_ID=1450893024379797514
-MAX_PACKS,MIN_MEMBERS,MAX_MEMBERS=3,8,10
+MAX_PACKS,MIN_MEMBERS,MAX_MEMBERS=3,6,10
 TZ=ZoneInfo('Europe/Berlin')
 COLOR=0x3F3A78
 FOOTER='Silent Concierge by Myxa | Ліга гільдій'
@@ -19,7 +19,7 @@ PANEL=(
 '## 🏆 Ліга гільдій\n'
 '**Запис:** 1. обери `Tank / DPS / Shai`  2. **Записатися**  3. обери пачку.\n'
 '**PL:** **Створити пачку** → день → час. Заявки: **PL: керування пачкою**.\n'
-'*Час Discord автоматично показується кожному у його локальному часовому поясі.*')
+'*Мінімум для гри: 6 людей. Максимум: 10. Час Discord автоматично показується кожному у його локальному часовому поясі.*')
 
 def fresh(): return {'channel_id':CHANNEL_ID,'message_id':None,'packs':[],'roles':{}}
 def load():
@@ -49,10 +49,10 @@ def cnt(p): return 1+len(p['members'])
 def dtime(ts): return f'<t:{int(ts)}:F>'
 def status(p):
     if not p.get('start_ts'): return '🟣 Налаштування'
-    return '✅ Повна' if cnt(p)>=10 else '🟢 Готова' if cnt(p)>=8 else '🟡 Формується'
+    return '✅ Повна' if cnt(p)>=MAX_MEMBERS else '🟢 Готова' if cnt(p)>=MIN_MEMBERS else '🟡 Формується'
 def progress(p):
     n=cnt(p)
-    return f'{n}/10' if n>=10 else f'{n}/10 • можна грати' if n>=8 else f'{n}/10 • ще {8-n} до мінімуму'
+    return f'{n}/{MAX_MEMBERS}' if n>=MAX_MEMBERS else f'{n}/{MAX_MEMBERS} • можна грати' if n>=MIN_MEMBERS else f'{n}/{MAX_MEMBERS} • ще {MIN_MEMBERS-n} до мінімуму'
 
 def dates():
     days=['Пн','Вт','Ср','Чт','Пт','Сб','Нд']; now=datetime.now(TZ); out=[]
@@ -74,7 +74,7 @@ def embed(n,p,bot):
         desc=(f'🕒 {dtime(ts)}\n👑 **PL:** <@{lid}> • {rt(lr)}\n👥 **Склад:** {progress(p)}' if ts else f'👑 **PL:** <@{lid}> • {rt(lr)}\n🕒 **Час:** ще не обраний\nНатисни **Створити пачку** і задай день та час.')
         e=discord.Embed(title=f'Пачка {n} • {status(p)}',description=desc,color=COLOR)
         members=[f'👑 {rt(lr)} <@{lid}>']+[f"{rt(x.get('role'))} <@{x['user_id']}>" for x in p['members']]
-        e.add_field(name=f'Учасники • {cnt(p)}/10',value='\n'.join(members)[:1024],inline=False)
+        e.add_field(name=f'Учасники • {cnt(p)}/{MAX_MEMBERS}',value='\n'.join(members)[:1024],inline=False)
         if p['pending']:
             pend='\n'.join(f"⏳ {rt(x.get('role'))} <@{x['user_id']}>" for x in p['pending'])+'\nPL: **керування пачкою → Прийняти заявку**'
             e.add_field(name=f"Заявки • {len(p['pending'])}",value=pend[:1024],inline=False)
@@ -158,18 +158,18 @@ class GuildLeagueCog(commands.Cog):
         if move and not cur: return await i.response.send_message('Ти ще ніде не записаний. Натисни **Записатися**.',ephemeral=True)
         if move and kind=='leader': return await i.response.send_message('PL спочатку має передати PL або скасувати пачку.',ephemeral=True)
         if not move and cur: return await i.response.send_message(f"Ти вже пов'язаний з **Пачкою {cur['number']}**. Для зміни натисни **Змінити пачку**.",ephemeral=True)
-        packs=[p for p in self.state['packs'] if p.get('start_ts') and cnt(p)<10 and (not cur or p['number']!=cur['number'])]
+        packs=[p for p in self.state['packs'] if p.get('start_ts') and cnt(p)<MAX_MEMBERS and (not cur or p['number']!=cur['number'])]
         if not packs: return await i.response.send_message('Немає доступної пачки з обраним часом.',ephemeral=True)
         lines=[]; opts=[]
         for p in packs:
             n=p['number']; member=i.guild.get_member(int(p['leader_id'])) if i.guild else None
-            lines.append(f"**Пачка {n}** • {dtime(p['start_ts'])} • {cnt(p)}/10 • PL: <@{p['leader_id']}>")
-            opts.append(discord.SelectOption(label=f'Пачка {n} • {cnt(p)}/10',value=str(n),description=f"PL: {member.display_name if member else 'PL'}"))
+            lines.append(f"**Пачка {n}** • {dtime(p['start_ts'])} • {cnt(p)}/{MAX_MEMBERS} • PL: <@{p['leader_id']}>")
+            opts.append(discord.SelectOption(label=f'Пачка {n} • {cnt(p)}/{MAX_MEMBERS}',value=str(n),description=f"PL: {member.display_name if member else 'PL'}"))
         await i.response.send_message('\n'.join(lines)+'\n\n**Обери пачку:**',view=One(Select(self,'pack',opts,{'move':move},'Обрати пачку')),ephemeral=True)
     async def signup_to(self,i,n,move):
         async with self.lock:
             p=gp(self.state,n); uid=str(i.user.id); role=self.state['roles'].get(uid); cur,kind=up(self.state,uid)
-            if not p or not p.get('start_ts') or cnt(p)>=10: return await i.response.edit_message(content='Ця пачка вже недоступна.',view=None)
+            if not p or not p.get('start_ts') or cnt(p)>=MAX_MEMBERS: return await i.response.edit_message(content='Ця пачка вже недоступна.',view=None)
             if not role: return await i.response.edit_message(content='Спочатку обери роль.',view=None)
             if kind=='leader': return await i.response.edit_message(content='PL не може перейти напряму.',view=None)
             if cur:
@@ -226,10 +226,10 @@ class GuildLeagueCog(commands.Cog):
             p=gp(self.state,n); uid=str(target)
             if not p or str(p['leader_id'])!=str(i.user.id): return await i.response.edit_message(content='Ти більше не PL цієї пачки.',view=None)
             if action=='approve':
-                if cnt(p)>=10: return await i.response.edit_message(content='Пачка вже 10/10.',view=None)
+                if cnt(p)>=MAX_MEMBERS: return await i.response.edit_message(content=f'Пачка вже {MAX_MEMBERS}/{MAX_MEMBERS}.',view=None)
                 x=next((x for x in p['pending'] if str(x['user_id'])==uid),None)
                 if not x: return await i.response.edit_message(content='Цієї заявки вже немає.',view=None)
-                p['pending'].remove(x); p['members'].append(x); msg=f'✅ <@{uid}> прийнято в **Пачку {n}**. Склад: **{cnt(p)}/10**'
+                p['pending'].remove(x); p['members'].append(x); msg=f'✅ <@{uid}> прийнято в **Пачку {n}**. Склад: **{cnt(p)}/{MAX_MEMBERS}**'
             elif action=='reject': p['pending']=[x for x in p['pending'] if str(x['user_id'])!=uid]; msg=f'❌ Заявку <@{uid}> відхилено.'
             elif action=='remove': p['members']=[x for x in p['members'] if str(x['user_id'])!=uid]; msg=f'🗑️ <@{uid}> видалено з **Пачки {n}**.'
             else:
