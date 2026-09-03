@@ -1,17 +1,44 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
+from PIL import Image
 import discord
 from discord.ext import commands
 
 
 ASSET_DIR = Path("assets/icons/guild_league")
 ROLE_ASSETS = {
-    "tank": ("gl_tank", ASSET_DIR / "tank.png"),
-    "dps": ("gl_dps", ASSET_DIR / "dps.png"),
-    "shai": ("gl_shai", ASSET_DIR / "shai.png"),
+    "tank": ("gl_tank_small", ASSET_DIR / "tank.png"),
+    "dps": ("gl_dps_small", ASSET_DIR / "dps.png"),
+    "shai": ("gl_shai_small", ASSET_DIR / "shai.png"),
 }
+
+# Discord renders a custom emoji in a fixed inline box. To make the visible
+# symbol smaller we put the artwork inside a transparent 64x64 canvas.
+VISIBLE_ICON_PX = 40
+CANVAS_PX = 64
+
+
+def _small_emoji_bytes(asset_path: Path) -> bytes:
+    image = Image.open(asset_path).convert("RGBA")
+    bbox = image.getchannel("A").getbbox()
+    if bbox:
+        image = image.crop(bbox)
+
+    image.thumbnail(
+        (VISIBLE_ICON_PX, VISIBLE_ICON_PX),
+        Image.Resampling.LANCZOS,
+    )
+    canvas = Image.new("RGBA", (CANVAS_PX, CANVAS_PX), (0, 0, 0, 0))
+    x = (CANVAS_PX - image.width) // 2
+    y = (CANVAS_PX - image.height) // 2
+    canvas.alpha_composite(image, (x, y))
+
+    output = BytesIO()
+    canvas.save(output, format="PNG", optimize=True)
+    return output.getvalue()
 
 
 class GuildLeagueRoleIconsCog(commands.Cog):
@@ -63,8 +90,8 @@ async def _resolve_role_emojis(bot, league):
             try:
                 emoji = await guild.create_custom_emoji(
                     name=emoji_name,
-                    image=asset_path.read_bytes(),
-                    reason="Silent Concierge Guild League role icon",
+                    image=_small_emoji_bytes(asset_path),
+                    reason="Silent Concierge Guild League compact role icon",
                 )
                 by_name[emoji_name] = emoji
                 print(
@@ -89,13 +116,7 @@ async def _resolve_role_emojis(bot, league):
 
 
 async def setup(bot):
-    """Use the supplied Tank/DPS/Shai artwork as Discord-sized inline icons.
-
-    The source files are normalized on a transparent 64x64 canvas. Discord
-    renders custom emojis inline at roughly the same ~20px footprint visible
-    in the supplied Guild League table screenshot, so no oversized images are
-    inserted into embed fields.
-    """
+    """Use compact Tank/DPS/Shai custom emojis in Guild League tables."""
     from cogs import guild_league_cog as league
 
     resolved = await _resolve_role_emojis(bot, league)
@@ -106,11 +127,10 @@ async def setup(bot):
             league.ROLES[role_key] = (emoji, label)
 
         print(
-            "[GUILD_LEAGUE][ROLE_ICONS] active: "
+            "[GUILD_LEAGUE][ROLE_ICONS] compact active: "
             + ", ".join(sorted(resolved))
         )
 
-        # Redraw the live tables/buttons so the new custom emojis appear now.
         dated_cog = bot.get_cog("GuildLeagueDatedPosts")
         if dated_cog is not None:
             for day_iso, event in list(dated_cog.data.get("events", {}).items()):
