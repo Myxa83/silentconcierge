@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -22,23 +23,38 @@ CANVAS_PX = 64
 
 
 def _small_emoji_bytes(asset_path: Path) -> bytes:
-    image = Image.open(asset_path).convert("RGBA")
-    bbox = image.getchannel("A").getbbox()
-    if bbox:
-        image = image.crop(bbox)
+    # Keep file handles and temporary PIL images short-lived. This runs only
+    # when a missing custom emoji must be created.
+    with Image.open(asset_path) as source:
+        image = source.convert("RGBA")
 
-    image.thumbnail(
-        (VISIBLE_ICON_PX, VISIBLE_ICON_PX),
-        Image.Resampling.LANCZOS,
-    )
-    canvas = Image.new("RGBA", (CANVAS_PX, CANVAS_PX), (0, 0, 0, 0))
-    x = (CANVAS_PX - image.width) // 2
-    y = (CANVAS_PX - image.height) // 2
-    canvas.alpha_composite(image, (x, y))
+    try:
+        bbox = image.getchannel("A").getbbox()
+        if bbox:
+            cropped = image.crop(bbox)
+            image.close()
+            image = cropped
 
-    output = BytesIO()
-    canvas.save(output, format="PNG", optimize=True)
-    return output.getvalue()
+        image.thumbnail(
+            (VISIBLE_ICON_PX, VISIBLE_ICON_PX),
+            Image.Resampling.LANCZOS,
+        )
+        canvas = Image.new("RGBA", (CANVAS_PX, CANVAS_PX), (0, 0, 0, 0))
+        try:
+            x = (CANVAS_PX - image.width) // 2
+            y = (CANVAS_PX - image.height) // 2
+            canvas.alpha_composite(image, (x, y))
+
+            output = BytesIO()
+            try:
+                canvas.save(output, format="PNG", optimize=True)
+                return output.getvalue()
+            finally:
+                output.close()
+        finally:
+            canvas.close()
+    finally:
+        image.close()
 
 
 class GuildLeagueRoleIconsCog(commands.Cog):
@@ -131,9 +147,15 @@ async def setup(bot):
             + ", ".join(sorted(resolved))
         )
 
+        # Refresh only active dated posts. The old version walked every saved
+        # historical event on every boot, causing needless Discord fetch/edit
+        # traffic and short-lived image/embed allocations.
         dated_cog = bot.get_cog("GuildLeagueDatedPosts")
         if dated_cog is not None:
+            today = datetime.now(league.TZ).date().isoformat()
             for day_iso, event in list(dated_cog.data.get("events", {}).items()):
+                if day_iso < today:
+                    continue
                 if not isinstance(event, dict) or not event.get("message_id"):
                     continue
                 try:
