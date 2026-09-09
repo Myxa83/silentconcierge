@@ -22,6 +22,11 @@ INTENTS.voice_states = True
 # Коги, команди яких синкуються ГЛОБАЛЬНО (для продажу іншим серверам)
 GLOBAL_COGS = {"bbf_cog_eng"}
 
+# discord.py за замовчуванням кешує до 1000 повідомлень. Наші коги працюють
+# через ID/fetch і не використовують cached_messages, тому 200 достатньо.
+MESSAGE_CACHE_SIZE = 200
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -71,7 +76,7 @@ async def _do_sync(bot: commands.Bot) -> dict:
         guild_synced = await bot.tree.sync(guild=guild_obj)
         result["guild_count"] = len(guild_synced)
         result["guild_commands"] = [c.name for c in guild_synced]
-        print(f"[SYNC] Guild ({gid}): {len(guild_synced)} команд — {result['guild_commands']}")
+        print(f"[SYNC] Guild ({gid}): {len(guild_synced)} команд - {result['guild_commands']}")
 
         _append_runtime_log({
             "time": _utc_now(), "event": "sync", "mode": "guild",
@@ -92,7 +97,7 @@ async def _do_sync(bot: commands.Bot) -> dict:
     global_synced = await bot.tree.sync()
     result["global_count"] = len(global_synced)
     result["global_commands"] = [c.name for c in global_synced]
-    print(f"[SYNC] Global: {len(global_synced)} команд — {result['global_commands']}")
+    print(f"[SYNC] Global: {len(global_synced)} команд - {result['global_commands']}")
 
     # Повертаємо команди назад у дерево
     for cmd in temporarily_removed:
@@ -113,12 +118,14 @@ class SilentBot(commands.Bot):
             command_prefix="!",
             intents=INTENTS,
             help_command=None,
+            max_messages=MESSAGE_CACHE_SIZE,
         )
         self.home_guild_id: int | None = None
 
     async def setup_hook(self) -> None:
         print("[BOOT] bot_main.py started")
         print("[BOOT] CWD:", os.getcwd())
+        print(f"[BOOT] Discord message cache limit = {MESSAGE_CACHE_SIZE}")
         migrate_legacy_event_logs()
 
         # Визначаємо home guild
