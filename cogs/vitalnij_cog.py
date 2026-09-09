@@ -117,14 +117,19 @@ class TicketModeratorView(discord.ui.View):
 class VitalnijCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._persistent_views_registered = False
+
+    async def cog_load(self):
+        # Persistent views must be registered once per cog lifetime. on_ready can
+        # fire repeatedly after reconnects and would otherwise retain duplicates.
+        if self._persistent_views_registered:
+            return
+        self.bot.add_view(WelcomeView(self))
+        self.bot.add_view(TicketModeratorView(self))
+        self._persistent_views_registered = True
 
     async def is_moderator(self, user: discord.Member) -> bool:
         return any(r.id in {ROLE_MODERATOR, ROLE_LEADER} for r in user.roles)
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        self.bot.add_view(WelcomeView(self))
-        self.bot.add_view(TicketModeratorView(self))
 
     @app_commands.command(name="send_welcome", description="Надіслати вітальний ембед Silent Cove")
     async def send_welcome(self, itx: discord.Interaction):
