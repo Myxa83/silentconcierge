@@ -16,6 +16,7 @@ pymongo[srv]
 beautifulsoup4
 opencv-python-headless
 numpy
+playwright
 
 lxml==5.2.2
 feedparser==6.0.11
