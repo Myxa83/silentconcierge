@@ -51,6 +51,23 @@ NEWS_LOGO_URL = (
     "1482553264825438330.webp?size=96&quality=lossless"
 )
 
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 30
+BAD_RESPONSE_MARKERS = (
+    "error 500",
+    "server error",
+    "that's an error",
+    "there was an error",
+    "please try again later",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+)
+
+
+class TemporaryContentError(RuntimeError):
+    """Temporary upstream error. Do not publish or mark the post as seen."""
+
 
 class BDFNewsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -81,6 +98,14 @@ class BDFNewsCog(commands.Cog):
             sorted(self.seen_links),
         )
 
+    @staticmethod
+    def contains_error_page(text: str) -> bool:
+        if not text:
+            return True
+
+        lowered = text.casefold()
+        return any(marker in lowered for marker in BAD_RESPONSE_MARKERS)
+
     async def fetch_bytes(self, url: str) -> bytes:
         headers = {
             "User-Agent": (
@@ -91,14 +116,56 @@ class BDFNewsCog(commands.Cog):
             "Accept-Language": "en-US,en;q=0.9",
         }
 
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=45) as resp:
-                resp.raise_for_status()
-                return await resp.read()
+        last_error = None
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(url, timeout=45) as resp:
+                        if resp.status >= 500:
+                            raise TemporaryContentError(
+                                f"HTTP {resp.status} from {url}"
+                            )
+
+                        resp.raise_for_status()
+                        data = await resp.read()
+
+                        content_type = (resp.headers.get("Content-Type") or "").lower()
+                        if (
+                            "text/" in content_type
+                            or "html" in content_type
+                            or "xml" in content_type
+                        ):
+                            text = data.decode("utf-8", errors="ignore")
+                            if self.contains_error_page(text):
+                                raise TemporaryContentError(
+                                    f"Upstream error page returned by {url}"
+                                )
+
+                        return data
+
+            except (aiohttp.ClientError, asyncio.TimeoutError, TemporaryContentError) as e:
+                last_error = e
+                print(
+                    f"[BDFNewsCog] fetch attempt {attempt}/{MAX_RETRIES} failed "
+                    f"for {url}: {e}"
+                )
+
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+
+        raise TemporaryContentError(
+            f"Failed to fetch {url} after {MAX_RETRIES} attempts: {last_error}"
+        )
 
     async def fetch_text(self, url: str) -> str:
         data = await self.fetch_bytes(url)
-        return data.decode("utf-8", errors="ignore")
+        text = data.decode("utf-8", errors="ignore")
+
+        if self.contains_error_page(text):
+            raise TemporaryContentError(f"Invalid error-page content from {url}")
+
+        return text
 
     def clean_html(self, html: str) -> str:
         soup = BeautifulSoup(html, "lxml")
@@ -137,15 +204,42 @@ class BDFNewsCog(commands.Cog):
         text = article.get_text("\n", strip=True)
         return re.sub(r"\n{2,}", "\n", text)
 
-    def translate_uk(self, text: str) -> str:
+    def translate_uk_once(self, text: str) -> str:
         if not text:
             return ""
 
-        try:
-            return GoogleTranslator(source="auto", target="uk").translate(text)
-        except Exception as e:
-            print(f"[BDFNewsCog] translate error: {e}")
-            return text
+        translated = GoogleTranslator(source="auto", target="uk").translate(text)
+        translated = (translated or "").strip()
+
+        if not translated or self.contains_error_page(translated):
+            raise TemporaryContentError(
+                "Translator returned an empty response or an upstream error page"
+            )
+
+        return translated
+
+    async def translate_uk(self, text: str) -> str:
+        if not text:
+            return ""
+
+        last_error = None
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                # deep_translator is synchronous, so keep it off the Discord event loop.
+                return await asyncio.to_thread(self.translate_uk_once, text)
+            except Exception as e:
+                last_error = e
+                print(
+                    f"[BDFNewsCog] translate attempt {attempt}/{MAX_RETRIES} failed: {e}"
+                )
+
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+
+        raise TemporaryContentError(
+            f"Translation failed after {MAX_RETRIES} attempts: {last_error}"
+        )
 
     def split_long_summary_item(
         self,
@@ -201,12 +295,13 @@ class BDFNewsCog(commands.Cog):
 
         return f"{BULLET_POINT} {text}"
 
-    def make_bullets(self, text: str) -> str:
+    async def make_bullets(self, text: str) -> str:
         blocks = [
             re.sub(r"\s+", " ", block).strip()
             for block in re.split(r"\n+", text)
         ]
         lines = []
+        seen_translated = set()
         used_characters = 0
         blocked_words = [
             "cookie",
@@ -226,9 +321,20 @@ class BDFNewsCog(commands.Cog):
             if any(word in block.lower() for word in blocked_words):
                 continue
 
-            uk_block = self.translate_uk(block)
+            uk_block = await self.translate_uk(block)
 
             for part in self.split_long_summary_item(uk_block):
+                normalized = re.sub(r"\s+", " ", part).strip().casefold()
+
+                if not normalized or normalized in seen_translated:
+                    continue
+
+                if self.contains_error_page(part):
+                    raise TemporaryContentError(
+                        "Error-page text detected while building summary"
+                    )
+
+                seen_translated.add(normalized)
                 line = self.format_summary_item(part)
 
                 if used_characters + len(line) > 3000:
@@ -393,80 +499,100 @@ class BDFNewsCog(commands.Cog):
         if link in self.seen_links:
             return
 
-        article_html = await self.fetch_text(link)
-        article_text = self.clean_html(article_html)
+        try:
+            article_html = await self.fetch_text(link)
+            article_text = self.clean_html(article_html)
 
-        original_title = entry.title
-        uk_title = self.translate_uk(original_title)
+            if not article_text or self.contains_error_page(article_text):
+                raise TemporaryContentError(
+                    "Article text is empty or contains an upstream error page"
+                )
 
-        summary = self.make_bullets(article_text[:10000])
-        image_url = self.extract_article_image(article_html)
-        published = self.format_published_date(
-            self.extract_date_from_article(article_html)
-        )
+            original_title = entry.title
+            uk_title = await self.translate_uk(original_title)
+            summary = await self.make_bullets(article_text[:10000])
 
-        channel = self.bot.get_channel(CHANNEL_ID)
-        if channel is None:
-            channel = await self.bot.fetch_channel(CHANNEL_ID)
+            if self.contains_error_page(uk_title) or self.contains_error_page(summary):
+                raise TemporaryContentError(
+                    "Invalid upstream error text detected before publishing"
+                )
 
-        title_limit = 256 - len(ASL) - len(RSL) - 2
-        formatted_title = f"{ASL} {uk_title[:title_limit]} {RSL}"
+            image_url = self.extract_article_image(article_html)
+            published = self.format_published_date(
+                self.extract_date_from_article(article_html)
+            )
 
-        embed = discord.Embed(
-            title=formatted_title,
-            url=link,
-            description=(
-                f"{EXCLAMATION_MARK} **Коротко про оновлення**\n\n"
-                f"{summary}\n\n"
-                f"{DIVIDER}"
-            )[:4000],
-            color=discord.Color.teal(),
-            timestamp=datetime.now(timezone.utc),
-        )
+            channel = self.bot.get_channel(CHANNEL_ID)
+            if channel is None:
+                channel = await self.bot.fetch_channel(CHANNEL_ID)
 
-        embed.add_field(
-            name=f"{BUBBLES} Оригінальна назва",
-            value=original_title[:1024],
-            inline=False,
-        )
+            title_limit = 256 - len(ASL) - len(RSL) - 2
+            formatted_title = f"{ASL} {uk_title[:title_limit]} {RSL}"
 
-        embed.add_field(
-            name=f"{BOAT} Опубліковано",
-            value=published[:1024],
-            inline=False,
-        )
+            embed = discord.Embed(
+                title=formatted_title,
+                url=link,
+                description=(
+                    f"{EXCLAMATION_MARK} **Коротко про оновлення**\n\n"
+                    f"{summary}\n\n"
+                    f"{DIVIDER}"
+                )[:4000],
+                color=discord.Color.teal(),
+                timestamp=datetime.now(timezone.utc),
+            )
 
-        embed.add_field(
-            name=f"{QUESTION_MARK} Де прочитати повністю?",
-            value=f"[Відкрити на Black Desert Foundry]({link})",
-            inline=False,
-        )
+            embed.add_field(
+                name=f"{BUBBLES} Оригінальна назва",
+                value=original_title[:1024],
+                inline=False,
+            )
 
-        embed.set_author(
-            name="Black Desert Foundry",
-            icon_url=NEWS_LOGO_URL,
-        )
-        embed.set_footer(text="Silent Concierge by Myxa | Black Desert Foundry")
+            embed.add_field(
+                name=f"{BOAT} Опубліковано",
+                value=published[:1024],
+                inline=False,
+            )
 
-        file = None
+            embed.add_field(
+                name=f"{QUESTION_MARK} Де прочитати повністю?",
+                value=f"[Відкрити на Black Desert Foundry]({link})",
+                inline=False,
+            )
 
-        if image_url:
-            if ".webp" in image_url.lower():
-                file = await self.image_to_png_file(image_url)
-                if file:
-                    embed.set_image(url="attachment://bdf_news.png")
+            embed.set_author(
+                name="Black Desert Foundry",
+                icon_url=NEWS_LOGO_URL,
+            )
+            embed.set_footer(text="Silent Concierge by Myxa | Black Desert Foundry")
+
+            file = None
+
+            if image_url:
+                if ".webp" in image_url.lower():
+                    file = await self.image_to_png_file(image_url)
+                    if file:
+                        embed.set_image(url="attachment://bdf_news.png")
+                    else:
+                        embed.set_image(url=image_url)
                 else:
                     embed.set_image(url=image_url)
+
+            if file:
+                await channel.send(embed=embed, file=file)
             else:
-                embed.set_image(url=image_url)
+                await channel.send(embed=embed)
 
-        if file:
-            await channel.send(embed=embed, file=file)
-        else:
-            await channel.send(embed=embed)
+            # Only a successfully sent post is considered seen.
+            self.seen_links.add(link)
+            self.save_seen()
 
-        self.seen_links.add(link)
-        self.save_seen()
+        except TemporaryContentError as e:
+            # Do not post and do not mark it as seen. The next 30-minute cycle retries it.
+            print(
+                f"[BDFNewsCog] post postponed, will retry next cycle: "
+                f"{link} | {e}"
+            )
+            return
 
     @tasks.loop(minutes=30)
     async def check_bdf_news(self):
@@ -494,6 +620,10 @@ class BDFNewsCog(commands.Cog):
                 await self.send_post(entry)
                 await asyncio.sleep(2)
 
+        except TemporaryContentError as e:
+            print(
+                f"[BDFNewsCog] temporary check error, will retry next cycle: {e}"
+            )
         except Exception as e:
             print(f"[BDFNewsCog] check error: {e}")
 
@@ -504,4 +634,3 @@ class BDFNewsCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BDFNewsCog(bot))
-    print("[BDF_NEWS] ✅ BDFNewsCog loaded")
