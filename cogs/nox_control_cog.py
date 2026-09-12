@@ -59,6 +59,24 @@ class NoxControlCog(commands.Cog):
 
         await ctx.send("Nox mode OFF. Emergency silence engaged.")
 
+    @commands.command(name="noxreload")
+    @commands.is_owner()
+    async def nox_reload(self, ctx: commands.Context) -> None:
+        """Reload the live NoxCat social cog from the currently deployed code."""
+        if not self._right_guild(ctx):
+            return
+
+        try:
+            if NOX_EXTENSION in self.bot.extensions:
+                await self.bot.reload_extension(NOX_EXTENSION)
+            else:
+                await self.bot.load_extension(NOX_EXTENSION)
+        except Exception as exc:
+            await ctx.send(f"Nox reload failed: `{type(exc).__name__}: {exc}`")
+            return
+
+        await ctx.send("Nox mode reloaded.")
+
     @commands.command(name="noxstatus")
     @commands.is_owner()
     async def nox_status(self, ctx: commands.Context) -> None:
@@ -68,6 +86,29 @@ class NoxControlCog(commands.Cog):
 
         enabled = NOX_EXTENSION in self.bot.extensions
         await ctx.send(f"Nox mode: **{'ON' if enabled else 'OFF'}**")
+
+    @commands.command(name="noxai")
+    @commands.is_owner()
+    async def nox_ai(self, ctx: commands.Context) -> None:
+        """Show AI wiring status without exposing the secret key."""
+        if not self._right_guild(ctx):
+            return
+
+        cog = self.bot.get_cog("NoxCatCog")
+        if cog is None:
+            await ctx.send("Nox AI: **OFF** — NoxCatCog is not loaded.")
+            return
+
+        key_present = bool(getattr(cog, "api_key", ""))
+        model = getattr(cog, "model", "unknown")
+        rescue = self.bot.get_cog("NoxDirectRescueCog") is not None
+        await ctx.send(
+            "Nox AI diagnostics:\n"
+            f"• cog: **ON**\n"
+            f"• OPENAI_API_KEY: **{'SET' if key_present else 'MISSING'}**\n"
+            f"• model: `{model}`\n"
+            f"• direct-reply rescue: **{'ON' if rescue else 'OFF'}**"
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
