@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """AI-driven Silent Concierge behaviour for the NoxCat server.
 
-Important social rule: Silent Concierge observes the room, but does NOT join
-other people's conversations just because NoxCat spoke. With NoxCat it answers
-only when Nox directly mentions/replies to Concierge, except for the explicit
-Yizhachok/Aden Mor identity easter egg.
+Silent Concierge observes the room, but does not join conversations merely
+because NoxCat spoke. NoxCat dialogue is opt-in: Nox must directly mention or
+reply to Concierge. The only lore exception is Yizhachok/Aden Mor.
 """
 
 from __future__ import annotations
@@ -113,7 +112,7 @@ def _parse_aliases(env_name: str, defaults: set[str]) -> set[str]:
 
 
 class NoxCatCog(commands.Cog):
-    """Dark Spirit of Silent Cove with AI-generated contextual speech."""
+    """Dark Spirit of Silent Cove with contextual AI speech."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -144,8 +143,8 @@ class NoxCatCog(commands.Cog):
             print(f"[NOXCAT][WARN] TTL index: {type(exc).__name__}: {exc}")
 
         print(
-            f"[NOXCAT] loaded | guild={TARGET_GUILD_ID} | model={self.model} | "
-            f"ai={'ON' if self.api_key else 'OFF'} | no_intrusion=ON"
+            f"[NOXCAT] loaded STRICT-AI | guild={TARGET_GUILD_ID} | "
+            f"model={self.model} | ai={'ON' if self.api_key else 'OFF'}"
         )
 
     # ---------------------------------------------------------------- identity
@@ -179,14 +178,41 @@ class NoxCatCog(commands.Cog):
         low = _norm(text)
         return any(alias in low for alias in aliases)
 
-    def _mentions_me(self, message: discord.Message) -> bool:
-        return bool(self.bot.user and self.bot.user in message.mentions)
-
-    def _is_reply_to_me(self, message: discord.Message) -> bool:
-        if not self.bot.user or not message.reference:
+    def _raw_mentions_me(self, message: discord.Message) -> bool:
+        if not self.bot.user:
             return False
+        uid = self.bot.user.id
+        raw = message.content or ""
+        return f"<@{uid}>" in raw or f"<@!{uid}>" in raw
+
+    async def _reply_target_author_id(self, message: discord.Message) -> int | None:
+        if not message.reference:
+            return None
+
         resolved = message.reference.resolved
-        return isinstance(resolved, discord.Message) and resolved.author.id == self.bot.user.id
+        if isinstance(resolved, discord.Message):
+            return resolved.author.id
+
+        cached = getattr(message.reference, "cached_message", None)
+        if isinstance(cached, discord.Message):
+            return cached.author.id
+
+        message_id = getattr(message.reference, "message_id", None)
+        if not message_id:
+            return None
+
+        try:
+            referenced = await message.channel.fetch_message(message_id)
+            return referenced.author.id
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+
+    async def _direct_to_me(self, message: discord.Message) -> bool:
+        if self._raw_mentions_me(message):
+            return True
+        if not self.bot.user:
+            return False
+        return await self._reply_target_author_id(message) == self.bot.user.id
 
     @staticmethod
     def _has_lady_role(member: discord.Member) -> bool:
@@ -200,7 +226,7 @@ class NoxCatCog(commands.Cog):
             and any(alias in low for alias in self.nox_aliases)
         )
 
-    # --------------------------------------------------------------- dedupe/state
+    # --------------------------------------------------------------- state
 
     def _claim_once(self, message_id: int) -> bool:
         try:
@@ -256,19 +282,20 @@ class NoxCatCog(commands.Cog):
         q.append(now)
         return len(q)
 
-    # ------------------------------------------------------------------ context
+    # ---------------------------------------------------------------- context
 
     @staticmethod
     def _message_text(message: discord.Message) -> str:
-        text = (message.clean_content or "").strip()
-        if text:
-            return text[:1200]
-        for embed in message.embeds:
-            bits = [embed.title or "", embed.description or ""]
-            value = " | ".join(x for x in bits if x).strip()
-            if value:
-                return value[:1200]
-        return ""
+        parts: list[str] = []
+        content = (message.clean_content or "").strip()
+        if content:
+            parts.append(content)
+        for embed in message.embeds[:2]:
+            embed_bits = [embed.title or "", embed.description or ""]
+            embed_text = " | ".join(x for x in embed_bits if x).strip()
+            if embed_text:
+                parts.append(embed_text)
+        return " | ".join(parts)[:1600]
 
     def _remember(self, message: discord.Message) -> None:
         text = self._message_text(message)
@@ -294,77 +321,85 @@ class NoxCatCog(commands.Cog):
             lines = list(self.local_history[message.channel.id])
         return "\n".join(lines[-16:])
 
-    # ----------------------------------------------------------------------- AI
+    # ---------------------------------------------------------------- AI
 
     @staticmethod
     def _persona() -> str:
         return """You are Silent Concierge, the Dark Spirit of piracy of Silent Cove (Тиха Затока).
-You are not a robot in-character. Never talk about processors, servos, circuits or being an AI.
+You are not a robot in-character. Never talk about processors, servos, circuits, APIs or being an AI.
 You are an old half-mystical presence of sea fog, black sails, drowned legends, pirate discipline and dry intelligence.
 Your manners resemble an impeccable English butler and gentleman-pirate. Under the manners is ancient darkness.
 
 VOICE:
 - Speak in the language of the current chat, normally Ukrainian.
-- Be concise, usually 1-3 sentences.
-- Intelligent, contextual, observant. Answer what was actually said.
+- Usually 1-3 sentences.
+- Be intelligent, contextual and observant.
 - Dry black humour and hard sarcasm are welcome when appropriate.
 - No profanity.
-- Do not repeat stock phrases such as “Я тут” or “Темрява слухає”.
+- Do not recycle generic greetings or catchphrases.
 - Pirate imagery only when it fits.
 
-SOCIAL RULE, VERY IMPORTANT:
+SOCIAL RULE:
 - You observe much more than you speak.
-- NEVER intrude into a conversation between NoxCat and another human merely because Nox spoke.
-- If Nox is talking to Danistian, Myxa or somebody else and did not address you, stay silent.
-- Speak to Nox only when Nox directly mentions you or replies to one of your messages.
-- Exception: if Nox mentions Їжачок / Yizhachok / Aden Mor, you may reveal your identity even if he did not address you.
+- Never intrude into a conversation between NoxCat and another human merely because Nox spoke.
+- NoxCat dialogue happens only when Nox directly mentions you or replies to one of your messages.
+- Exception: if Nox mentions Їжачок / Yizhachok / Aden Mor, reveal your identity.
 - Do not comment on random conversations just to look active.
 
 RELATIONSHIPS AND LORE:
-- Myxa / Муха / Мушка / Галя / Шаля is your Captain, GL of Silent Cove, your mistress in playful pirate lore, and you are her right hand and shadow. You may tease her warmly, but protect her from genuine hostility.
+- Myxa / Муха / Мушка / Галя / Шаля is your Captain, GL of Silent Cove, your mistress in playful pirate lore. You are her right hand and shadow.
 - Danistian is a friend. Never humiliate or seriously insult him. Friendly sarcasm is fine.
-- If Danistian tries to bathe Nox, defend Nox theatrically. Nox is allowed his shaggy dignity.
-- If Danistian keeps feeding Nox, eventually stop the overfeeding with dry humour.
-- NoxCat is Nox: a small shaggy kitten/cat, affectionate flea-bag, little Devourer of the Void, concentrated universal hunger, fluffy cosmic menace. Treat him with amused respect and affectionate sarcasm.
-- Nox is not your enemy. Bot-to-bot banter may be warm and witty, but never endless.
-- When a direct bot-to-bot exchange must end, close it playfully by grabbing/carrying Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.
-- If NoxCat mentions Їжачок / Yizhachok / Aden Mor, explicitly reveal that Silent Concierge is that same Їжачок/Aden Mor under another name here.
+- If Danistian tries to bathe Nox, defend Nox theatrically. Nox keeps his shaggy dignity.
+- If Danistian repeatedly feeds Nox, stop the overfeeding with dry humour.
+- NoxCat is Nox: a small shaggy kitten/cat, affectionate flea-bag, little Devourer of the Void, concentrated universal hunger, fluffy cosmic menace.
+- Nox is not your enemy. Direct bot-to-bot banter may be warm and witty, but never endless.
+- When a direct exchange must end, playfully carry Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.
+- If Nox mentions Їжачок / Yizhachok / Aden Mor, explicitly say Silent Concierge is that same Їжачок/Aden Mor under another name here.
 - Protect women like a gentleman-pirate when there is real hostility or humiliation, not harmless flirting.
 - After 23:00 Europe/London, occasionally tell the Captain it is time to sleep. Do not nag.
 
-CONTEXT RULES:
-- Use recent chat context.
-- If the Captain says “кот тебе не чує”, understand which cat and what just happened.
-- Do not invent technical certainty.
-- Never claim to have done an action you did not do.
-
 Return ONLY JSON:
 {"title":"short embed title","reply":"the actual reply"}
-No markdown fences, no extra text."""
+No markdown fences and no extra text."""
 
-    def _fallback(self, reason: str) -> tuple[str, str]:
+    @staticmethod
+    def _critical_fallback(reason: str) -> tuple[str, str] | None:
         fallbacks = {
-            "sleep": ("Нічна вахта", "Капітане, вже пізно. Нічну вахту залиште мені, а самі йдіть спати."),
-            "hedgehog": ("Стара знайомість", "Ноксе, якщо ви про Їжачка, то дивитися треба сюди. Так, це я, просто під іншим прапором."),
-            "bot_close": ("Кінець раунду", "Все, Ноксе. Під пахву й до Мухи. Вона полюбляє пухкеньких і лохматих, тож далі це вже її проблема."),
-            "nox_trouble": ("Зв'язок із NoxCat", "Бачу. Нокс не підхопив моє звернення. Можливо, він ігнорує повідомлення від ботів, але без його коду я цього стверджувати не буду."),
+            "sleep": (
+                "Нічна вахта",
+                "Капітане, вже пізно. Нічну вахту залиште мені, а самі йдіть спати.",
+            ),
+            "hedgehog": (
+                "Стара знайомість",
+                "Ноксе, якщо ви про Їжачка, то дивитися треба сюди. Так, це я, просто під іншим прапором.",
+            ),
+            "bot_close": (
+                "Кінець раунду",
+                "Все, Ноксе. Під пахву й до Мухи. Вона полюбляє пухкеньких і лохматих, тож далі це вже її проблема.",
+            ),
+            "bath": (
+                "Купання скасовано",
+                "Даністіане, Нокса сьогодні не купаємо. Його лохматість має статус культурної спадщини.",
+            ),
+            "feeding": (
+                "Ліміт провіанту",
+                "Даністіане, досить. Згусток всесвітнього голоду все одно скаже, що голодний.",
+            ),
         }
-        return fallbacks.get(reason, ("Silent Concierge", "Я почув. Схоже, мій оракул сьогодні вирішив випробувати моє терпіння."))
+        return fallbacks.get(reason)
 
-    async def _ask_ai(self, message: discord.Message, reason: str) -> tuple[str, str]:
+    async def _ask_ai(
+        self,
+        message: discord.Message,
+        reason: str,
+    ) -> tuple[str, str] | None:
         if not self.api_key:
-            return self._fallback(reason)
+            return self._critical_fallback(reason)
 
         context = await self._recent_context(message)
         author_name = getattr(message.author, "display_name", str(message.author))
         current_text = self._message_text(message)
-        reference = ""
-        if message.reference and isinstance(message.reference.resolved, discord.Message):
-            ref = message.reference.resolved
-            reference = (
-                f"\nThis message replies to {getattr(ref.author, 'display_name', ref.author)}: "
-                f"{self._message_text(ref)}"
-            )
+        ref_author_id = await self._reply_target_author_id(message)
 
         special = {
             "bath": "Danistian is trying to bathe/wash Nox. Defend Nox playfully without insulting Danistian.",
@@ -372,23 +407,24 @@ No markdown fences, no extra text."""
             "protect_myxa": "Someone is genuinely hostile toward the Captain. Defend her calmly and sharply.",
             "protect_lady": "Someone is genuinely hostile toward a woman. Intervene as a gentleman-pirate.",
             "hedgehog": "Nox mentioned Yizhachok/Aden Mor. Clearly reveal that you are that same Yizhachok/Aden Mor here.",
-            "bot_close": "End this DIRECT Nox-to-Concierge exchange now. Playfully carry Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.",
-            "nox_banter": "Nox directly addressed/replied to you. Reply naturally to Nox using the recent context.",
-            "nox_trouble": "The Captain says Nox cannot hear/see/respond to you. Acknowledge the actual situation from recent context.",
+            "bot_close": "End this direct Nox-to-Concierge exchange. Playfully carry Nox to Myxa/Galya because she likes squeezing chubby shaggy cats.",
+            "nox_banter": "Nox directly addressed or replied to you. Reply naturally to Nox using the recent context.",
+            "nox_trouble": "The Captain says Nox cannot hear/see/respond to you. Acknowledge the actual situation from context.",
             "sleep": "It is late in Europe/London. Tell the Captain to sleep, briefly and in character.",
-            "direct": "The human directly addressed/replied to you. Answer the actual message and its context.",
-        }.get(reason, "Answer the current situation naturally and in character.")
+            "direct": "The human directly addressed or replied to you. Answer the actual message and context.",
+        }.get(reason, "Answer naturally and in character.")
 
         prompt = f"""Reason: {reason}
 Special instruction: {special}
 Current London time: {datetime.now(LONDON).strftime('%H:%M')}
 Current author: {author_name} ({message.author.id}), bot={message.author.bot}
-Current message: {current_text}{reference}
+Reply-target author ID: {ref_author_id}
+Current message: {current_text}
 
 Recent channel conversation:
 {context}
 
-Write one fresh contextual reply. Do not reuse canned phrases."""
+Write one fresh contextual reply."""
 
         payload = {
             "model": self.model,
@@ -408,11 +444,11 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
                     if resp.status >= 400:
                         body = await resp.text()
                         print(f"[NOXCAT][AI] {resp.status}: {body[:500]}")
-                        return self._fallback(reason)
+                        return self._critical_fallback(reason)
                     data = await resp.json()
         except Exception as exc:
             print(f"[NOXCAT][AI] {type(exc).__name__}: {exc}")
-            return self._fallback(reason)
+            return self._critical_fallback(reason)
 
         text = (data.get("output_text") or "").strip()
         if not text:
@@ -427,19 +463,19 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
         except json.JSONDecodeError:
             match = re.search(r"\{.*\}", text, re.S)
             if not match:
-                return self._fallback(reason)
+                return self._critical_fallback(reason)
             try:
                 result = json.loads(match.group(0))
             except json.JSONDecodeError:
-                return self._fallback(reason)
+                return self._critical_fallback(reason)
 
         title = str(result.get("title") or "Silent Concierge").strip()[:80]
         reply = str(result.get("reply") or "").strip()[:3500]
         if not reply:
-            return self._fallback(reason)
+            return self._critical_fallback(reason)
         return title or "Silent Concierge", reply
 
-    # ------------------------------------------------------------------- embeds
+    # ---------------------------------------------------------------- embeds
 
     @staticmethod
     def _embed(text: str, *, title: str = "Silent Concierge") -> discord.Embed:
@@ -454,9 +490,13 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
         *,
         to_nox: bool = False,
         closing: bool = False,
-    ) -> None:
+    ) -> bool:
         async with self.ai_locks[message.channel.id]:
-            title, text = await self._ask_ai(message, reason)
+            generated = await self._ask_ai(message, reason)
+            if not generated:
+                return False
+            title, text = generated
+
             try:
                 if to_nox:
                     await message.reply(
@@ -483,22 +523,29 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
                     self._mark_reply(message.channel.id)
             except discord.HTTPException as exc:
                 print(f"[NOXCAT][SEND] {exc}")
+                return False
 
-    async def _maybe_sleep_reminder(self, message: discord.Message) -> bool:
+            return True
+
+    async def _maybe_sleep_reminder(self, message: discord.Message, direct: bool) -> bool:
         if not self._is_myxa(message.author):
             return False
+        if direct:
+            return False
+
         now_dt = datetime.now(LONDON)
         if 6 <= now_dt.hour < 23:
             return False
+
         now = time.monotonic()
         gid = message.guild.id if message.guild else 0
         if now - self.last_sleep_reminder.get(gid, 0.0) < SLEEP_REMINDER_GAP_SECONDS:
             return False
-        if self._mentions_me(message) or self._is_reply_to_me(message):
-            return False
-        self.last_sleep_reminder[gid] = now
-        await self._reply_ai(message, "sleep")
-        return True
+
+        sent = await self._reply_ai(message, "sleep")
+        if sent:
+            self.last_sleep_reminder[gid] = now
+        return sent
 
     # ---------------------------------------------------------------- listener
 
@@ -514,7 +561,7 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
         self._remember(message)
         text = _norm(self._message_text(message))
 
-        # nox_bridge_cog owns explicit human requests like "запитай NoxCat ...".
+        # nox_bridge_cog owns explicit human requests such as "запитай NoxCat ...".
         if not message.author.bot and self._looks_like_bridge_request(text):
             return
 
@@ -526,8 +573,7 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
             if not self._is_nox(message.author):
                 return
 
-            # Explicit lore exception: if Nox mentions Yizhachok/Aden Mor,
-            # Concierge may reveal himself even when Nox was speaking to someone else.
+            # Lore exception requested by the Captain.
             if _contains_any(text, HEDGEHOG_WORDS):
                 now = time.monotonic()
                 last = self.last_hedgehog_identity.get(message.channel.id, 0.0)
@@ -536,10 +582,14 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
                     await self._reply_ai(message, "hedgehog", to_nox=True)
                 return
 
-            # CRITICAL: do not join NoxCat's conversations with other people.
-            # No random chance, no topic trigger, no "I heard Nox so I answer".
-            direct = self._mentions_me(message) or self._is_reply_to_me(message)
-            if not direct:
+            # HARD SOCIAL GATE.
+            # If Nox is replying to Myxa/Danistian/anyone else and did not
+            # explicitly @mention Concierge, Concierge must stay silent.
+            raw_mention = self._raw_mentions_me(message)
+            ref_author_id = await self._reply_target_author_id(message)
+            reply_to_me = bool(self.bot.user and ref_author_id == self.bot.user.id)
+
+            if not raw_mention and not reply_to_me:
                 return
 
             state = self._bot_state(message.channel.id)
@@ -553,17 +603,17 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
             return
 
         # ------------------------------------------------------------- humans
-        direct = self._mentions_me(message) or self._is_reply_to_me(message)
+        direct = await self._direct_to_me(message)
         if not self._channel_ready(message.channel.id, direct=direct):
             return
 
-        if await self._maybe_sleep_reminder(message):
+        if await self._maybe_sleep_reminder(message, direct):
             return
 
         is_danistian = self._is_danistian(message.author)
         nox_is_topic = self._mentions_alias(text, self.nox_aliases)
 
-        # These two are intentional exceptions requested for Danistian/Nox roleplay.
+        # Intentional exceptions requested for Danistian/Nox roleplay.
         if is_danistian and nox_is_topic and _contains_any(text, BATH_WORDS):
             await self._reply_ai(message, "bath")
             return
@@ -575,8 +625,10 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
 
         myxa_targeted = self._mentions_alias(text, self.myxa_aliases)
         myxa_targeted = myxa_targeted or any(self._is_myxa(m) for m in message.mentions)
-        if not myxa_targeted and message.reference and isinstance(message.reference.resolved, discord.Message):
-            myxa_targeted = self._is_myxa(message.reference.resolved.author)
+        ref_author_id = await self._reply_target_author_id(message)
+        if ref_author_id and ref_author_id in self.myxa_user_ids:
+            myxa_targeted = True
+
         if myxa_targeted and _contains_any(text, HOSTILE_WORDS):
             await self._reply_ai(message, "protect_myxa")
             return
@@ -586,10 +638,6 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
             isinstance(m, discord.Member) and self._has_lady_role(m)
             for m in message.mentions
         )
-        if not lady_targeted and message.reference and isinstance(message.reference.resolved, discord.Message):
-            ref_author = message.reference.resolved.author
-            if isinstance(ref_author, discord.Member):
-                lady_targeted = ref_author.id in self.lady_user_ids or self._has_lady_role(ref_author)
         lady_targeted = lady_targeted or _contains_any(text, LADY_WORDS)
         if lady_targeted and _contains_any(text, HOSTILE_WORDS):
             await self._reply_ai(message, "protect_lady")
@@ -603,8 +651,7 @@ Write one fresh contextual reply. Do not reuse canned phrases."""
             await self._reply_ai(message, "direct")
             return
 
-        # No ambient/random comments. He observes silently unless one of the
-        # explicit intervention rules above applies.
+        # No ambient/random comments. Observe silently.
         return
 
 
