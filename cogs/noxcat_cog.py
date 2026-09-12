@@ -31,6 +31,7 @@ BOT_MIN_GAP_SECONDS = 70
 BOT_WINDOW_SECONDS = 12 * 60
 BOT_MAX_REPLIES_BEFORE_CLOSING = 4
 BOT_LOCK_SECONDS = 25 * 60
+HEDGEHOG_IDENTITY_COOLDOWN_SECONDS = 10 * 60
 
 SLEEP_REMINDER_GAP_SECONDS = 60 * 60
 FEED_WINDOW_SECONDS = 20 * 60
@@ -69,6 +70,10 @@ LADY_WORDS = {
 CHAOS_WORDS = {
     "ритуал", "жертв", "кров", "бунт", "пірат", "ром", "проклят",
     "ritual", "sacrifice", "blood", "mutiny", "pirate", "curse",
+}
+HEDGEHOG_WORDS = {
+    "їжачок", "їжачка", "їжачку", "їжак", "їжаче", "іжачок", "іжачка",
+    "hedgehog", "yizhachok", "izhachok", "аден мор", "aden mor",
 }
 
 
@@ -123,6 +128,7 @@ class NoxCatCog(commands.Cog):
         self.bot_reply_times: dict[int, deque[float]] = defaultdict(deque)
         self.bot_locked_until: dict[int, float] = {}
         self.last_bot_reply: dict[int, float] = {}
+        self.last_hedgehog_identity: dict[int, float] = {}
 
         print(f"[NOXCAT] loaded | guild={TARGET_GUILD_ID}")
 
@@ -264,6 +270,16 @@ class NoxCatCog(commands.Cog):
         ])
 
     @staticmethod
+    def _hedgehog_identity_reply() -> str:
+        return random.choice([
+            "Якщо ви про Їжачка, Ноксе, то дивитися треба сюди. Це я. У Тихій Затоці я просто ношу інше ім'я й чорний прапор.",
+            "Їжачок нікуди не зник, блохастику. Він просто змінив голки на піратський мундир. Так, це я.",
+            "Аден Мор. Їжачок. Silent Concierge. Імена різні, Ноксе. Особа та сама. На ваше нещастя.",
+            "Ви щойно згадали Їжачка. Дозвольте заощадити вам детективну роботу: це я.",
+            "Так, маленький пожирачу Пустки. Той самий Їжачок. Просто тут у мене темрява, чорний прапор і службові обов'язки.",
+        ])
+
+    @staticmethod
     def _bot_closing_reply() -> str:
         return random.choice([
             "Все, Ноксе. Я тебе схопив і поніс Мусі. Вона полюбляє тискати пухкеньких і лохматих. Далі вже не моя відповідальність.",
@@ -381,6 +397,16 @@ class NoxCatCog(commands.Cog):
         if message.author.bot:
             # Only NoxCat may have a dialogue with Silent Concierge.
             if not self._is_nox(message.author):
+                return
+
+            # If Nox ever mentions Yizhachok / Aden Mor, Concierge makes the
+            # identity connection explicit, but with its own anti-loop cooldown.
+            if _contains_any(text, HEDGEHOG_WORDS):
+                now = time.monotonic()
+                last = self.last_hedgehog_identity.get(message.channel.id, 0.0)
+                if now - last >= HEDGEHOG_IDENTITY_COOLDOWN_SECONDS:
+                    self.last_hedgehog_identity[message.channel.id] = now
+                    await self._reply_to_nox(message, self._hedgehog_identity_reply())
                 return
 
             state = self._bot_state(message.channel.id)
