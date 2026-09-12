@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Bridge human requests like 'запитай NoxCat щось' into a real @NoxCat mention.
-
-This cog does not fake human messages. It sends a normal Silent Concierge bot
-message that explicitly mentions NoxCat. If NoxCat is configured to ignore all
-bot-authored messages, its owner must allow-list Silent Concierge on the NoxCat side.
-"""
+"""Bridge human requests like 'запитай NoxCat щось' into a real @NoxCat mention."""
 
 from __future__ import annotations
 
@@ -21,6 +16,7 @@ from data.mongo_store import get_database
 
 TARGET_GUILD_ID = 1540407360198156429
 CLAIM_COLLECTION = "nox_bridge_claims"
+TURQUOISE = 0x40E0D0
 
 NOX_NAME_MARKERS = (
     "noxcat",
@@ -78,7 +74,6 @@ class NoxBridgeCog(commands.Cog):
         except DuplicateKeyError:
             return False
         except Exception as exc:
-            # Fail open: a DB hiccup should not permanently break the feature.
             print(f"[NOX_BRIDGE][WARN] claim failed: {type(exc).__name__}: {exc}")
             return True
 
@@ -94,7 +89,6 @@ class NoxBridgeCog(commands.Cog):
         cleaned = text.strip()
         low = _norm(cleaned)
 
-        # Remove common leading request wording and NoxCat name.
         for prefix in ASK_PREFIXES:
             if low.startswith(prefix):
                 cleaned = cleaned[len(prefix):].strip(" ,:.-")
@@ -110,7 +104,6 @@ class NoxBridgeCog(commands.Cog):
         if _norm(cleaned) in {"", "щось", "що-небудь", "що небудь", "something"}:
             return random.choice(RANDOM_QUESTIONS)
 
-        # If the user gave the actual question, keep it and only make it address Nox.
         return f"Ноксе, {cleaned}"
 
     @staticmethod
@@ -127,6 +120,16 @@ class NoxBridgeCog(commands.Cog):
                 return member
         return None
 
+    @staticmethod
+    def _embed(question: str) -> discord.Embed:
+        embed = discord.Embed(
+            title="Silent Concierge → NoxCat",
+            description=question,
+            color=TURQUOISE,
+        )
+        embed.set_footer(text="Тиха Затока")
+        return embed
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if not message.guild or message.guild.id != TARGET_GUILD_ID:
@@ -140,14 +143,22 @@ class NoxBridgeCog(commands.Cog):
 
         nox = self._find_nox(message.guild)
         if nox is None:
-            await message.channel.send(
-                "Нокса бачу лише в легендах, але не в списку учасників. Не можу його покликати."
+            embed = discord.Embed(
+                title="Silent Concierge",
+                description="Нокса бачу лише в легендах, але не в списку учасників. Не можу його покликати.",
+                color=TURQUOISE,
             )
+            await message.channel.send(embed=embed)
             return
 
         question = self._extract_question(message.clean_content)
+
+        # The mention stays in normal message content because mentions inside an
+        # embed do not reliably notify another bot. The actual text is in the
+        # turquoise embed.
         await message.channel.send(
-            f"{nox.mention} {question}",
+            content=nox.mention,
+            embed=self._embed(question),
             allowed_mentions=discord.AllowedMentions(
                 everyone=False,
                 roles=False,
