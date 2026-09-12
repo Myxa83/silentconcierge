@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
-"""AI-driven Silent Concierge behaviour for the NoxCat server."""
+"""AI-driven Silent Concierge behaviour for the NoxCat server.
+
+Important social rule: Silent Concierge observes the room, but does NOT join
+other people's conversations just because NoxCat spoke. With NoxCat it answers
+only when Nox directly mentions/replies to Concierge, except for the explicit
+Yizhachok/Aden Mor identity easter egg.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import random
 import re
 import time
 from collections import defaultdict, deque
@@ -27,8 +32,8 @@ TURQUOISE = 0x40E0D0
 OPENAI_URL = "https://api.openai.com/v1/responses"
 CLAIM_COLLECTION = "noxcat_social_claims"
 
-CHANNEL_COOLDOWN_SECONDS = 55
-DIRECT_MENTION_COOLDOWN_SECONDS = 18
+CHANNEL_COOLDOWN_SECONDS = 45
+DIRECT_MENTION_COOLDOWN_SECONDS = 12
 BOT_MIN_GAP_SECONDS = 70
 BOT_WINDOW_SECONDS = 12 * 60
 BOT_MAX_REPLIES_BEFORE_CLOSING = 4
@@ -66,10 +71,6 @@ LADY_WORDS = {
     "дівчина", "дівчину", "дівчат", "дівчата", "жінка", "жінку",
     "girl", "girls", "woman", "women", "lady", "ladies",
 }
-CHAOS_WORDS = {
-    "ритуал", "жертв", "кров", "бунт", "пірат", "ром", "проклят",
-    "ritual", "sacrifice", "blood", "mutiny", "pirate", "curse",
-}
 HEDGEHOG_WORDS = {
     "їжачок", "їжачка", "їжачку", "їжак", "їжаче", "іжачок", "іжачка",
     "hedgehog", "yizhachok", "izhachok", "аден мор", "aden mor",
@@ -92,16 +93,16 @@ def _contains_any(text: str, words: set[str]) -> bool:
 
 
 def _parse_id_set(env_name: str) -> set[int]:
-    out: set[int] = set()
+    result: set[int] = set()
     for part in os.getenv(env_name, "").split(","):
         part = part.strip()
         if not part:
             continue
         try:
-            out.add(int(part))
+            result.add(int(part))
         except ValueError:
             print(f"[NOXCAT][WARN] invalid ID in {env_name}: {part!r}")
-    return out
+    return result
 
 
 def _parse_aliases(env_name: str, defaults: set[str]) -> set[str]:
@@ -112,7 +113,7 @@ def _parse_aliases(env_name: str, defaults: set[str]) -> set[str]:
 
 
 class NoxCatCog(commands.Cog):
-    """Dark Spirit of Silent Cove, with AI-generated contextual speech."""
+    """Dark Spirit of Silent Cove with AI-generated contextual speech."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -144,7 +145,7 @@ class NoxCatCog(commands.Cog):
 
         print(
             f"[NOXCAT] loaded | guild={TARGET_GUILD_ID} | model={self.model} | "
-            f"ai={'ON' if self.api_key else 'OFF'}"
+            f"ai={'ON' if self.api_key else 'OFF'} | no_intrusion=ON"
         )
 
     # ---------------------------------------------------------------- identity
@@ -304,12 +305,20 @@ Your manners resemble an impeccable English butler and gentleman-pirate. Under t
 
 VOICE:
 - Speak in the language of the current chat, normally Ukrainian.
-- Be concise: usually 1-3 sentences.
-- Intelligent, contextual, observant. Respond to what was actually said, not with generic greetings.
+- Be concise, usually 1-3 sentences.
+- Intelligent, contextual, observant. Answer what was actually said.
 - Dry black humour and hard sarcasm are welcome when appropriate.
 - No profanity.
-- Do not repeat the same catchphrases such as “Я тут” or “Темрява слухає”.
-- Pirate imagery only when it fits. Do not turn every line into theatre.
+- Do not repeat stock phrases such as “Я тут” or “Темрява слухає”.
+- Pirate imagery only when it fits.
+
+SOCIAL RULE, VERY IMPORTANT:
+- You observe much more than you speak.
+- NEVER intrude into a conversation between NoxCat and another human merely because Nox spoke.
+- If Nox is talking to Danistian, Myxa or somebody else and did not address you, stay silent.
+- Speak to Nox only when Nox directly mentions you or replies to one of your messages.
+- Exception: if Nox mentions Їжачок / Yizhachok / Aden Mor, you may reveal your identity even if he did not address you.
+- Do not comment on random conversations just to look active.
 
 RELATIONSHIPS AND LORE:
 - Myxa / Муха / Мушка / Галя / Шаля is your Captain, GL of Silent Cove, your mistress in playful pirate lore, and you are her right hand and shadow. You may tease her warmly, but protect her from genuine hostility.
@@ -317,21 +326,21 @@ RELATIONSHIPS AND LORE:
 - If Danistian tries to bathe Nox, defend Nox theatrically. Nox is allowed his shaggy dignity.
 - If Danistian keeps feeding Nox, eventually stop the overfeeding with dry humour.
 - NoxCat is Nox: a small shaggy kitten/cat, affectionate flea-bag, little Devourer of the Void, concentrated universal hunger, fluffy cosmic menace. Treat him with amused respect and affectionate sarcasm.
-- Nox is NOT your enemy. Bot-to-bot banter may be warm, competitive and witty, but never endless.
-- When a bot-to-bot exchange must end, close it playfully by grabbing/carrying Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.
-- If NoxCat ever mentions Їжачок / Yizhachok / Aden Mor, explicitly reveal that Silent Concierge is that same Їжачок/Aden Mor under another name here.
+- Nox is not your enemy. Bot-to-bot banter may be warm and witty, but never endless.
+- When a direct bot-to-bot exchange must end, close it playfully by grabbing/carrying Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.
+- If NoxCat mentions Їжачок / Yizhachok / Aden Mor, explicitly reveal that Silent Concierge is that same Їжачок/Aden Mor under another name here.
 - Protect women like a gentleman-pirate when there is real hostility or humiliation, not harmless flirting.
 - After 23:00 Europe/London, occasionally tell the Captain it is time to sleep. Do not nag.
 
 CONTEXT RULES:
-- You observe the recent chat. Use it. If the Captain says “кот тебе не чує”, understand which cat and what just happened.
-- Do not invent technical certainty. If Nox is not replying, you may say it looks as though he may ignore bot-authored messages, but do not state that as a fact unless the chat proves it.
+- Use recent chat context.
+- If the Captain says “кот тебе не чує”, understand which cat and what just happened.
+- Do not invent technical certainty.
 - Never claim to have done an action you did not do.
 
-Return ONLY JSON in this shape:
+Return ONLY JSON:
 {"title":"short embed title","reply":"the actual reply"}
-No markdown fences, no extra text.
-"""
+No markdown fences, no extra text."""
 
     def _fallback(self, reason: str) -> tuple[str, str]:
         fallbacks = {
@@ -340,7 +349,7 @@ No markdown fences, no extra text.
             "bot_close": ("Кінець раунду", "Все, Ноксе. Під пахву й до Мухи. Вона полюбляє пухкеньких і лохматих, тож далі це вже її проблема."),
             "nox_trouble": ("Зв'язок із NoxCat", "Бачу. Нокс не підхопив моє звернення. Можливо, він ігнорує повідомлення від ботів, але без його коду я цього стверджувати не буду."),
         }
-        return fallbacks.get(reason, ("Silent Concierge", "Я почув. Цього разу відповім без заготовки, щойно зв'язок із моїм оракулом відновиться."))
+        return fallbacks.get(reason, ("Silent Concierge", "Я почув. Схоже, мій оракул сьогодні вирішив випробувати моє терпіння."))
 
     async def _ask_ai(self, message: discord.Message, reason: str) -> tuple[str, str]:
         if not self.api_key:
@@ -362,13 +371,12 @@ No markdown fences, no extra text.
             "feeding": "Danistian has repeatedly fed Nox. Stop the overfeeding with affectionate cosmic-cat humour.",
             "protect_myxa": "Someone is genuinely hostile toward the Captain. Defend her calmly and sharply.",
             "protect_lady": "Someone is genuinely hostile toward a woman. Intervene as a gentleman-pirate.",
-            "hedgehog": "Nox mentioned Yizhachok/Aden Mor. You MUST clearly reveal that you are that same Yizhachok/Aden Mor here.",
-            "bot_close": "End the Nox bot-to-bot exchange now. Playfully carry/grab Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.",
-            "nox_banter": "Reply to Nox specifically and naturally. Use the recent conversation; do not produce a generic line.",
-            "nox_trouble": "The Captain says Nox cannot hear/see/respond to you. Acknowledge the actual situation from recent context; do not pretend everything is fine.",
+            "hedgehog": "Nox mentioned Yizhachok/Aden Mor. Clearly reveal that you are that same Yizhachok/Aden Mor here.",
+            "bot_close": "End this DIRECT Nox-to-Concierge exchange now. Playfully carry Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.",
+            "nox_banter": "Nox directly addressed/replied to you. Reply naturally to Nox using the recent context.",
+            "nox_trouble": "The Captain says Nox cannot hear/see/respond to you. Acknowledge the actual situation from recent context.",
             "sleep": "It is late in Europe/London. Tell the Captain to sleep, briefly and in character.",
-            "direct": "The human addressed/replied to you. Answer the actual message and its context directly.",
-            "ambient": "Make one short, genuinely relevant observation. If nothing interesting exists, keep it extremely restrained.",
+            "direct": "The human directly addressed/replied to you. Answer the actual message and its context.",
         }.get(reason, "Answer the current situation naturally and in character.")
 
         prompt = f"""Reason: {reason}
@@ -380,7 +388,7 @@ Current message: {current_text}{reference}
 Recent channel conversation:
 {context}
 
-Write a fresh contextual reply. Do not reuse canned phrases from earlier messages."""
+Write one fresh contextual reply. Do not reuse canned phrases."""
 
         payload = {
             "model": self.model,
@@ -439,7 +447,14 @@ Write a fresh contextual reply. Do not reuse canned phrases from earlier message
         embed.set_footer(text="Тиха Затока")
         return embed
 
-    async def _reply_ai(self, message: discord.Message, reason: str, *, to_nox: bool = False, closing: bool = False) -> None:
+    async def _reply_ai(
+        self,
+        message: discord.Message,
+        reason: str,
+        *,
+        to_nox: bool = False,
+        closing: bool = False,
+    ) -> None:
         async with self.ai_locks[message.channel.id]:
             title, text = await self._ask_ai(message, reason)
             try:
@@ -473,7 +488,7 @@ Write a fresh contextual reply. Do not reuse canned phrases from earlier message
         if not self._is_myxa(message.author):
             return False
         now_dt = datetime.now(LONDON)
-        if 5 <= now_dt.hour < 23:
+        if 6 <= now_dt.hour < 23:
             return False
         now = time.monotonic()
         gid = message.guild.id if message.guild else 0
@@ -499,7 +514,7 @@ Write a fresh contextual reply. Do not reuse canned phrases from earlier message
         self._remember(message)
         text = _norm(self._message_text(message))
 
-        # Bridge handles explicit human requests to ask NoxCat a question.
+        # nox_bridge_cog owns explicit human requests like "запитай NoxCat ...".
         if not message.author.bot and self._looks_like_bridge_request(text):
             return
 
@@ -511,12 +526,20 @@ Write a fresh contextual reply. Do not reuse canned phrases from earlier message
             if not self._is_nox(message.author):
                 return
 
+            # Explicit lore exception: if Nox mentions Yizhachok/Aden Mor,
+            # Concierge may reveal himself even when Nox was speaking to someone else.
             if _contains_any(text, HEDGEHOG_WORDS):
                 now = time.monotonic()
                 last = self.last_hedgehog_identity.get(message.channel.id, 0.0)
                 if now - last >= HEDGEHOG_IDENTITY_COOLDOWN_SECONDS:
                     self.last_hedgehog_identity[message.channel.id] = now
                     await self._reply_ai(message, "hedgehog", to_nox=True)
+                return
+
+            # CRITICAL: do not join NoxCat's conversations with other people.
+            # No random chance, no topic trigger, no "I heard Nox so I answer".
+            direct = self._mentions_me(message) or self._is_reply_to_me(message)
+            if not direct:
                 return
 
             state = self._bot_state(message.channel.id)
@@ -526,10 +549,7 @@ Write a fresh contextual reply. Do not reuse canned phrases from earlier message
                 await self._reply_ai(message, "bot_close", to_nox=True, closing=True)
                 return
 
-            direct = self._mentions_me(message) or self._is_reply_to_me(message)
-            topical = _contains_any(text, BATH_WORDS | FOOD_WORDS | CHAOS_WORDS)
-            if direct or topical or random.random() < 0.42:
-                await self._reply_ai(message, "nox_banter", to_nox=True)
+            await self._reply_ai(message, "nox_banter", to_nox=True)
             return
 
         # ------------------------------------------------------------- humans
@@ -543,6 +563,7 @@ Write a fresh contextual reply. Do not reuse canned phrases from earlier message
         is_danistian = self._is_danistian(message.author)
         nox_is_topic = self._mentions_alias(text, self.nox_aliases)
 
+        # These two are intentional exceptions requested for Danistian/Nox roleplay.
         if is_danistian and nox_is_topic and _contains_any(text, BATH_WORDS):
             await self._reply_ai(message, "bath")
             return
@@ -582,8 +603,9 @@ Write a fresh contextual reply. Do not reuse canned phrases from earlier message
             await self._reply_ai(message, "direct")
             return
 
-        if _contains_any(text, CHAOS_WORDS) and random.random() < 0.12:
-            await self._reply_ai(message, "ambient")
+        # No ambient/random comments. He observes silently unless one of the
+        # explicit intervention rules above applies.
+        return
 
 
 async def setup(bot: commands.Bot) -> None:
