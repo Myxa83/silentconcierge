@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Safety net for direct human replies/mentions on the NoxCat server.
-
-The main NoxCatCog remains the primary handler. This cog waits briefly and only
-steps in when a human directly addressed Silent Concierge but the main cog did
-not answer (for example because the AI call failed or Discord did not resolve a
-reply reference in time).
-"""
+"""Safety net for direct human replies/mentions on the NoxCat server."""
 
 from __future__ import annotations
 
@@ -17,7 +11,7 @@ from discord.ext import commands
 
 TARGET_GUILD_ID = 1540407360198156429
 TURQUOISE = 0x40E0D0
-WAIT_SECONDS = 5.0
+WAIT_SECONDS = 4.0
 
 
 class NoxDirectRescueCog(commands.Cog):
@@ -74,8 +68,6 @@ class NoxDirectRescueCog(commands.Cog):
                 if ref_id == message.id:
                     return True
 
-                # Main cog normally answers quickly. Any Concierge message in the
-                # few seconds immediately after the direct call counts as handled.
                 delta = (item.created_at - message.created_at).total_seconds()
                 if 0 <= delta <= WAIT_SECONDS + 3:
                     return True
@@ -90,6 +82,17 @@ class NoxDirectRescueCog(commands.Cog):
         embed.set_footer(text="Тиха Затока")
         return embed
 
+    @staticmethod
+    def _failure_text(message: discord.Message, error: str) -> str:
+        raw = (message.clean_content or "").strip().casefold()
+        if "мовч" in raw:
+            lead = "Не ігнорую вас, капітане."
+        elif "що роб" in raw or "шо роб" in raw or "зо роб" in raw:
+            lead = "Зараз намагаюся повернути собі нормальну мову, а не повторювати одну й ту саму дурницю."
+        else:
+            lead = "Я вас чую, капітане."
+        return f"{lead} AI-відповідь зараз не пройшла, тому не буду прикидатися розумним заготовкою. Діагностика: `!noxai`."
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if not message.guild or message.guild.id != TARGET_GUILD_ID:
@@ -97,12 +100,13 @@ class NoxDirectRescueCog(commands.Cog):
         if message.author.bot:
             return
 
-        # Emergency !noxoff must silence the whole Nox behaviour, including rescue.
         nox_cog = self.bot.get_cog("NoxCatCog")
         if nox_cog is None:
             return
 
-        if (message.content or "").casefold().startswith(("!noxon", "!noxoff", "!noxstatus", "!noxreload", "!noxai")):
+        if (message.content or "").casefold().startswith(
+            ("!noxon", "!noxoff", "!noxstatus", "!noxreload", "!noxai")
+        ):
             return
 
         if not await self._direct_to_me(message):
@@ -112,7 +116,6 @@ class NoxDirectRescueCog(commands.Cog):
         if await self._already_answered(message):
             return
 
-        # Use the SAME AI/persona/context as the main Nox cog.
         generated = None
         try:
             generated = await nox_cog._ask_ai(message, "direct")
@@ -122,10 +125,9 @@ class NoxDirectRescueCog(commands.Cog):
         if generated:
             title, text = generated
         else:
-            # Last-resort line only. It is deliberately short: better one graceful
-            # acknowledgement than ignoring a direct call entirely.
             title = "Silent Concierge"
-            text = "Бу почув. Я нікуди не зник, просто Темрява на мить втратила голос."
+            error = str(getattr(nox_cog, "last_ai_error", "unknown"))
+            text = self._failure_text(message, error)
 
         try:
             await message.reply(
