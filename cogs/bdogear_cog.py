@@ -25,6 +25,7 @@ class BdoGear(commands.Cog):
         self.collect_stop_requested = False
         self.collect_stop_event = asyncio.Event()
         self.collect_owner_id = None
+        self.last_scrape_error: str | None = None
 
     @staticmethod
     def _extract_garmoth_link(content: str) -> str | None:
@@ -50,102 +51,291 @@ class BdoGear(commands.Cog):
         }
 
     @staticmethod
-    def _chrome_options():
-        from selenium.webdriver.chrome.options import Options
-
-        options = Options()
-        options.page_load_strategy = "eager"
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument(
-            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-
-        browser_binary = (
-            os.getenv("CHROME_BIN")
-            or os.getenv("GOOGLE_CHROME_BIN")
-            or shutil.which("google-chrome")
-            or shutil.which("google-chrome-stable")
-            or shutil.which("chromium")
-            or shutil.which("chromium-browser")
-        )
-        if browser_binary:
-            options.binary_location = browser_binary
-
-        return options
+    def _clean_stat_value(value) -> str | None:
+        """Повертає чисте числове значення стату."""
+        match = re.search(r"\b(\d{2,4})\b", str(value or ""))
+        return match.group(1) if match else None
 
     @classmethod
-    def _fetch_stats_selenium_sync(cls, url: str) -> dict | None:
-        """Синхронно читає AP, AAP, DP і GS через Selenium."""
-        try:
-            from selenium import webdriver
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support import expected_conditions as EC
-            from selenium.webdriver.support.ui import WebDriverWait
-        except ImportError as error:
-            print(f"[GEAR][ERROR] Selenium import: {error}")
-            return None
+    def _stats_from_sequence(cls, values) -> dict | None:
+        """
+        Шукає AP/AAP/DP/GS у послідовності чисел.
 
-        driver = None
-        try:
-            try:
-                driver = webdriver.Chrome(options=cls._chrome_options())
-            except Exception as selenium_manager_error:
-                from selenium.webdriver.chrome.service import Service
-                from webdriver_manager.chrome import ChromeDriverManager
+        Garmoth час від часу змінює Tailwind-класи, тому не покладаємося
+        лише на один CSS-селектор. Для перевірки кандидата використовуємо
+        співвідношення GS ≈ середнє AP/AAP + DP.
+        """
+        numbers: list[int] = []
+        for value in values or []:
+            cleaned = cls._clean_stat_value(value)
+            if not cleaned:
+                continue
+            number = int(cleaned)
+            if numbers and numbers[-1] == number:
+                continue
+            numbers.append(number)
 
-                print(
-                    "[GEAR] Selenium Manager fallback: "
-                    f"{type(selenium_manager_error).__name__}: "
-                    f"{selenium_manager_error}"
-                )
-                driver = webdriver.Chrome(
-                    service=Service(ChromeDriverManager().install()),
-                    options=cls._chrome_options(),
-                )
+        best = None
+        best_delta = 10_000
 
-            driver.set_page_load_timeout(60)
-            driver.get(url)
+        for index in range(max(0, len(numbers) - 3)):
+            ap, aap, dp, gs = numbers[index:index + 4]
 
-            values = WebDriverWait(driver, 30).until(
-                EC.presence_of_all_elements_located(
-                    (By.CSS_SELECTOR, ".grid-cols-4 .text-2xl")
-                )
-            )
-            texts = [value.text.strip() for value in values]
-            if len(texts) >= 4 and all(texts[:4]):
-                return {
-                    "ap": texts[0],
-                    "aap": texts[1],
-                    "dp": texts[2],
-                    "gs": texts[3],
+            if not (100 <= ap <= 500 and 100 <= aap <= 500):
+                continue
+            if not (150 <= dp <= 700 and 300 <= gs <= 1200):
+                continue
+
+            expected_gs = ((ap + aap) // 2) + dp
+            delta = abs(gs - expected_gs)
+
+            if delta < best_delta and delta <= 25:
+                best_delta = delta
+                best = {
+                    "ap": str(ap),
+                    "aap": str(aap),
+                    "dp": str(dp),
+                    "gs": str(gs),
                 }
-        except Exception as error:
-            print(
-                f"[GEAR][ERROR] Selenium {url}: "
-                f"{type(error).__name__}: {error}"
-            )
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
 
+        return best
+
+    @classmethod
+    def _stats_from_labelled_text(cls, body_text: str) -> dict | None:
+        """Фолбек: читає значення біля підписів AP/AAP/DP/GS."""
+        lines = [
+            " ".join(line.split()).strip()
+            for line in (body_text or "").splitlines()
+            if line.strip()
+        ]
+
+        aliases = {
+            "ap": {"AP", "ATTACK POWER"},
+            "aap": {"AAP", "AWAKENING AP", "AWAKENING ATTACK POWER"},
+            "dp": {"DP", "DEFENSE POWER"},
+            "gs": {"GS", "GEAR SCORE", "GEARSCORE"},
+        }
+        found: dict[str, str] = {}
+
+        for key, names in aliases.items():
+            for index, line in enumerate(lines):
+                if line.upper() not in names:
+                    continue
+
+                nearby = []
+                if index > 0:
+                    nearby.append(lines[index - 1])
+                if index + 1 < len(lines):
+                    nearby.append(lines[index + 1])
+                if index + 2 < len(lines):
+                    nearby.append(lines[index + 2])
+
+                for candidate in nearby:
+                    value = cls._clean_stat_value(candidate)
+                    if value:
+                        found[key] = value
+                        break
+
+                if key in found:
+                    break
+
+        if set(found) == {"ap", "aap", "dp", "gs"}:
+            return found
         return None
 
-    async def fetch_stats_selenium(self, url: str) -> dict | None:
-        """Не блокує Discord під час роботи Selenium."""
-        return await asyncio.to_thread(
-            self._fetch_stats_selenium_sync,
-            url,
+    @staticmethod
+    def _system_chromium_path() -> str | None:
+        """Шукає Chromium/Chrome, якщо Playwright browser cache недоступний."""
+        candidates = (
+            os.getenv("CHROME_BIN"),
+            os.getenv("GOOGLE_CHROME_BIN"),
+            shutil.which("google-chrome"),
+            shutil.which("google-chrome-stable"),
+            shutil.which("chromium"),
+            shutil.which("chromium-browser"),
         )
+        return next(
+            (
+                path
+                for path in candidates
+                if path and os.path.exists(path)
+            ),
+            None,
+        )
+
+    async def fetch_stats_selenium(self, url: str) -> dict | None:
+        """
+        Зчитує AP/AAP/DP/GS через Playwright.
+
+        Назву методу залишено для сумісності зі старими викликами cog-а.
+        """
+        self.last_scrape_error = None
+
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as error:
+            self.last_scrape_error = (
+                "Playwright не встановлено: "
+                f"{type(error).__name__}: {error}"
+            )
+            print(f"[GEAR][ERROR] {self.last_scrape_error}")
+            return None
+
+        browser = None
+        context = None
+
+        try:
+            async with async_playwright() as playwright:
+                launch_kwargs = {
+                    "headless": True,
+                    "args": [
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-extensions",
+                        "--disable-blink-features=AutomationControlled",
+                    ],
+                }
+
+                system_browser = self._system_chromium_path()
+                playwright_browser = playwright.chromium.executable_path
+
+                if system_browser:
+                    launch_kwargs["executable_path"] = system_browser
+                elif playwright_browser and os.path.exists(playwright_browser):
+                    launch_kwargs["executable_path"] = playwright_browser
+
+                browser = await playwright.chromium.launch(**launch_kwargs)
+                context = await browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    locale="en-US",
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/152.0.0.0 Safari/537.36"
+                    ),
+                    extra_http_headers={
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                )
+
+                await context.add_init_script(
+                    """
+                    Object.defineProperty(
+                        navigator,
+                        'webdriver',
+                        {get: () => undefined}
+                    );
+                    """
+                )
+
+                page = await context.new_page()
+                await page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=90_000,
+                )
+
+                # Garmoth є SPA: даємо сторінці час підтягнути build.
+                for _ in range(20):
+                    await page.wait_for_timeout(1_000)
+
+                    legacy_count = await page.locator(
+                        ".grid-cols-4 .text-2xl"
+                    ).count()
+                    if legacy_count >= 4:
+                        break
+
+                    body_now = await page.locator("body").inner_text()
+                    if any(
+                        marker in body_now.lower()
+                        for marker in (
+                            "just a moment",
+                            "verify you are human",
+                            "checking your browser",
+                        )
+                    ):
+                        continue
+
+                    if (
+                        "gear builder" in body_now.lower()
+                        and len(body_now) > 500
+                    ):
+                        break
+
+                title = await page.title()
+                body_text = await page.locator("body").inner_text()
+                body_lower = body_text.lower()
+
+                if any(
+                    marker in body_lower
+                    for marker in (
+                        "just a moment",
+                        "verify you are human",
+                        "checking your browser",
+                    )
+                ):
+                    raise RuntimeError(
+                        "Garmoth показав перевірку Cloudflare "
+                        "замість профілю"
+                    )
+
+                # 1. Старий layout, якщо Garmoth його ще віддає.
+                legacy_values = await page.locator(
+                    ".grid-cols-4 .text-2xl"
+                ).all_inner_texts()
+                stats = self._stats_from_sequence(legacy_values)
+                if stats:
+                    return stats
+
+                # 2. Новий layout: шукаємо значення біля AP/AAP/DP/GS.
+                stats = self._stats_from_labelled_text(body_text)
+                if stats:
+                    return stats
+
+                # 3. Останній фолбек: числа з leaf-елементів у DOM.
+                leaf_values = await page.locator("body *").evaluate_all(
+                    """
+                    (elements) => elements
+                        .filter((el) =>
+                            el.children.length === 0 &&
+                            /^\\s*\\d{2,4}\\s*$/.test(
+                                el.textContent || ''
+                            )
+                        )
+                        .map((el) => (el.textContent || '').trim())
+                    """
+                )
+                stats = self._stats_from_sequence(leaf_values)
+                if stats:
+                    return stats
+
+                sample = ", ".join(leaf_values[:30])
+                raise RuntimeError(
+                    "сторінка відкрилась, але AP/AAP/DP/GS не знайдені; "
+                    f"title={title!r}; числа={sample or 'немає'}"
+                )
+
+        except Exception as error:
+            self.last_scrape_error = (
+                f"{type(error).__name__}: {error}"
+            )
+            print(
+                f"[GEAR][ERROR] Garmoth {url}: "
+                f"{self.last_scrape_error}"
+            )
+            return None
+        finally:
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
     async def update_member_gear(
         self,
@@ -448,9 +638,10 @@ class BdoGear(commands.Cog):
             посилання,
         )
         if not stats:
+            detail = self.last_scrape_error or "невідома помилка"
             await interaction.followup.send(
-                "❌ Не вдалося зчитати Garmoth через технічну помилку. "
-                "Профіль може бути публічним.",
+                "❌ Не вдалося зчитати Garmoth.\n"
+                f"Причина: \`{detail[:1200]}\`",
                 ephemeral=True,
             )
             return
