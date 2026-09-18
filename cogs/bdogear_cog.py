@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
+import gc
 import os
 import re
 import shutil
@@ -418,6 +419,13 @@ class BdoGear(commands.Cog):
                         "--disable-dev-shm-usage",
                         "--disable-gpu",
                         "--disable-extensions",
+                        "--disable-background-networking",
+                        "--disable-component-update",
+                        "--disable-default-apps",
+                        "--disable-sync",
+                        "--metrics-recording-only",
+                        "--mute-audio",
+                        "--no-first-run",
                         "--disable-blink-features=AutomationControlled",
                     ],
                 }
@@ -466,6 +474,14 @@ class BdoGear(commands.Cog):
                     },
                 )
 
+                async def block_heavy_resources(route, request):
+                    if request.resource_type in {"image", "media", "font"}:
+                        await route.abort()
+                    else:
+                        await route.continue_()
+
+                await context.route("**/*", block_heavy_resources)
+
                 await context.add_init_script(
                     """
                     Object.defineProperty(
@@ -478,7 +494,11 @@ class BdoGear(commands.Cog):
 
                 page = await context.new_page()
 
-                json_payloads = []
+                api_capture = {
+                    "stats": None,
+                    "url": None,
+                    "json_count": 0,
+                }
                 response_errors = []
                 capture_tasks = set()
 
@@ -489,21 +509,32 @@ class BdoGear(commands.Cog):
                             .casefold()
                         )
                         if response.status >= 400 and "garmoth" in response.url:
-                            response_errors.append(
-                                f"{response.status} {response.url}"
-                            )
+                            if len(response_errors) < 20:
+                                response_errors.append(
+                                    f"{response.status} {response.url}"
+                                )
 
                         if (
-                            "json" in content_type
-                            or "/api/" in response.url
+                            api_capture["stats"] is None
+                            and (
+                                "json" in content_type
+                                or "/api/" in response.url
+                            )
                         ):
                             try:
                                 payload = await response.json()
                             except Exception:
                                 return
-                            json_payloads.append(
-                                (response.url, payload)
-                            )
+
+                            api_capture["json_count"] += 1
+                            stats = self._stats_from_json(payload)
+                            if stats:
+                                api_capture["stats"] = stats
+                                api_capture["url"] = response.url
+
+                            # Не зберігаємо JSON у пам'яті: payload може бути
+                            # дуже великим на Garmoth.
+                            del payload
                     except Exception:
                         return
 
@@ -535,12 +566,7 @@ class BdoGear(commands.Cog):
                     if self._stats_from_labelled_text(body_now):
                         break
 
-                    api_stats = None
-                    for _, payload in json_payloads:
-                        api_stats = self._stats_from_json(payload)
-                        if api_stats:
-                            break
-                    if api_stats:
+                    if api_capture["stats"]:
                         break
 
                 if capture_tasks:
@@ -567,14 +593,12 @@ class BdoGear(commands.Cog):
                     )
 
                 # 1. Дані з API/JSON Garmoth — найстабільніше після редизайну.
-                for response_url, payload in json_payloads:
-                    stats = self._stats_from_json(payload)
-                    if stats:
-                        print(
-                            "[GEAR] Stats from Garmoth JSON: "
-                            f"{response_url}"
-                        )
-                        return stats
+                if api_capture["stats"]:
+                    print(
+                        "[GEAR] Stats from Garmoth JSON: "
+                        f"{api_capture['url']}"
+                    )
+                    return api_capture["stats"]
 
                 # 2. Старий layout.
                 legacy_values = await page.locator(
@@ -685,7 +709,7 @@ class BdoGear(commands.Cog):
                 raise RuntimeError(
                     "профіль відкрився, але build-стати не отримані; "
                     f"title={title!r}; "
-                    f"JSON={len(json_payloads)}; "
+                    f"JSON={api_capture[\'json_count\']}; "
                     f"API errors={api_error_sample or 'немає'}"
                 )
 
@@ -737,27 +761,30 @@ class BdoGear(commands.Cog):
         count     = 0
         stopped   = False
 
-        messages = [msg async for msg in channel.history(limit=500)]
-        valid_messages = [
-            message
-            for message in messages
-            if self._extract_garmoth_link(message.content)
-        ]
-        valid_messages.reverse()
+        # history() повертає нові повідомлення першими. Зберігаємо лише
+        # останнє Garmoth-посилання кожного користувача, а не 500 Message
+        # об'єктів у RAM.
+        latest_profiles = {}
+        async for message in channel.history(limit=500):
+            link = self._extract_garmoth_link(message.content)
+            if not link or author.id in latest_profiles:
+                continue
+            latest_profiles[author.id] = (message.author, link)
+
+        profiles = list(latest_profiles.values())
+        profiles.reverse()
+        del latest_profiles
 
         try:
-            for message in valid_messages:
+            for author, link in profiles:
                 if self.collect_stop_requested:
                     stopped = True
                     break
 
-                link = self._extract_garmoth_link(message.content)
-                if not link:
-                    continue
-
-                author_name = message.author.display_name
+                author_name = author.display_name
                 count      += 1
                 stats       = await self.fetch_stats_selenium(link)
+                gc.collect()
                 unix_time   = int(time.time())
                 wait_time   = self.delays[
                     (count - 1) % len(self.delays)
@@ -788,9 +815,9 @@ class BdoGear(commands.Cog):
                         value=f"**{stats['gs']}**",
                         inline=True,
                     )
-                    gear_data[str(message.author.id)] = (
+                    gear_data[str(author.id)] = (
                         self._gear_entry(
-                            message.author,
+                            author,
                             link,
                             stats,
                         )
@@ -817,7 +844,7 @@ class BdoGear(commands.Cog):
                         f"Прогрес: {count} | "
                         f"Очікування: {wait_time}с"
                     ),
-                    icon_url=message.author.display_avatar.url,
+                    icon_url=author.display_avatar.url,
                 )
 
                 await interaction.channel.send(embed=embed)
