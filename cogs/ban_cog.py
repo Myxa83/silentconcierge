@@ -2,8 +2,12 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
+
+from pymongo.errors import DuplicateKeyError
+
+from data.mongo_store import get_database
 
 # ===================== КОНФІГУРАЦІЯ =====================
 FAREWELL_CHANNEL_ID = 1350571574557675520
@@ -32,13 +36,69 @@ def format_discord_time(dt_object: datetime, style: str = 'F') -> str:
 class BanCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._processed_remove_events: set[str] = set()
         dbg("✅ BanCog ініціалізовано")
+
+    @staticmethod
+    def _remove_event_key(member: discord.Member) -> str:
+        joined_at = member.joined_at
+        if joined_at is not None:
+            joined_at = joined_at.astimezone(timezone.utc)
+            joined_stamp = joined_at.isoformat(timespec="seconds")
+        else:
+            joined_stamp = "unknown"
+        return (
+            f"remove:{member.guild.id}:{member.id}:"
+            f"{joined_stamp}"
+        )
+
+    async def _claim_remove_event(
+        self,
+        member: discord.Member,
+        event_key: str,
+    ) -> bool:
+        """Дозволяє лише одному інстансу бота обробити цей вихід."""
+        if event_key in self._processed_remove_events:
+            dbg(f"duplicate remove skipped locally: {event_key}")
+            return False
+
+        self._processed_remove_events.add(event_key)
+
+        def claim() -> bool:
+            try:
+                get_database()["member_remove_claims"].insert_one({
+                    "_id": event_key,
+                    "guild_id": member.guild.id,
+                    "user_id": member.id,
+                    "joined_at": member.joined_at,
+                    "claimed_at": datetime.now(timezone.utc),
+                })
+                return True
+            except DuplicateKeyError:
+                return False
+
+        try:
+            claimed = await asyncio.to_thread(claim)
+        except Exception as error:
+            dbg(
+                "remove claim DB error; continuing in this process: "
+                f"{type(error).__name__}: {error}"
+            )
+            return True
+
+        if not claimed:
+            dbg(f"duplicate remove skipped by MongoDB: {event_key}")
+        return claimed
 
     # ---------- ПОДІЇ ----------
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         """🚪 або 📤 - вихід або вигнання (але не бан)."""
+        event_key = self._remove_event_key(member)
+        if not await self._claim_remove_event(member, event_key):
+            return
+
         channel = self.bot.get_channel(FAREWELL_CHANNEL_ID)
         if not channel:
             return
