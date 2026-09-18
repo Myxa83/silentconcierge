@@ -6,6 +6,7 @@ from discord.ext import commands
 from discord import app_commands
 import asyncio
 import gc
+import ctypes
 import os
 import re
 import shutil
@@ -30,6 +31,16 @@ class BdoGear(commands.Cog):
         self.collect_owner_id = None
         self.last_scrape_error: str | None = None
         self.browser_install_lock = asyncio.Lock()
+
+    @staticmethod
+    def _release_process_memory() -> None:
+        """Повертає звільнену Python/glibc пам'ять ОС після Chromium."""
+        gc.collect()
+        try:
+            libc = ctypes.CDLL("libc.so.6")
+            libc.malloc_trim(0)
+        except Exception:
+            pass
 
     @staticmethod
     def _extract_garmoth_link(content: str) -> str | None:
@@ -423,9 +434,14 @@ class BdoGear(commands.Cog):
                         "--disable-component-update",
                         "--disable-default-apps",
                         "--disable-sync",
+                        "--disable-software-rasterizer",
                         "--metrics-recording-only",
                         "--mute-audio",
                         "--no-first-run",
+                        "--no-zygote",
+                        "--single-process",
+                        "--renderer-process-limit=1",
+                        "--js-flags=--max-old-space-size=128",
                         "--disable-blink-features=AutomationControlled",
                     ],
                 }
@@ -462,8 +478,9 @@ class BdoGear(commands.Cog):
                     )
 
                 context = await browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
+                    viewport={"width": 900, "height": 700},
                     locale="en-US",
+                    service_workers="block",
                     user_agent=(
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -475,7 +492,12 @@ class BdoGear(commands.Cog):
                 )
 
                 async def block_heavy_resources(route, request):
-                    if request.resource_type in {"image", "media", "font"}:
+                    if request.resource_type in {
+                        "image",
+                        "media",
+                        "font",
+                        "stylesheet",
+                    }:
                         await route.abort()
                     else:
                         await route.continue_()
@@ -733,6 +755,7 @@ class BdoGear(commands.Cog):
                     await browser.close()
                 except Exception:
                     pass
+            self._release_process_memory()
 
     async def update_member_gear(
         self,
@@ -787,7 +810,7 @@ class BdoGear(commands.Cog):
                 author_name = author.display_name
                 count      += 1
                 stats       = await self.fetch_stats_selenium(link)
-                gc.collect()
+                self._release_process_memory()
                 unix_time   = int(time.time())
                 wait_time   = self.delays[
                     (count - 1) % len(self.delays)
