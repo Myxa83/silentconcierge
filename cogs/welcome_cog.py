@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import random
 import io
 import unicodedata
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
@@ -10,6 +12,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from pymongo.errors import DuplicateKeyError
+
+from data.mongo_store import get_database
 
 
 WELCOME_CHANNEL_ID = 1324854638276509828
@@ -31,6 +36,7 @@ def _shorten(text: str, limit: int = 1800) -> str:
 class WelcomeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._processed_join_events: set[str] = set()
 
         # Paths (важливо для Render)
         self.base_dir = Path(__file__).resolve().parents[1]  # корінь репо
@@ -262,12 +268,70 @@ class WelcomeCog(commands.Cog):
         return embed
 
     # ---------------- listeners ----------------
+    @staticmethod
+    def _join_event_key(member: discord.Member) -> str:
+        joined_at = member.joined_at
+        if joined_at is not None:
+            joined_at = joined_at.astimezone(timezone.utc)
+            stamp = joined_at.isoformat(timespec="seconds")
+        else:
+            stamp = "unknown"
+        return f"{member.guild.id}:{member.id}:{stamp}"
+
+    async def _claim_join_event(
+        self,
+        member: discord.Member,
+        event_key: str,
+    ) -> bool:
+        """
+        Гарантує один welcome навіть якщо одночасно запущено дві копії бота.
+
+        MongoDB _id є унікальним: перший процес створює claim, другий отримує
+        DuplicateKeyError і нічого не відправляє.
+        """
+        if event_key in self._processed_join_events:
+            dbg(f"duplicate join skipped locally: {event_key}")
+            return False
+
+        self._processed_join_events.add(event_key)
+
+        def claim() -> bool:
+            try:
+                get_database()["welcome_join_claims"].insert_one({
+                    "_id": event_key,
+                    "guild_id": member.guild.id,
+                    "user_id": member.id,
+                    "joined_at": member.joined_at,
+                    "claimed_at": datetime.now(timezone.utc),
+                })
+                return True
+            except DuplicateKeyError:
+                return False
+
+        try:
+            claimed = await asyncio.to_thread(claim)
+        except Exception as error:
+            # Не втрачаємо welcome через тимчасову помилку MongoDB.
+            dbg(
+                "welcome claim DB error; continuing in this process: "
+                f"{type(error).__name__}: {error}"
+            )
+            return True
+
+        if not claimed:
+            dbg(f"duplicate join skipped by MongoDB: {event_key}")
+        return claimed
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         if member.bot:
             return
 
-        dbg(f"on_member_join: {member.display_name}")
+        event_key = self._join_event_key(member)
+        if not await self._claim_join_event(member, event_key):
+            return
+
+        dbg(f"on_member_join: {member.display_name} key={event_key}")
         channel = self.bot.get_channel(WELCOME_CHANNEL_ID)
         if not channel:
             dbg(f"channel not found: {WELCOME_CHANNEL_ID}")
