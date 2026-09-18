@@ -103,7 +103,7 @@ class BdoGear(commands.Cog):
 
     @classmethod
     def _stats_from_labelled_text(cls, body_text: str) -> dict | None:
-        """Фолбек: читає значення біля підписів AP/AAP/DP/GS."""
+        """Читає значення біля підписів AP/AAP/DP/GS."""
         lines = [
             " ".join(line.split()).strip()
             for line in (body_text or "").splitlines()
@@ -111,14 +111,38 @@ class BdoGear(commands.Cog):
         ]
 
         aliases = {
-            "ap": {"AP", "ATTACK POWER"},
-            "aap": {"AAP", "AWAKENING AP", "AWAKENING ATTACK POWER"},
-            "dp": {"DP", "DEFENSE POWER"},
-            "gs": {"GS", "GEAR SCORE", "GEARSCORE"},
+            "ap": ("AP", "ATTACK POWER"),
+            "aap": (
+                "AAP",
+                "AWAKENING AP",
+                "AWAKENING ATTACK POWER",
+            ),
+            "dp": ("DP", "DEFENSE POWER", "DEFENCE POWER"),
+            "gs": ("GS", "GEAR SCORE", "GEARSCORE"),
         }
         found: dict[str, str] = {}
 
+        # Новий Garmoth часто тримає "AP 336" в одному рядку.
         for key, names in aliases.items():
+            for line in lines:
+                upper = line.upper()
+                for name in names:
+                    pattern = (
+                        r"(?:^|\\b)"
+                        + re.escape(name)
+                        + r"(?:\\b|\\s*[:=])[^0-9]{0,30}(\\d{2,4})"
+                    )
+                    match = re.search(pattern, upper)
+                    if match:
+                        found[key] = match.group(1)
+                        break
+                if key in found:
+                    break
+
+        # Старий layout: label і число були сусідніми елементами.
+        for key, names in aliases.items():
+            if key in found:
+                continue
             for index, line in enumerate(lines):
                 if line.upper() not in names:
                     continue
@@ -136,7 +160,6 @@ class BdoGear(commands.Cog):
                     if value:
                         found[key] = value
                         break
-
                 if key in found:
                     break
 
@@ -149,6 +172,151 @@ class BdoGear(commands.Cog):
                     found["gs"],
                 ]
             )
+        return None
+
+    @staticmethod
+    def _normalise_stat_key(value) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
+
+    @classmethod
+    def _stats_from_json(cls, payload) -> dict | None:
+        """Шукає sheet AP/AAP/DP/GS у JSON, який повертає Garmoth."""
+        aliases = {
+            "ap": {
+                "ap",
+                "sheetap",
+                "mainap",
+                "mainhandap",
+                "attackpower",
+            },
+            "aap": {
+                "aap",
+                "sheetaap",
+                "awakeningap",
+                "awakeningattackpower",
+                "awakeningpower",
+            },
+            "dp": {
+                "dp",
+                "sheetdp",
+                "defensepower",
+                "defencepower",
+            },
+            "gs": {
+                "gs",
+                "sheetgs",
+                "gearscore",
+                "gearscoretotal",
+            },
+        }
+
+        def scalar(value):
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                return str(int(value))
+            if isinstance(value, str):
+                return cls._clean_stat_value(value)
+            return None
+
+        def direct_dict(candidate):
+            if not isinstance(candidate, dict):
+                return None
+
+            found = {}
+            for raw_key, raw_value in candidate.items():
+                key = cls._normalise_stat_key(raw_key)
+                value = scalar(raw_value)
+                if not value:
+                    continue
+                for stat, names in aliases.items():
+                    if key in names:
+                        found[stat] = value
+                        break
+
+            if set(found) == {"ap", "aap", "dp", "gs"}:
+                return cls._stats_from_sequence(
+                    [
+                        found["ap"],
+                        found["aap"],
+                        found["dp"],
+                        found["gs"],
+                    ]
+                )
+            return None
+
+        def labelled_list(candidate):
+            if not isinstance(candidate, list):
+                return None
+
+            found = {}
+            for item in candidate:
+                if not isinstance(item, dict):
+                    continue
+
+                label = None
+                value = None
+                for key in ("name", "label", "key", "title", "type", "stat"):
+                    if key in item:
+                        label = item.get(key)
+                        break
+                for key in ("value", "val", "amount", "total", "number"):
+                    if key in item:
+                        value = item.get(key)
+                        break
+
+                norm = cls._normalise_stat_key(label)
+                number = scalar(value)
+                if not norm or not number:
+                    continue
+
+                for stat, names in aliases.items():
+                    if norm in names:
+                        found[stat] = number
+                        break
+
+            if set(found) == {"ap", "aap", "dp", "gs"}:
+                return cls._stats_from_sequence(
+                    [
+                        found["ap"],
+                        found["aap"],
+                        found["dp"],
+                        found["gs"],
+                    ]
+                )
+            return None
+
+        stack = [payload]
+        visited = 0
+
+        while stack and visited < 25_000:
+            current = stack.pop()
+            visited += 1
+
+            if isinstance(current, dict):
+                stats = direct_dict(current)
+                if stats:
+                    return stats
+                stack.extend(current.values())
+
+            elif isinstance(current, list):
+                stats = labelled_list(current)
+                if stats:
+                    return stats
+                stack.extend(current)
+
+            elif isinstance(current, str):
+                text = current.strip()
+                if (
+                    len(text) < 200_000
+                    and text[:1] in ("{", "[")
+                ):
+                    try:
+                        import json
+                        stack.append(json.loads(text))
+                    except Exception:
+                        pass
+
         return None
 
     @staticmethod
@@ -312,38 +480,80 @@ class BdoGear(commands.Cog):
                 )
 
                 page = await context.new_page()
+
+                json_payloads = []
+                response_errors = []
+                capture_tasks = set()
+
+                async def capture_response(response):
+                    try:
+                        content_type = (
+                            response.headers.get("content-type", "")
+                            .casefold()
+                        )
+                        if response.status >= 400 and "garmoth" in response.url:
+                            response_errors.append(
+                                f"{response.status} {response.url}"
+                            )
+
+                        if (
+                            "json" in content_type
+                            or "/api/" in response.url
+                        ):
+                            try:
+                                payload = await response.json()
+                            except Exception:
+                                return
+                            json_payloads.append(
+                                (response.url, payload)
+                            )
+                    except Exception:
+                        return
+
+                def schedule_capture(response):
+                    task = asyncio.create_task(capture_response(response))
+                    capture_tasks.add(task)
+                    task.add_done_callback(capture_tasks.discard)
+
+                page.on("response", schedule_capture)
+
                 await page.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=90_000,
                 )
 
-                # Garmoth є SPA: даємо сторінці час підтягнути build.
-                for _ in range(20):
+                # Не виходимо лише через появу оболонки Gear Builder.
+                # Чекаємо сам build/API максимум 35 секунд.
+                for _ in range(35):
                     await page.wait_for_timeout(1_000)
 
-                    legacy_count = await page.locator(
+                    legacy_values_now = await page.locator(
                         ".grid-cols-4 .text-2xl"
-                    ).count()
-                    if legacy_count >= 4:
+                    ).all_inner_texts()
+                    if self._stats_from_sequence(legacy_values_now):
                         break
 
                     body_now = await page.locator("body").inner_text()
-                    if any(
-                        marker in body_now.lower()
-                        for marker in (
-                            "just a moment",
-                            "verify you are human",
-                            "checking your browser",
-                        )
-                    ):
-                        continue
-
-                    if (
-                        "gear builder" in body_now.lower()
-                        and len(body_now) > 500
-                    ):
+                    if self._stats_from_labelled_text(body_now):
                         break
+
+                    api_stats = next(
+                        (
+                            self._stats_from_json(payload)
+                            for _, payload in json_payloads
+                            if self._stats_from_json(payload)
+                        ),
+                        None,
+                    )
+                    if api_stats:
+                        break
+
+                if capture_tasks:
+                    await asyncio.gather(
+                        *list(capture_tasks),
+                        return_exceptions=True,
+                    )
 
                 title = await page.title()
                 body_text = await page.locator("body").inner_text()
@@ -362,7 +572,17 @@ class BdoGear(commands.Cog):
                         "замість профілю"
                     )
 
-                # 1. Старий layout, якщо Garmoth його ще віддає.
+                # 1. Дані з API/JSON Garmoth — найстабільніше після редизайну.
+                for response_url, payload in json_payloads:
+                    stats = self._stats_from_json(payload)
+                    if stats:
+                        print(
+                            "[GEAR] Stats from Garmoth JSON: "
+                            f"{response_url}"
+                        )
+                        return stats
+
+                # 2. Старий layout.
                 legacy_values = await page.locator(
                     ".grid-cols-4 .text-2xl"
                 ).all_inner_texts()
@@ -370,32 +590,109 @@ class BdoGear(commands.Cog):
                 if stats:
                     return stats
 
-                # 2. Новий layout: шукаємо значення біля AP/AAP/DP/GS.
+                # 3. Текст сторінки.
                 stats = self._stats_from_labelled_text(body_text)
                 if stats:
                     return stats
 
-                # 3. Останній фолбек: числа з leaf-елементів у DOM.
+                # 4. Новий layout може тримати цифри в input/value/aria,
+                # а не в textContent. Беремо контекст елементів AP/AAP/DP/GS.
+                stat_contexts = await page.locator("body *").evaluate_all(
+                    """
+                    (elements) => {
+                        const labels = new Set([
+                            'AP', 'AAP', 'DP', 'GS',
+                            'ATTACK POWER',
+                            'AWAKENING AP',
+                            'DEFENSE POWER',
+                            'DEFENCE POWER',
+                            'GEAR SCORE',
+                            'GEARSCORE'
+                        ]);
+                        const out = [];
+                        for (const el of elements) {
+                            const own = (el.textContent || '').trim().toUpperCase();
+                            if (!labels.has(own)) continue;
+
+                            let node = el;
+                            for (let depth = 0; depth < 4 && node; depth++) {
+                                const inputs = Array.from(
+                                    node.querySelectorAll('input')
+                                ).map((input) => input.value || '').join(' ');
+                                const attrs = [
+                                    node.getAttribute('aria-label') || '',
+                                    node.getAttribute('title') || '',
+                                    node.getAttribute('data-value') || '',
+                                    node.getAttribute('value') || ''
+                                ].join(' ');
+                                out.push(
+                                    [
+                                        node.innerText || '',
+                                        inputs,
+                                        attrs
+                                    ].join(' ')
+                                );
+                                node = node.parentElement;
+                            }
+                        }
+                        return out.slice(0, 100);
+                    }
+                    """
+                )
+                stats = self._stats_from_labelled_text(
+                    "\n".join(stat_contexts)
+                )
+                if stats:
+                    return stats
+
+                # 5. Nuxt/JSON script payloads.
+                script_texts = await page.locator(
+                    "script[type='application/json'], "
+                    "script#__NUXT_DATA__, script[id*='nuxt']"
+                ).all_text_contents()
+                for script_text in script_texts:
+                    stats = self._stats_from_json(script_text)
+                    if stats:
+                        return stats
+
+                # 6. Останній DOM-фолбек.
                 leaf_values = await page.locator("body *").evaluate_all(
                     """
                     (elements) => elements
-                        .filter((el) =>
-                            el.children.length === 0 &&
-                            /^\\s*\\d{2,4}\\s*$/.test(
-                                el.textContent || ''
-                            )
-                        )
-                        .map((el) => (el.textContent || '').trim())
+                        .flatMap((el) => {
+                            const values = [];
+                            if (
+                                el.children.length === 0 &&
+                                /^\\s*\\d{2,4}\\s*$/.test(
+                                    el.textContent || ''
+                                )
+                            ) {
+                                values.push(
+                                    (el.textContent || '').trim()
+                                );
+                            }
+                            if (
+                                el instanceof HTMLInputElement &&
+                                /^\\s*\\d{2,4}\\s*$/.test(
+                                    el.value || ''
+                                )
+                            ) {
+                                values.push(el.value.trim());
+                            }
+                            return values;
+                        })
                     """
                 )
                 stats = self._stats_from_sequence(leaf_values)
                 if stats:
                     return stats
 
-                sample = ", ".join(leaf_values[:30])
+                api_error_sample = "; ".join(response_errors[-5:])
                 raise RuntimeError(
-                    "сторінка відкрилась, але AP/AAP/DP/GS не знайдені; "
-                    f"title={title!r}; числа={sample or 'немає'}"
+                    "профіль відкрився, але build-стати не отримані; "
+                    f"title={title!r}; "
+                    f"JSON={len(json_payloads)}; "
+                    f"API errors={api_error_sample or 'немає'}"
                 )
 
         except Exception as error:
