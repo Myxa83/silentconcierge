@@ -71,8 +71,6 @@ class BdoGear(commands.Cog):
             if not cleaned:
                 continue
             number = int(cleaned)
-            if numbers and numbers[-1] == number:
-                continue
             numbers.append(number)
 
         best = None
@@ -140,7 +138,14 @@ class BdoGear(commands.Cog):
                     break
 
         if set(found) == {"ap", "aap", "dp", "gs"}:
-            return found
+            return cls._stats_from_sequence(
+                [
+                    found["ap"],
+                    found["aap"],
+                    found["dp"],
+                    found["gs"],
+                ]
+            )
         return None
 
     @staticmethod
