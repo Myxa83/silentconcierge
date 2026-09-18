@@ -21,6 +21,8 @@ from data.gear_store import load_gear, save_gear
 # ─── Cog ──────────────────────────────────────────────────────────────────────
 
 class BdoGear(commands.Cog):
+    PARSER_VERSION = "selenium-v2"
+
     def __init__(self, bot):
         self.bot              = bot
         self.delays           = [20, 41, 37, 12, 23, 5, 11, 14, 31, 38]
@@ -765,10 +767,32 @@ class BdoGear(commands.Cog):
     async def fetch_stats_selenium(self, url: str) -> dict | None:
         """Не блокує Discord під час Selenium-парсингу."""
         self.last_scrape_error = None
-        return await asyncio.to_thread(
+        print(
+            f"[GEAR][SELENIUM] start parser={self.PARSER_VERSION} "
+            f"url={url}"
+        )
+
+        stats = await asyncio.to_thread(
             self._fetch_stats_selenium_sync,
             url,
         )
+
+        if stats:
+            print(
+                f"[GEAR][SELENIUM] success parser={self.PARSER_VERSION} "
+                f"AP={stats.get('ap')} AAP={stats.get('aap')} "
+                f"DP={stats.get('dp')} GS={stats.get('gs')}"
+            )
+            return stats
+
+        if not self.last_scrape_error:
+            self.last_scrape_error = "Selenium повернув None без діагностики"
+
+        print(
+            f"[GEAR][SELENIUM] failed parser={self.PARSER_VERSION}: "
+            f"{self.last_scrape_error}"
+        )
+        return None
 
     async def update_member_gear(
         self,
@@ -787,7 +811,23 @@ class BdoGear(commands.Cog):
                 link,
                 stats,
             )
-            return stats if save_gear(gear_data) else None
+
+            if not save_gear(gear_data):
+                self.last_scrape_error = (
+                    "MongoDB: Garmoth зчитано, але не вдалося "
+                    "зберегти гір у members_gear"
+                )
+                print(
+                    f"[GEAR][ERROR] user={member.id}: "
+                    f"{self.last_scrape_error}"
+                )
+                return None
+
+            print(
+                f"[GEAR] saved user={member.id} "
+                f"AP={stats.get('ap')} GS={stats.get('gs')}"
+            )
+            return stats
 
     async def run_mass_collect(self, interaction: discord.Interaction, channel: discord.TextChannel):
         """Масовий збір статсів."""
@@ -1063,6 +1103,10 @@ class BdoGear(commands.Cog):
     @app_commands.describe(посилання="Посилання на Garmoth профіль")
     async def gear_update(self, interaction: discord.Interaction, посилання: str):
         await interaction.response.defer(ephemeral=True)
+        print(
+            f"[GEAR][CMD] gear_update parser={self.PARSER_VERSION} "
+            f"user={interaction.user.id} url={посилання}"
+        )
 
         if "garmoth.com/character/" not in посилання:
             await interaction.followup.send("❌ Невірне посилання. Потрібно garmoth.com/character/...", ephemeral=True)
@@ -1073,10 +1117,14 @@ class BdoGear(commands.Cog):
             посилання,
         )
         if not stats:
-            detail = self.last_scrape_error or "невідома помилка"
+            detail = self.last_scrape_error or (
+                "невідома помилка; перевір Render log "
+                f"[GEAR][CMD] parser={self.PARSER_VERSION}"
+            )
             await interaction.followup.send(
                 "❌ Не вдалося зчитати Garmoth.\n"
-                f"Причина: \`{detail[:1200]}\`",
+                f"Парсер: **{self.PARSER_VERSION}**\n"
+                f"Причина: {detail[:1200]}",
                 ephemeral=True,
             )
             return
