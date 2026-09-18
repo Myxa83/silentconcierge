@@ -8,6 +8,8 @@ import asyncio
 import os
 import re
 import shutil
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -26,6 +28,7 @@ class BdoGear(commands.Cog):
         self.collect_stop_event = asyncio.Event()
         self.collect_owner_id = None
         self.last_scrape_error: str | None = None
+        self.browser_install_lock = asyncio.Lock()
 
     @staticmethod
     def _extract_garmoth_link(content: str) -> str | None:
@@ -168,6 +171,58 @@ class BdoGear(commands.Cog):
             None,
         )
 
+    async def _install_playwright_chromium(self) -> bool:
+        """Встановлює Chromium у runtime Render, якщо cache зник після deploy."""
+        async with self.browser_install_lock:
+            try:
+                from playwright.async_api import async_playwright
+
+                async with async_playwright() as playwright:
+                    executable = playwright.chromium.executable_path
+                    if executable and os.path.exists(executable):
+                        return True
+            except Exception:
+                pass
+
+            print("[GEAR] Chromium відсутній у runtime. Встановлюю Playwright Chromium...")
+
+            def _install():
+                return subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "playwright",
+                        "install",
+                        "chromium",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=360,
+                    check=False,
+                )
+
+            try:
+                result = await asyncio.to_thread(_install)
+            except Exception as error:
+                self.last_scrape_error = (
+                    "Не вдалося встановити Chromium у runtime: "
+                    f"{type(error).__name__}: {error}"
+                )
+                print(f"[GEAR][ERROR] {self.last_scrape_error}")
+                return False
+
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                self.last_scrape_error = (
+                    "Playwright install chromium завершився помилкою: "
+                    f"{detail[-1500:]}"
+                )
+                print(f"[GEAR][ERROR] {self.last_scrape_error}")
+                return False
+
+            print("[GEAR] Playwright Chromium встановлено у runtime")
+            return True
+
     async def fetch_stats_selenium(self, url: str) -> dict | None:
         """
         Зчитує AP/AAP/DP/GS через Playwright.
@@ -210,7 +265,29 @@ class BdoGear(commands.Cog):
                 elif playwright_browser and os.path.exists(playwright_browser):
                     launch_kwargs["executable_path"] = playwright_browser
 
-                browser = await playwright.chromium.launch(**launch_kwargs)
+                try:
+                    browser = await playwright.chromium.launch(**launch_kwargs)
+                except Exception as launch_error:
+                    launch_text = str(launch_error)
+                    if (
+                        "Executable doesn't exist" not in launch_text
+                        and "executable doesn't exist" not in launch_text.lower()
+                    ):
+                        raise
+
+                    installed = await self._install_playwright_chromium()
+                    if not installed:
+                        raise RuntimeError(
+                            self.last_scrape_error
+                            or "Chromium не вдалося встановити"
+                        ) from launch_error
+
+                    # Після runtime-install Playwright уже бачить свій Chromium.
+                    browser = await playwright.chromium.launch(
+                        headless=True,
+                        args=launch_kwargs["args"],
+                    )
+
                 context = await browser.new_context(
                     viewport={"width": 1920, "height": 1080},
                     locale="en-US",
@@ -416,7 +493,7 @@ class BdoGear(commands.Cog):
                         inline=True,
                     )
                     embed.add_field(
-                        name="🌟 GS",
+                        name="🌟 Gearscore",
                         value=f"**{stats['gs']}**",
                         inline=True,
                     )
@@ -430,11 +507,7 @@ class BdoGear(commands.Cog):
                 else:
                     embed.add_field(
                         name="Статус",
-                        value=(
-                            "❌ Не вдалося зчитати Garmoth. "
-                            "Це технічна помилка, а не ознака "
-                            "приватного профілю."
-                        ),
+                        value="❌ Не вдалося зчитати (Private?)",
                         inline=False,
                     )
 
