@@ -709,7 +709,7 @@ class BdoGear(commands.Cog):
                 raise RuntimeError(
                     "профіль відкрився, але build-стати не отримані; "
                     f"title={title!r}; "
-                    f"JSON={api_capture[\'json_count\']}; "
+                    f"JSON={api_capture['json_count']}; "
                     f"API errors={api_error_sample or 'немає'}"
                 )
 
@@ -767,9 +767,12 @@ class BdoGear(commands.Cog):
         latest_profiles = {}
         async for message in channel.history(limit=500):
             link = self._extract_garmoth_link(message.content)
-            if not link or author.id in latest_profiles:
+            if not link or message.author.id in latest_profiles:
                 continue
-            latest_profiles[author.id] = (message.author, link)
+            latest_profiles[message.author.id] = (
+                message.author,
+                link,
+            )
 
         profiles = list(latest_profiles.values())
         profiles.reverse()
