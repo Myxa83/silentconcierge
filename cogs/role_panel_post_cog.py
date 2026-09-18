@@ -23,7 +23,7 @@ ROLE_COOKIE_EATER = 1455029601238515869
 ROLE_MARILYN = 1448268130097958912
 ROLE_FOREMAN = 1455037068307861636
 ROLE_SUFFERING = 1406569206815658077 # Страждущі
-MIN_SUFFERING_AP = 290
+MIN_SUFFERING_AP = 336
 
 # ========================= DROPDOWN CONFIG =========================
 DROPDOWN_ROLES: dict[str, int] = {
@@ -78,7 +78,7 @@ class RoleSelect(discord.ui.Select):
 
         selected_values = self.values
         
-        # 2. ПЕРЕВІРКА ГІРУ ДЛЯ "СТРАЖДУЩІ" (290+ AP)
+        # 2. ПЕРЕВІРКА ГІРУ ДЛЯ "СТРАЖДУЩІ" (336+ AP)
         if str(ROLE_SUFFERING) in selected_values:
             gear = get_member_gear(member.id)
             current_ap = _parse_stat(gear.get("ap")) if gear else 0
@@ -168,7 +168,7 @@ class RolesPanelCog(commands.Cog):
             f"{BULLET} <@&{ROLE_COOKIE_EATER}> - відкриває канал з промокодами.\n"
             f"{BULLET} <@&{ROLE_MARILYN}> - для тих, хто любить скріни, відео та костюми.\n"
             f"{BULLET} <@&{ROLE_FOREMAN}> - крафт ітемок у манор чи резиденцію.\n"
-            f"{BULLET} <@&{ROLE_SUFFERING}> - **Black Shrine (потрібно 290+ AP)**. Я перевірю твій гір перед видачею!\n"
+            f"{BULLET} <@&{ROLE_SUFFERING}> - **Black Shrine (потрібно 336+ AP)**. Я перевірю твій гір перед видачею!\n"
         )
         
         embed = discord.Embed(description=desc_main, color=0x05B2B4)
