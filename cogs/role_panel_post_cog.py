@@ -24,6 +24,10 @@ ROLE_MARILYN = 1448268130097958912
 ROLE_FOREMAN = 1455037068307861636
 ROLE_SUFFERING = 1406569206815658077 # Страждущі
 MIN_SUFFERING_AP = 336
+GEAR_CHANNEL_URL = (
+    "https://discord.com/channels/"
+    "1323454227816906802/1358443998603120824"
+)
 
 # ========================= DROPDOWN CONFIG =========================
 DROPDOWN_ROLES: dict[str, int] = {
@@ -84,15 +88,39 @@ class RoleSelect(discord.ui.Select):
             current_ap = _parse_stat(gear.get("ap")) if gear else 0
 
             if not gear:
-                msg = (
-                    "❌ **Я ще не бачу твого гіру в базі.**\n\n"
-                    "Надішли актуальне посилання на свій профіль "
-                    "Garmoth у канал:\n"
-                    "https://discord.com/channels/"
-                    "1323454227816906802/1358443998603120824\n\n"
-                    "Після наступного оновлення бази спробуй "
-                    "обрати роль ще раз."
+                dm_embed = discord.Embed(
+                    title="Страждущі | потрібен Garmoth",
+                    description=(
+                        "Я ще не бачу твого гіру в базі.\n\n"
+                        "Щоб отримати роль **Страждущі**, залиш актуальне "
+                        "посилання на свій **Garmoth Gear Planner** у цьому каналі:\n"
+                        f"{GEAR_CHANNEL_URL}\n\n"
+                        f"Мінімальна вимога: **{MIN_SUFFERING_AP}+ AP**.\n"
+                        "Після оновлення бази обери роль ще раз."
+                    ),
+                    color=0x05B2B4,
                 )
+
+                dm_sent = True
+                try:
+                    await member.send(embed=dm_embed)
+                except (discord.Forbidden, discord.HTTPException):
+                    dm_sent = False
+
+                if dm_sent:
+                    msg = (
+                        "❌ **Гіру в базі ще немає, тому роль не видана.**\n"
+                        "Я надіслав тобі в приватні повідомлення, куди "
+                        "залишити посилання на Garmoth."
+                    )
+                else:
+                    msg = (
+                        "❌ **Гіру в базі ще немає, тому роль не видана.**\n"
+                        "Я не зміг написати тобі в приватні повідомлення. "
+                        "Залиш актуальне посилання на Garmoth тут:\n"
+                        f"{GEAR_CHANNEL_URL}"
+                    )
+
                 return await interaction.response.send_message(
                     msg,
                     ephemeral=True,
@@ -104,8 +132,7 @@ class RoleSelect(discord.ui.Select):
                     f"потрібно {MIN_SUFFERING_AP}+ AP.**\n\n"
                     "Онови профіль Garmoth і надішли актуальне "
                     "посилання в канал:\n"
-                    "https://discord.com/channels/"
-                    "1323454227816906802/1358443998603120824\n\n"
+                    f"{GEAR_CHANNEL_URL}\n\n"
                     "Після наступного оновлення бази спробуй ще раз."
                 )
                 return await interaction.response.send_message(
