@@ -163,14 +163,13 @@ class BdoGear(commands.Cog):
                 if key in found:
                     break
 
-        if set(found) == {"ap", "aap", "dp", "gs"}:
+        if {"ap", "aap", "dp"}.issubset(found):
+            ap = int(found["ap"])
+            aap = int(found["aap"])
+            dp = int(found["dp"])
+            gs = int(found.get("gs") or ((ap + aap) // 2 + dp))
             return cls._stats_from_sequence(
-                [
-                    found["ap"],
-                    found["aap"],
-                    found["dp"],
-                    found["gs"],
-                ]
+                [str(ap), str(aap), str(dp), str(gs)]
             )
         return None
 
@@ -234,14 +233,13 @@ class BdoGear(commands.Cog):
                         found[stat] = value
                         break
 
-            if set(found) == {"ap", "aap", "dp", "gs"}:
+            if {"ap", "aap", "dp"}.issubset(found):
+                ap = int(found["ap"])
+                aap = int(found["aap"])
+                dp = int(found["dp"])
+                gs = int(found.get("gs") or ((ap + aap) // 2 + dp))
                 return cls._stats_from_sequence(
-                    [
-                        found["ap"],
-                        found["aap"],
-                        found["dp"],
-                        found["gs"],
-                    ]
+                    [str(ap), str(aap), str(dp), str(gs)]
                 )
             return None
 
@@ -275,14 +273,13 @@ class BdoGear(commands.Cog):
                         found[stat] = number
                         break
 
-            if set(found) == {"ap", "aap", "dp", "gs"}:
+            if {"ap", "aap", "dp"}.issubset(found):
+                ap = int(found["ap"])
+                aap = int(found["aap"])
+                dp = int(found["dp"])
+                gs = int(found.get("gs") or ((ap + aap) // 2 + dp))
                 return cls._stats_from_sequence(
-                    [
-                        found["ap"],
-                        found["aap"],
-                        found["dp"],
-                        found["gs"],
-                    ]
+                    [str(ap), str(aap), str(dp), str(gs)]
                 )
             return None
 
@@ -538,14 +535,11 @@ class BdoGear(commands.Cog):
                     if self._stats_from_labelled_text(body_now):
                         break
 
-                    api_stats = next(
-                        (
-                            self._stats_from_json(payload)
-                            for _, payload in json_payloads
-                            if self._stats_from_json(payload)
-                        ),
-                        None,
-                    )
+                    api_stats = None
+                    for _, payload in json_payloads:
+                        api_stats = self._stats_from_json(payload)
+                        if api_stats:
+                            break
                     if api_stats:
                         break
 
