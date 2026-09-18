@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from data.gear_store import load_gear, save_gear
 
@@ -400,260 +401,216 @@ class BdoGear(commands.Cog):
             print("[GEAR] Playwright Chromium встановлено у runtime")
             return True
 
-    async def fetch_stats_selenium(self, url: str) -> dict | None:
-        """
-        Зчитує AP/AAP/DP/GS через Playwright.
+    @staticmethod
+    def _playwright_chromium_binary() -> str | None:
+        """Шукає вже завантажений Playwright Chromium без запуску Playwright."""
+        roots = [
+            Path.home() / ".cache" / "ms-playwright",
+            Path("/opt/render/.cache/ms-playwright"),
+        ]
+        patterns = (
+            "chromium-*/chrome-linux64/chrome",
+            "chromium-*/chrome-linux/chrome",
+            "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell",
+        )
 
-        Назву методу залишено для сумісності зі старими викликами cog-а.
-        """
+        for root in roots:
+            if not root.exists():
+                continue
+            for pattern in patterns:
+                matches = sorted(root.glob(pattern), reverse=True)
+                for match in matches:
+                    if match.is_file():
+                        return str(match)
+        return None
+
+    @classmethod
+    def _selenium_options(cls):
+        from selenium.webdriver.chrome.options import Options
+
+        options = Options()
+        options.page_load_strategy = "eager"
+
+        for argument in (
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--disable-software-rasterizer",
+            "--metrics-recording-only",
+            "--mute-audio",
+            "--no-first-run",
+            "--window-size=900,700",
+            "--renderer-process-limit=1",
+            "--js-flags=--max-old-space-size=128",
+            "--disable-blink-features=AutomationControlled",
+        ):
+            options.add_argument(argument)
+
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/152.0.0.0 Safari/537.36"
+        )
+        options.add_experimental_option(
+            "prefs",
+            {
+                "profile.managed_default_content_settings.images": 2,
+                "profile.default_content_setting_values.notifications": 2,
+                "profile.default_content_setting_values.geolocation": 2,
+            },
+        )
+
+        browser_binary = (
+            cls._system_chromium_path()
+            or cls._playwright_chromium_binary()
+        )
+        if browser_binary:
+            options.binary_location = browser_binary
+
+        return options
+
+    @classmethod
+    def _install_runtime_chromium_sync(cls) -> str | None:
+        """Докачує Chromium у runtime і повертає шлях до binary."""
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "playwright",
+                    "install",
+                    "chromium",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=360,
+                check=False,
+            )
+            if result.returncode != 0:
+                print(
+                    "[GEAR][ERROR] Runtime Chromium install: "
+                    + (result.stderr or result.stdout or "")[-1500:]
+                )
+                return None
+        except Exception as error:
+            print(
+                "[GEAR][ERROR] Runtime Chromium install: "
+                f"{type(error).__name__}: {error}"
+            )
+            return None
+
+        return cls._playwright_chromium_binary()
+
+    @classmethod
+    def _open_selenium_driver(cls):
+        from selenium import webdriver
+
+        options = cls._selenium_options()
+
+        try:
+            return webdriver.Chrome(options=options)
+        except Exception as first_error:
+            print(
+                "[GEAR] Selenium Manager first launch failed: "
+                f"{type(first_error).__name__}: {first_error}"
+            )
+
+        browser_binary = cls._install_runtime_chromium_sync()
+        if browser_binary:
+            options = cls._selenium_options()
+            options.binary_location = browser_binary
+            try:
+                return webdriver.Chrome(options=options)
+            except Exception as second_error:
+                print(
+                    "[GEAR] Selenium launch after Chromium install failed: "
+                    f"{type(second_error).__name__}: {second_error}"
+                )
+
+        # Останній fallback для середовищ, де Selenium Manager не знайшов driver.
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+
+        return webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options,
+        )
+
+    def _fetch_stats_selenium_sync(self, url: str) -> dict | None:
+        """Синхронно читає Garmoth Selenium-ом і переживає SPA-навігації."""
+        from selenium.common.exceptions import (
+            JavascriptException,
+            StaleElementReferenceException,
+            TimeoutException,
+            WebDriverException,
+        )
+        from selenium.webdriver.common.by import By
+
+        driver = None
+        last_error = None
         self.last_scrape_error = None
 
         try:
-            from playwright.async_api import async_playwright
-        except ImportError as error:
-            self.last_scrape_error = (
-                "Playwright не встановлено: "
-                f"{type(error).__name__}: {error}"
-            )
-            print(f"[GEAR][ERROR] {self.last_scrape_error}")
-            return None
+            driver = self._open_selenium_driver()
+            driver.set_page_load_timeout(60)
 
-        browser = None
-        context = None
-
-        try:
-            async with async_playwright() as playwright:
-                launch_kwargs = {
-                    "headless": True,
-                    "args": [
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--disable-extensions",
-                        "--disable-background-networking",
-                        "--disable-component-update",
-                        "--disable-default-apps",
-                        "--disable-sync",
-                        "--disable-software-rasterizer",
-                        "--metrics-recording-only",
-                        "--mute-audio",
-                        "--no-first-run",
-                        "--no-zygote",
-                        "--single-process",
-                        "--renderer-process-limit=1",
-                        "--js-flags=--max-old-space-size=128",
-                        "--disable-blink-features=AutomationControlled",
-                    ],
-                }
-
-                system_browser = self._system_chromium_path()
-                playwright_browser = playwright.chromium.executable_path
-
-                if system_browser:
-                    launch_kwargs["executable_path"] = system_browser
-                elif playwright_browser and os.path.exists(playwright_browser):
-                    launch_kwargs["executable_path"] = playwright_browser
-
+            try:
+                driver.get(url)
+            except TimeoutException:
+                # Для SPA достатньо, що DOM уже почав завантажуватись.
                 try:
-                    browser = await playwright.chromium.launch(**launch_kwargs)
-                except Exception as launch_error:
-                    launch_text = str(launch_error)
-                    if (
-                        "Executable doesn't exist" not in launch_text
-                        and "executable doesn't exist" not in launch_text.lower()
-                    ):
-                        raise
+                    driver.execute_script("window.stop();")
+                except Exception:
+                    pass
 
-                    installed = await self._install_playwright_chromium()
-                    if not installed:
-                        raise RuntimeError(
-                            self.last_scrape_error
-                            or "Chromium не вдалося встановити"
-                        ) from launch_error
+            deadline = time.time() + 45
 
-                    # Після runtime-install Playwright уже бачить свій Chromium.
-                    browser = await playwright.chromium.launch(
-                        headless=True,
-                        args=launch_kwargs["args"],
-                    )
+            while time.time() < deadline:
+                try:
+                    title = driver.title or ""
 
-                context = await browser.new_context(
-                    viewport={"width": 900, "height": 700},
-                    locale="en-US",
-                    service_workers="block",
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/152.0.0.0 Safari/537.36"
-                    ),
-                    extra_http_headers={
-                        "Accept-Language": "en-US,en;q=0.9",
-                    },
-                )
-
-                async def block_heavy_resources(route, request):
-                    if request.resource_type in {
-                        "image",
-                        "media",
-                        "font",
-                        "stylesheet",
-                    }:
-                        await route.abort()
-                    else:
-                        await route.continue_()
-
-                await context.route("**/*", block_heavy_resources)
-
-                await context.add_init_script(
-                    """
-                    Object.defineProperty(
-                        navigator,
-                        'webdriver',
-                        {get: () => undefined}
-                    );
-                    """
-                )
-
-                page = await context.new_page()
-
-                api_capture = {
-                    "stats": None,
-                    "url": None,
-                    "json_count": 0,
-                }
-                response_errors = []
-                capture_tasks = set()
-
-                async def capture_response(response):
-                    try:
-                        content_type = (
-                            response.headers.get("content-type", "")
-                            .casefold()
+                    # 1. Старий Garmoth layout.
+                    legacy_values = [
+                        element.text.strip()
+                        for element in driver.find_elements(
+                            By.CSS_SELECTOR,
+                            ".grid-cols-4 .text-2xl",
                         )
-                        if response.status >= 400 and "garmoth" in response.url:
-                            if len(response_errors) < 20:
-                                response_errors.append(
-                                    f"{response.status} {response.url}"
-                                )
+                        if element.text.strip()
+                    ]
+                    stats = self._stats_from_sequence(legacy_values)
+                    if stats:
+                        return stats
 
-                        if (
-                            api_capture["stats"] is None
-                            and (
-                                "json" in content_type
-                                or "/api/" in response.url
-                            )
-                        ):
-                            try:
-                                payload = await response.json()
-                            except Exception:
-                                return
+                    # 2. Видимий текст нового layout.
+                    body_text = driver.find_element(By.TAG_NAME, "body").text
+                    stats = self._stats_from_labelled_text(body_text)
+                    if stats:
+                        return stats
 
-                            api_capture["json_count"] += 1
-                            stats = self._stats_from_json(payload)
-                            if stats:
-                                api_capture["stats"] = stats
-                                api_capture["url"] = response.url
-
-                            # Не зберігаємо JSON у пам'яті: payload може бути
-                            # дуже великим на Garmoth.
-                            del payload
-                    except Exception:
-                        return
-
-                def schedule_capture(response):
-                    task = asyncio.create_task(capture_response(response))
-                    capture_tasks.add(task)
-                    task.add_done_callback(capture_tasks.discard)
-
-                page.on("response", schedule_capture)
-
-                await page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=90_000,
-                )
-
-                # Не виходимо лише через появу оболонки Gear Builder.
-                # Чекаємо сам build/API максимум 35 секунд.
-                for _ in range(35):
-                    await page.wait_for_timeout(1_000)
-
-                    legacy_values_now = await page.locator(
-                        ".grid-cols-4 .text-2xl"
-                    ).all_inner_texts()
-                    if self._stats_from_sequence(legacy_values_now):
-                        break
-
-                    body_now = await page.locator("body").inner_text()
-                    if self._stats_from_labelled_text(body_now):
-                        break
-
-                    if api_capture["stats"]:
-                        break
-
-                if capture_tasks:
-                    await asyncio.gather(
-                        *list(capture_tasks),
-                        return_exceptions=True,
-                    )
-
-                title = await page.title()
-                body_text = await page.locator("body").inner_text()
-                body_lower = body_text.lower()
-
-                if any(
-                    marker in body_lower
-                    for marker in (
-                        "just a moment",
-                        "verify you are human",
-                        "checking your browser",
-                    )
-                ):
-                    raise RuntimeError(
-                        "Garmoth показав перевірку Cloudflare "
-                        "замість профілю"
-                    )
-
-                # 1. Дані з API/JSON Garmoth — найстабільніше після редизайну.
-                if api_capture["stats"]:
-                    print(
-                        "[GEAR] Stats from Garmoth JSON: "
-                        f"{api_capture['url']}"
-                    )
-                    return api_capture["stats"]
-
-                # 2. Старий layout.
-                legacy_values = await page.locator(
-                    ".grid-cols-4 .text-2xl"
-                ).all_inner_texts()
-                stats = self._stats_from_sequence(legacy_values)
-                if stats:
-                    return stats
-
-                # 3. Текст сторінки.
-                stats = self._stats_from_labelled_text(body_text)
-                if stats:
-                    return stats
-
-                # 4. Новий layout може тримати цифри в input/value/aria,
-                # а не в textContent. Беремо контекст елементів AP/AAP/DP/GS.
-                stat_contexts = await page.locator("body *").evaluate_all(
-                    """
-                    (elements) => {
+                    # 3. Значення біля AP/AAP/DP/GS, включно з input/value/aria.
+                    contexts = driver.execute_script(
+                        """
                         const labels = new Set([
                             'AP', 'AAP', 'DP', 'GS',
                             'ATTACK POWER',
                             'AWAKENING AP',
+                            'AWAKENING ATTACK POWER',
                             'DEFENSE POWER',
                             'DEFENCE POWER',
                             'GEAR SCORE',
                             'GEARSCORE'
                         ]);
                         const out = [];
-                        for (const el of elements) {
+                        for (const el of document.querySelectorAll('body *')) {
                             const own = (el.textContent || '').trim().toUpperCase();
                             if (!labels.has(own)) continue;
-
                             let node = el;
                             for (let depth = 0; depth < 4 && node; depth++) {
                                 const inputs = Array.from(
@@ -665,79 +622,132 @@ class BdoGear(commands.Cog):
                                     node.getAttribute('data-value') || '',
                                     node.getAttribute('value') || ''
                                 ].join(' ');
-                                out.push(
-                                    [
-                                        node.innerText || '',
-                                        inputs,
-                                        attrs
-                                    ].join(' ')
-                                );
+                                out.push([
+                                    node.innerText || '',
+                                    inputs,
+                                    attrs
+                                ].join(' '));
                                 node = node.parentElement;
                             }
                         }
                         return out.slice(0, 100);
-                    }
-                    """
-                )
-                stats = self._stats_from_labelled_text(
-                    "\n".join(stat_contexts)
-                )
-                if stats:
-                    return stats
-
-                # 5. Nuxt/JSON script payloads.
-                script_texts = await page.locator(
-                    "script[type='application/json'], "
-                    "script#__NUXT_DATA__, script[id*='nuxt']"
-                ).all_text_contents()
-                for script_text in script_texts:
-                    stats = self._stats_from_json(script_text)
+                        """
+                    ) or []
+                    stats = self._stats_from_labelled_text(
+                        "\n".join(str(value) for value in contexts)
+                    )
                     if stats:
                         return stats
 
-                # 6. Останній DOM-фолбек.
-                leaf_values = await page.locator("body *").evaluate_all(
-                    """
-                    (elements) => elements
-                        .flatMap((el) => {
-                            const values = [];
+                    # 4. Nuxt/application JSON.
+                    script_texts = driver.execute_script(
+                        """
+                        return Array.from(document.querySelectorAll(
+                            "script[type='application/json'], " +
+                            "script#__NUXT_DATA__, script[id*='nuxt']"
+                        )).map((el) => el.textContent || '').filter(Boolean);
+                        """
+                    ) or []
+
+                    for script_text in script_texts[:20]:
+                        try:
+                            payload = json.loads(script_text)
+                        except Exception:
+                            payload = script_text
+                        stats = self._stats_from_json(payload)
+                        if stats:
+                            return stats
+
+                    # 5. localStorage/sessionStorage іноді містять поточний build.
+                    storage_values = driver.execute_script(
+                        """
+                        const out = [];
+                        for (const store of [window.localStorage, window.sessionStorage]) {
+                            if (!store) continue;
+                            for (let i = 0; i < store.length; i++) {
+                                const key = store.key(i);
+                                const value = store.getItem(key);
+                                if (value && value.length < 250000) out.push(value);
+                            }
+                        }
+                        return out.slice(0, 60);
+                        """
+                    ) or []
+
+                    for value in storage_values:
+                        stats = self._stats_from_json(value)
+                        if stats:
+                            return stats
+
+                    # 6. Останній DOM fallback: усі чисті числові leaf/input values.
+                    numeric_values = driver.execute_script(
+                        """
+                        const out = [];
+                        for (const el of document.querySelectorAll('body *')) {
                             if (
                                 el.children.length === 0 &&
-                                /^\\s*\\d{2,4}\\s*$/.test(
-                                    el.textContent || ''
-                                )
+                                /^\\s*\\d{2,4}\\s*$/.test(el.textContent || '')
                             ) {
-                                values.push(
-                                    (el.textContent || '').trim()
-                                );
+                                out.push((el.textContent || '').trim());
                             }
                             if (
                                 el instanceof HTMLInputElement &&
-                                /^\\s*\\d{2,4}\\s*$/.test(
-                                    el.value || ''
-                                )
+                                /^\\s*\\d{2,4}\\s*$/.test(el.value || '')
                             ) {
-                                values.push(el.value.trim());
+                                out.push(el.value.trim());
                             }
-                            return values;
-                        })
-                    """
-                )
-                stats = self._stats_from_sequence(leaf_values)
-                if stats:
-                    return stats
+                        }
+                        return out.slice(0, 500);
+                        """
+                    ) or []
+                    stats = self._stats_from_sequence(numeric_values)
+                    if stats:
+                        return stats
 
-                api_error_sample = "; ".join(response_errors[-5:])
-                raise RuntimeError(
-                    "профіль відкрився, але build-стати не отримані; "
-                    f"title={title!r}; "
-                    f"JSON={api_capture['json_count']}; "
-                    f"API errors={api_error_sample or 'немає'}"
-                )
+                    if any(
+                        marker in body_text.casefold()
+                        for marker in (
+                            "just a moment",
+                            "verify you are human",
+                            "checking your browser",
+                        )
+                    ):
+                        last_error = RuntimeError(
+                            "Garmoth показав Cloudflare verification"
+                        )
+
+                except (
+                    StaleElementReferenceException,
+                    JavascriptException,
+                    WebDriverException,
+                ) as error:
+                    # Garmoth SPA може навігувати кілька разів після відкриття.
+                    last_error = error
+
+                time.sleep(1)
+
+            try:
+                final_title = driver.title
+                final_url = driver.current_url
+            except Exception:
+                final_title = "?"
+                final_url = url
+
+            detail = (
+                f"{type(last_error).__name__}: {last_error}"
+                if last_error
+                else "AP/AAP/DP/GS не знайдені"
+            )
+            self.last_scrape_error = (
+                "Selenium: профіль відкрився, але стати не зчитані; "
+                f"title={final_title!r}; url={final_url}; {detail}"
+            )
+            print(f"[GEAR][ERROR] {self.last_scrape_error}")
+            return None
 
         except Exception as error:
             self.last_scrape_error = (
-                f"{type(error).__name__}: {error}"
+                f"Selenium {type(error).__name__}: {error}"
             )
             print(
                 f"[GEAR][ERROR] Garmoth {url}: "
@@ -745,17 +755,20 @@ class BdoGear(commands.Cog):
             )
             return None
         finally:
-            if context:
+            if driver:
                 try:
-                    await context.close()
-                except Exception:
-                    pass
-            if browser:
-                try:
-                    await browser.close()
+                    driver.quit()
                 except Exception:
                     pass
             self._release_process_memory()
+
+    async def fetch_stats_selenium(self, url: str) -> dict | None:
+        """Не блокує Discord під час Selenium-парсингу."""
+        self.last_scrape_error = None
+        return await asyncio.to_thread(
+            self._fetch_stats_selenium_sync,
+            url,
+        )
 
     async def update_member_gear(
         self,
