@@ -129,9 +129,9 @@ class BdoGear(commands.Cog):
                 upper = line.upper()
                 for name in names:
                     pattern = (
-                        r"(?:^|\\b)"
+                        r"(?:^|\b)"
                         + re.escape(name)
-                        + r"(?:\\b|\\s*[:=])[^0-9]{0,30}(\\d{2,4})"
+                        + r"(?:\b|\s*[:=])[^0-9]{0,30}(\d{2,4})"
                     )
                     match = re.search(pattern, upper)
                     if match:
