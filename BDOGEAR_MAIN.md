@@ -726,3 +726,63 @@ Before modifying this system:
 5. Preserve the user-facing contract above.
 6. Change one subsystem at a time.
 7. Test one profile before mass collection.
+
+---
+
+## 21. Current implementation status
+
+Updated after the 2026-09-19 refactor.
+
+### DONE
+
+- `data/gear_store.py` now supports **one Mongo document per Discord user**.
+- Existing legacy `members_gear/main.users` data remains readable as fallback.
+- New writes use atomic per-user `update_one(..., upsert=True)`.
+- `/gear_update` now acknowledges Discord **before** Mongo interaction claims.
+- `/collect` now acknowledges Discord before slow work.
+- `/collect` now runs as a **background task**, not as one long slash interaction.
+- A global Mongo job lock `gear_jobs/_id=mass_collect` prevents concurrent mass collections across Render instances.
+- `/collect_stop` reads/writes the global Mongo job state, so stop works even if another bot instance receives the command.
+- Every successful profile in `/collect` is saved immediately.
+- Old `Garmoth Profile Updated` embed appearance is preserved.
+- Garmoth fetching is isolated in:
+  `services/garmoth_client.py`
+- The Garmoth client now tries **lightweight HTTP/embedded JSON first**.
+- Selenium is now only a fallback inside the Garmoth service.
+- Parser diagnostics are returned to the cog instead of being mixed directly with Discord command logic.
+
+### STILL TO DO
+
+1. Test `garmoth-client-v1` on one known public character after deployment.
+2. Inspect its diagnostics/network URLs if the HTTP path does not return stats.
+3. Identify the stable Garmoth JSON/API request used by public shared builds.
+4. Replace Selenium fallback with direct HTTP/API when that endpoint is verified.
+5. Once parser + storage are stable, add automatic listener for new Garmoth links in channel `1358443998603120824`.
+6. After a new link is parsed, evaluate main AP against **336** and connect it to the Страждущі workflow.
+7. Only then run a full guild `/collect`.
+
+### Current test order
+
+Do **not** start with full `/collect`.
+
+Run:
+
+```text
+/gear_update
+```
+
+on one known public Garmoth character.
+
+Expected parser label:
+
+```text
+garmoth-client-v1
+```
+
+If it fails, use the returned `source` and `diagnostics` to determine whether:
+- HTTP returned no embedded gear data;
+- Selenium failed to start;
+- ChromeDriver timed out;
+- Garmoth returned Cloudflare;
+- network endpoints were observed but no stat payload matched.
+
