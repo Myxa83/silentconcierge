@@ -15,10 +15,10 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from data.gear_store import load_gear, save_gear
+from data.gear_store import count_members, load_gear, upsert_member_gear
 from data.mongo_store import get_database
 from pymongo.errors import DuplicateKeyError
 
@@ -36,6 +36,7 @@ class BdoGear(commands.Cog):
         self.collect_stop_requested = False
         self.collect_stop_event = asyncio.Event()
         self.collect_owner_id = None
+        self.collect_task: asyncio.Task | None = None
         self.last_scrape_error: str | None = None
         self.browser_install_lock = asyncio.Lock()
 
@@ -75,6 +76,156 @@ class BdoGear(commands.Cog):
                 f"interaction={interaction_id} action={action}"
             )
         return claimed
+
+    async def _acquire_collect_job(
+        self,
+        owner_id: int,
+        token: str,
+    ) -> bool:
+        """Глобальний lock: лише один /collect на всі Render-інстанси."""
+        now = datetime.now(timezone.utc)
+        stale_before = now - timedelta(hours=2)
+        instance_id = (
+            os.getenv("RENDER_INSTANCE_ID")
+            or os.getenv("HOSTNAME")
+            or "unknown"
+        )
+
+        def acquire() -> bool:
+            jobs = get_database()["gear_jobs"]
+            jobs.delete_one({
+                "_id": "mass_collect",
+                "updated_at": {"$lt": stale_before},
+            })
+            try:
+                jobs.insert_one({
+                    "_id": "mass_collect",
+                    "token": token,
+                    "owner_id": owner_id,
+                    "instance_id": instance_id,
+                    "started_at": now,
+                    "updated_at": now,
+                    "stop_requested": False,
+                    "processed": 0,
+                })
+                return True
+            except DuplicateKeyError:
+                return False
+
+        return await asyncio.to_thread(acquire)
+
+    async def _get_collect_job(self) -> dict | None:
+        return await asyncio.to_thread(
+            lambda: get_database()["gear_jobs"].find_one(
+                {"_id": "mass_collect"}
+            )
+        )
+
+    async def _heartbeat_collect_job(
+        self,
+        token: str,
+        *,
+        processed: int,
+    ) -> bool:
+        def heartbeat() -> bool:
+            result = get_database()["gear_jobs"].update_one(
+                {
+                    "_id": "mass_collect",
+                    "token": token,
+                },
+                {
+                    "$set": {
+                        "updated_at": datetime.now(timezone.utc),
+                        "processed": processed,
+                    }
+                },
+            )
+            return bool(result.matched_count)
+
+        return await asyncio.to_thread(heartbeat)
+
+    async def _collect_should_stop(self, token: str) -> bool:
+        if self.collect_stop_requested or self.collect_stop_event.is_set():
+            return True
+
+        def read() -> bool:
+            document = get_database()["gear_jobs"].find_one(
+                {
+                    "_id": "mass_collect",
+                    "token": token,
+                },
+                {"stop_requested": 1},
+            )
+            if not document:
+                return True
+            return bool(document.get("stop_requested"))
+
+        try:
+            return await asyncio.to_thread(read)
+        except Exception as error:
+            print(
+                "[GEAR][JOB][WARN] stop check: "
+                f"{type(error).__name__}: {error}"
+            )
+            return False
+
+    async def _request_collect_stop(self) -> dict | None:
+        def request() -> dict | None:
+            jobs = get_database()["gear_jobs"]
+            document = jobs.find_one({"_id": "mass_collect"})
+            if not document:
+                return None
+            jobs.update_one(
+                {"_id": "mass_collect"},
+                {
+                    "$set": {
+                        "stop_requested": True,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                },
+            )
+            return document
+
+        return await asyncio.to_thread(request)
+
+    async def _release_collect_job(self, token: str) -> None:
+        def release() -> None:
+            get_database()["gear_jobs"].delete_one({
+                "_id": "mass_collect",
+                "token": token,
+            })
+
+        try:
+            await asyncio.to_thread(release)
+        except Exception as error:
+            print(
+                "[GEAR][JOB][WARN] release: "
+                f"{type(error).__name__}: {error}"
+            )
+
+    async def _wait_collect_delay(
+        self,
+        seconds: int,
+        token: str,
+    ) -> bool:
+        """True якщо під час паузи попросили зупинити збір."""
+        deadline = asyncio.get_running_loop().time() + seconds
+        while True:
+            if await self._collect_should_stop(token):
+                return True
+
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+
+            try:
+                await asyncio.wait_for(
+                    self.collect_stop_event.wait(),
+                    timeout=min(2.0, remaining),
+                )
+                return True
+            except asyncio.TimeoutError:
+                pass
 
     async def _safe_private_result(
         self,
@@ -955,47 +1106,42 @@ class BdoGear(commands.Cog):
         member,
         link: str,
     ) -> dict | None:
-        """Зчитує Garmoth і зберігає актуальний гір за Discord ID."""
+        """Зчитує Garmoth і атомарно зберігає одного Discord user."""
         async with self.update_lock:
             stats = await self.fetch_stats_selenium(link)
             if not stats:
                 return None
 
-            gear_data = load_gear()
-            gear_data[str(member.id)] = self._gear_entry(
+            entry = self._gear_entry(
                 member,
                 link,
                 stats,
             )
-
-            if not save_gear(gear_data):
+            saved = await asyncio.to_thread(
+                upsert_member_gear,
+                member.id,
+                entry,
+            )
+            if not saved:
                 self.last_scrape_error = (
                     "MongoDB: Garmoth зчитано, але не вдалося "
-                    "зберегти гір у members_gear"
-                )
-                print(
-                    f"[GEAR][ERROR] user={member.id}: "
-                    f"{self.last_scrape_error}"
+                    "зберегти гір користувача"
                 )
                 return None
 
-            print(
-                f"[GEAR] saved user={member.id} "
-                f"AP={stats.get('ap')} GS={stats.get('gs')}"
-            )
             return stats
 
-    async def run_mass_collect(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        """Масовий збір статсів."""
-        await interaction.followup.send(f"⚙️ **Запуск...** Отримую дані з #{channel.name}")
+    async def run_mass_collect(
+        self,
+        channel: discord.TextChannel,
+        status_channel,
+        *,
+        token: str,
+    ) -> None:
+        """Фонова масова обробка. Interaction тут більше не використовується."""
+        count = 0
+        stopped = False
 
-        gear_data = load_gear()
-        count     = 0
-        stopped   = False
-
-        # history() повертає нові повідомлення першими. Зберігаємо лише
-        # останнє Garmoth-посилання кожного користувача, а не 500 Message
-        # об'єктів у RAM.
         latest_profiles = {}
         async for message in channel.history(limit=500):
             link = self._extract_garmoth_link(message.content)
@@ -1012,16 +1158,16 @@ class BdoGear(commands.Cog):
 
         try:
             for author, link in profiles:
-                if self.collect_stop_requested:
+                if await self._collect_should_stop(token):
                     stopped = True
                     break
 
                 author_name = author.display_name
-                count      += 1
-                stats       = await self.fetch_stats_selenium(link)
+                count += 1
+                stats = await self.fetch_stats_selenium(link)
                 self._release_process_memory()
-                unix_time   = int(time.time())
-                wait_time   = self.delays[
+                unix_time = int(time.time())
+                wait_time = self.delays[
                     (count - 1) % len(self.delays)
                 ]
 
@@ -1035,28 +1181,39 @@ class BdoGear(commands.Cog):
                 )
 
                 if stats:
-                    embed.add_field(
-                        name="⚔️ AP/AAP",
-                        value=f"{stats['ap']} / {stats['aap']}",
-                        inline=True,
+                    entry = self._gear_entry(
+                        author,
+                        link,
+                        stats,
                     )
-                    embed.add_field(
-                        name="🛡️ DP",
-                        value=stats["dp"],
-                        inline=True,
+                    saved = await asyncio.to_thread(
+                        upsert_member_gear,
+                        author.id,
+                        entry,
                     )
-                    embed.add_field(
-                        name="🌟 Gearscore",
-                        value=f"**{stats['gs']}**",
-                        inline=True,
-                    )
-                    gear_data[str(author.id)] = (
-                        self._gear_entry(
-                            author,
-                            link,
-                            stats,
+
+                    if saved:
+                        embed.add_field(
+                            name="⚔️ AP/AAP",
+                            value=f"{stats['ap']} / {stats['aap']}",
+                            inline=True,
                         )
-                    )
+                        embed.add_field(
+                            name="🛡️ DP",
+                            value=stats["dp"],
+                            inline=True,
+                        )
+                        embed.add_field(
+                            name="🌟 Gearscore",
+                            value=f"**{stats['gs']}**",
+                            inline=True,
+                        )
+                    else:
+                        embed.add_field(
+                            name="Статус",
+                            value="❌ Зчитано, але не збережено в MongoDB",
+                            inline=False,
+                        )
                 else:
                     embed.add_field(
                         name="Статус",
@@ -1082,36 +1239,45 @@ class BdoGear(commands.Cog):
                     icon_url=author.display_avatar.url,
                 )
 
-                await interaction.channel.send(embed=embed)
+                await status_channel.send(embed=embed)
+                await self._heartbeat_collect_job(
+                    token,
+                    processed=count,
+                )
 
-                if self.collect_stop_requested:
+                if await self._wait_collect_delay(wait_time, token):
                     stopped = True
                     break
 
-                try:
-                    await asyncio.wait_for(
-                        self.collect_stop_event.wait(),
-                        timeout=wait_time,
-                    )
-                    stopped = True
-                    break
-                except asyncio.TimeoutError:
-                    pass
+        except Exception as error:
+            print(
+                f"[GEAR][COLLECT][ERROR] "
+                f"{type(error).__name__}: {error}"
+            )
+            try:
+                await status_channel.send(
+                    "❌ **Збір аварійно зупинено.** "
+                    f"Причина: {type(error).__name__}: {str(error)[:900]}"
+                )
+            except Exception:
+                pass
         finally:
-            save_gear(gear_data)
+            await self._release_collect_job(token)
             self.collect_running = False
             self.collect_stop_requested = False
             self.collect_stop_event.clear()
             self.collect_owner_id = None
+            self.collect_task = None
+            self._release_process_memory()
 
-        players_count = len(load_gear())
+        players_count = await asyncio.to_thread(count_members)
         if stopped:
-            await interaction.channel.send(
+            await status_channel.send(
                 f"⏹️ **Збір зупинено.** Оброблено профілів: "
                 f"{count}. У базі гравців: {players_count}"
             )
         else:
-            await interaction.channel.send(
+            await status_channel.send(
                 f"✅ **Парсинг завершено!** В базі тепер гравців: "
                 f"{players_count}"
             )
@@ -1120,22 +1286,28 @@ class BdoGear(commands.Cog):
 
     @app_commands.command(name="collect", description="Масовий збір статсів гільдії")
     async def collect(self, interaction: discord.Interaction):
+        interaction_alive = True
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except (discord.NotFound, discord.HTTPException):
+            interaction_alive = False
+
         if not await self._claim_interaction(interaction, "collect"):
             return
 
-        if self.collect_running:
-            await interaction.response.send_message(
-                "⚠️ Збір уже працює. Для зупинки використай "
-                "`/collect_stop`.",
-                ephemeral=True,
+        token = str(interaction.id)
+        acquired = await self._acquire_collect_job(
+            interaction.user.id,
+            token,
+        )
+        if not acquired:
+            await self._safe_private_result(
+                interaction,
+                "⚠️ Збір уже працює. Для зупинки використай /collect_stop.",
+                interaction_alive=interaction_alive,
             )
             return
 
-        self.collect_running = True
-        self.collect_stop_requested = False
-        self.collect_stop_event.clear()
-        self.collect_owner_id = interaction.user.id
-        await interaction.response.defer()
         try:
             channel = (
                 self.bot.get_channel(self.target_channel_id)
@@ -1143,21 +1315,48 @@ class BdoGear(commands.Cog):
                     self.target_channel_id
                 )
             )
-            await self.run_mass_collect(interaction, channel)
-        except Exception:
-            self.collect_running = False
-            self.collect_stop_requested = False
-            self.collect_stop_event.clear()
-            self.collect_owner_id = None
-            raise
+        except Exception as error:
+            await self._release_collect_job(token)
+            await self._safe_private_result(
+                interaction,
+                f"❌ Не можу відкрити канал гіру: {type(error).__name__}: {error}",
+                interaction_alive=interaction_alive,
+            )
+            return
+
+        self.collect_running = True
+        self.collect_stop_requested = False
+        self.collect_stop_event.clear()
+        self.collect_owner_id = interaction.user.id
+
+        await (interaction.channel or channel).send(
+            f"⚙️ **Запуск...** Отримую дані з #{channel.name}"
+        )
+
+        self.collect_task = asyncio.create_task(
+            self.run_mass_collect(
+                channel,
+                interaction.channel or channel,
+                token=token,
+            )
+        )
+
+        await self._safe_private_result(
+            interaction,
+            "✅ Збір запущено у фоні. /collect_stop зупинить його після поточного профілю.",
+            interaction_alive=interaction_alive,
+        )
 
     @app_commands.command(
         name="collect_stop",
         description="Безпечно зупинити поточний збір Garmoth",
     )
     async def collect_stop(self, interaction: discord.Interaction):
-        if not self.collect_running:
-            await interaction.response.send_message(
+        await interaction.response.defer(ephemeral=True)
+
+        job = await self._get_collect_job()
+        if not job:
+            await interaction.followup.send(
                 "ℹ️ Збір зараз не запущений.",
                 ephemeral=True,
             )
@@ -1169,23 +1368,25 @@ class BdoGear(commands.Cog):
             None,
         )
         can_stop = (
-            interaction.user.id == self.collect_owner_id
+            interaction.user.id == job.get("owner_id")
             or bool(
                 permissions
                 and permissions.manage_guild
             )
         )
         if not can_stop:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Зупинити збір може той, хто його запустив, "
                 "або адміністратор.",
                 ephemeral=True,
             )
             return
 
+        await self._request_collect_stop()
         self.collect_stop_requested = True
         self.collect_stop_event.set()
-        await interaction.response.send_message(
+
+        await interaction.followup.send(
             "⏹️ Зупинку прийнято. Завершую поточний профіль, "
             "зберігаю дані й не переходжу до наступного.",
             ephemeral=True,
@@ -1261,18 +1462,18 @@ class BdoGear(commands.Cog):
     @app_commands.command(name="gear_update", description="Оновити дані одного гравця за посиланням")
     @app_commands.describe(посилання="Посилання на Garmoth профіль")
     async def gear_update(self, interaction: discord.Interaction, посилання: str):
-        if not await self._claim_interaction(interaction, "gear_update"):
-            return
-
         interaction_alive = True
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except (discord.NotFound, discord.HTTPException):
             interaction_alive = False
             print(
                 f"[GEAR][CMD] interaction expired before defer "
                 f"id={interaction.id}; continuing via DM"
             )
+
+        if not await self._claim_interaction(interaction, "gear_update"):
+            return
 
         print(
             f"[GEAR][CMD] gear_update parser={self.PARSER_VERSION} "
@@ -1293,10 +1494,7 @@ class BdoGear(commands.Cog):
             посилання,
         )
         if not stats:
-            detail = self.last_scrape_error or (
-                "невідома помилка; перевір Render log "
-                f"[GEAR][CMD] parser={self.PARSER_VERSION}"
-            )
+            detail = self.last_scrape_error or "невідома помилка"
             await self._safe_private_result(
                 interaction,
                 (
