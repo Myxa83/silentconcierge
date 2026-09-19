@@ -431,7 +431,13 @@ class BdoGear(commands.Cog):
         from selenium.webdriver.chrome.options import Options
 
         options = Options()
-        options.page_load_strategy = "eager"
+        # Garmoth/Nuxt може тримати навігацію відкритою дуже довго.
+        # "none" повертає driver.get() одразу, далі ми самі чекаємо JSON/DOM.
+        options.page_load_strategy = "none"
+        options.set_capability(
+            "goog:loggingPrefs",
+            {"performance": "ALL"},
+        )
 
         for argument in (
             "--headless=new",
@@ -560,21 +566,101 @@ class BdoGear(commands.Cog):
 
         try:
             driver = self._open_selenium_driver()
-            driver.set_page_load_timeout(60)
+            driver.set_page_load_timeout(15)
 
             try:
-                driver.get(url)
-            except TimeoutException:
-                # Для SPA достатньо, що DOM уже почав завантажуватись.
-                try:
-                    driver.execute_script("window.stop();")
-                except Exception:
-                    pass
+                driver.execute_cdp_cmd(
+                    "Network.enable",
+                    {
+                        "maxTotalBufferSize": 5_000_000,
+                        "maxResourceBufferSize": 1_000_000,
+                    },
+                )
+            except Exception:
+                pass
+
+            # page_load_strategy="none": не чекаємо Nuxt navigation.
+            driver.get(url)
 
             deadline = time.time() + 45
+            seen_api_urls = []
 
             while time.time() < deadline:
                 try:
+                    # 1. Найперше читаємо JSON/XHR із Network performance log.
+                    # Це не залежить від того, скільки разів Nuxt перенавігує DOM.
+                    try:
+                        performance_entries = driver.get_log("performance")
+                    except Exception:
+                        performance_entries = []
+
+                    for raw_entry in performance_entries:
+                        try:
+                            outer = json.loads(raw_entry.get("message", "{}"))
+                            message = outer.get("message", {})
+                            if message.get("method") != "Network.responseReceived":
+                                continue
+
+                            params = message.get("params", {})
+                            response = params.get("response", {})
+                            response_url = str(response.get("url", ""))
+                            mime_type = str(
+                                response.get("mimeType", "")
+                            ).casefold()
+                            request_id = params.get("requestId")
+
+                            interesting = (
+                                "api.garmoth.com" in response_url
+                                or "/api/" in response_url
+                                or "character" in response_url.casefold()
+                                or "build" in response_url.casefold()
+                            )
+                            if not interesting:
+                                continue
+
+                            if (
+                                response_url
+                                and response_url not in seen_api_urls
+                                and len(seen_api_urls) < 30
+                            ):
+                                seen_api_urls.append(response_url)
+
+                            if not request_id:
+                                continue
+                            if (
+                                "json" not in mime_type
+                                and "/api/" not in response_url
+                                and "api.garmoth.com" not in response_url
+                            ):
+                                continue
+
+                            try:
+                                body_result = driver.execute_cdp_cmd(
+                                    "Network.getResponseBody",
+                                    {"requestId": request_id},
+                                )
+                            except Exception:
+                                continue
+
+                            body = body_result.get("body", "")
+                            if not body:
+                                continue
+
+                            try:
+                                payload = json.loads(body)
+                            except Exception:
+                                payload = body
+
+                            stats = self._stats_from_json(payload)
+                            if stats:
+                                print(
+                                    "[GEAR][SELENIUM] stats from network "
+                                    f"url={response_url}"
+                                )
+                                return stats
+                        except Exception:
+                            continue
+
                     title = driver.title or ""
 
                     # 1. Старий Garmoth layout.
@@ -740,9 +826,11 @@ class BdoGear(commands.Cog):
                 if last_error
                 else "AP/AAP/DP/GS не знайдені"
             )
+            api_sample = " | ".join(seen_api_urls[-8:])
             self.last_scrape_error = (
                 "Selenium: профіль відкрився, але стати не зчитані; "
-                f"title={final_title!r}; url={final_url}; {detail}"
+                f"title={final_title!r}; url={final_url}; "
+                f"{detail}; network={api_sample or 'немає'}"
             )
             print(f"[GEAR][ERROR] {self.last_scrape_error}")
             return None
