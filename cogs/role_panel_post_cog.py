@@ -24,6 +24,7 @@ ROLE_MARILYN = 1448268130097958912
 ROLE_FOREMAN = 1455037068307861636
 ROLE_SUFFERING = 1406569206815658077 # Страждущі
 MIN_SUFFERING_AP = 336
+GEAR_CHANNEL_ID = 1358443998603120824
 GEAR_CHANNEL_URL = (
     "https://discord.com/channels/"
     "1323454227816906802/1358443998603120824"
@@ -70,33 +71,101 @@ class RoleSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("Ця дія доступна лише на сервері.", ephemeral=True)
+        if not interaction.guild or not isinstance(
+            interaction.user,
+            discord.Member,
+        ):
+            return await interaction.response.send_message(
+                "Ця дія доступна лише на сервері.",
+                ephemeral=True,
+            )
 
         member = interaction.user
         guild = interaction.guild
 
-        # 1. Перевірка на роль Світоч
         if not any(r.id == ROLE_SVITOCH for r in member.roles):
-            return await interaction.response.send_message(f"Доступно лише для ролі <@&{ROLE_SVITOCH}>.", ephemeral=True)
+            return await interaction.response.send_message(
+                f"Доступно лише для ролі <@&{ROLE_SVITOCH}>.",
+                ephemeral=True,
+            )
 
         selected_values = self.values
-        
-        # 2. ПЕРЕВІРКА ГІРУ ДЛЯ "СТРАЖДУЩІ" (336+ AP)
-        if str(ROLE_SUFFERING) in selected_values:
+        suffering_selected = str(ROLE_SUFFERING) in selected_values
+
+        if suffering_selected:
+            # Парсинг Garmoth може зайняти більше 3 секунд.
+            await interaction.response.defer(ephemeral=True)
+
             gear = get_member_gear(member.id)
-            current_ap = _parse_stat(gear.get("ap")) if gear else 0
+
+            # Якщо Mongo ще не має гіру — шукаємо останнє Garmoth-посилання
+            # цього користувача прямо в #Актуальний гір.
+            if not gear:
+                try:
+                    gear_channel = (
+                        guild.get_channel(GEAR_CHANNEL_ID)
+                        or await guild.fetch_channel(GEAR_CHANNEL_ID)
+                    )
+                except Exception:
+                    gear_channel = None
+
+                latest_link = None
+                if gear_channel is not None:
+                    async for message in gear_channel.history(limit=None):
+                        if message.author.id != member.id:
+                            continue
+
+                        match = re.search(
+                            (
+                                r"https?://(?:www\.)?"
+                                r"garmoth\.com/character/"
+                                r"[A-Za-z0-9_-]+"
+                            ),
+                            message.content or "",
+                        )
+                        if match:
+                            latest_link = match.group(0)
+                            break
+
+                if latest_link:
+                    gear_cog = interaction.client.get_cog("BdoGear")
+                    if gear_cog is not None:
+                        stats = await gear_cog.update_member_gear(
+                            member,
+                            latest_link,
+                        )
+                        if stats:
+                            gear = {
+                                "ap": stats.get("ap"),
+                                "aap": stats.get("aap"),
+                                "dp": stats.get("dp"),
+                                "gs": stats.get("gs"),
+                            }
+                        else:
+                            detail = getattr(
+                                gear_cog,
+                                "last_scrape_error",
+                                None,
+                            )
+                            return await interaction.followup.send(
+                                (
+                                    "❌ **Я знайшов твоє посилання на Garmoth, "
+                                    "але не зміг зчитати гір.**\n"
+                                    f"Причина: {detail or 'невідома помилка'}"
+                                ),
+                                ephemeral=True,
+                            )
 
             if not gear:
                 dm_embed = discord.Embed(
                     title="Страждущі | потрібен Garmoth",
                     description=(
-                        "Я ще не бачу твого гіру в базі.\n\n"
-                        "Щоб отримати роль **Страждущі**, залиш актуальне "
-                        "посилання на свій **Garmoth Gear Planner** у цьому каналі:\n"
+                        "Я не знайшов твого актуального Garmoth-посилання "
+                        "в каналі гіру.\n\n"
+                        "Щоб отримати роль **Страждущі**, залиш посилання "
+                        "на свій **Garmoth Gear Planner** тут:\n"
                         f"{GEAR_CHANNEL_URL}\n\n"
-                        f"Мінімальна вимога: **{MIN_SUFFERING_AP}+ AP**.\n"
-                        "Після оновлення бази обери роль ще раз."
+                        f"Мінімальна вимога: **{MIN_SUFFERING_AP}+ AP**."
                     ),
                     color=0x05B2B4,
                 )
@@ -109,54 +178,88 @@ class RoleSelect(discord.ui.Select):
 
                 if dm_sent:
                     msg = (
-                        "❌ **Гіру в базі ще немає, тому роль не видана.**\n"
-                        "Я надіслав тобі в приватні повідомлення, куди "
-                        "залишити посилання на Garmoth."
+                        "❌ **Не знайшов твого Garmoth у каналі, "
+                        "тому роль не видана.**\n"
+                        "Я надіслав у приватні повідомлення, куди "
+                        "залишити посилання."
                     )
                 else:
                     msg = (
-                        "❌ **Гіру в базі ще немає, тому роль не видана.**\n"
-                        "Я не зміг написати тобі в приватні повідомлення. "
-                        "Залиш актуальне посилання на Garmoth тут:\n"
+                        "❌ **Не знайшов твого Garmoth у каналі, "
+                        "тому роль не видана.**\n"
+                        "Залиш актуальне посилання тут:\n"
                         f"{GEAR_CHANNEL_URL}"
                     )
 
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     msg,
                     ephemeral=True,
                 )
+
+            current_ap = _parse_stat(gear.get("ap"))
 
             if current_ap < MIN_SUFFERING_AP:
-                msg = (
-                    f"❌ **Твій AP: {current_ap}. Для ролі Страждущі "
-                    f"потрібно {MIN_SUFFERING_AP}+ AP.**\n\n"
-                    "Онови профіль Garmoth і надішли актуальне "
-                    "посилання в канал:\n"
-                    f"{GEAR_CHANNEL_URL}\n\n"
-                    "Після наступного оновлення бази спробуй ще раз."
-                )
-                return await interaction.response.send_message(
-                    msg,
+                return await interaction.followup.send(
+                    (
+                        f"❌ **Твій AP: {current_ap}. Для ролі Страждущі "
+                        f"потрібно {MIN_SUFFERING_AP}+ AP.**\n\n"
+                        "Якщо гір змінився, онови Garmoth-посилання в каналі:\n"
+                        f"{GEAR_CHANNEL_URL}"
+                    ),
                     ephemeral=True,
                 )
 
-        # 3. Оновлення ролей
+        # Оновлення ролей
         selected_ids = {int(v) for v in selected_values}
         manageable = set(DROPDOWN_ROLES.values())
-        current_roles = {r.id for r in member.roles if r.id in manageable}
+        current_roles = {
+            r.id
+            for r in member.roles
+            if r.id in manageable
+        }
 
         to_add = selected_ids - current_roles
         to_remove = current_roles - selected_ids
-        
-        add_list = [guild.get_role(rid) for rid in to_add if guild.get_role(rid)]
-        rem_list = [guild.get_role(rid) for rid in to_remove if guild.get_role(rid)]
+
+        add_list = [
+            guild.get_role(rid)
+            for rid in to_add
+            if guild.get_role(rid)
+        ]
+        rem_list = [
+            guild.get_role(rid)
+            for rid in to_remove
+            if guild.get_role(rid)
+        ]
 
         try:
-            if add_list: await member.add_roles(*add_list)
-            if rem_list: await member.remove_roles(*rem_list)
-            await interaction.response.send_message("✅ Ролі оновлено.", ephemeral=True)
+            if add_list:
+                await member.add_roles(*add_list)
+            if rem_list:
+                await member.remove_roles(*rem_list)
+
+            if suffering_selected:
+                await interaction.followup.send(
+                    "✅ Ролі оновлено.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "✅ Ролі оновлено.",
+                    ephemeral=True,
+                )
+
         except discord.Forbidden:
-            await interaction.response.send_message("❌ У бота недостатньо прав. Перевір пріоритет ролей.", ephemeral=True)
+            if suffering_selected:
+                await interaction.followup.send(
+                    "❌ У бота недостатньо прав. Перевір пріоритет ролей.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ У бота недостатньо прав. Перевір пріоритет ролей.",
+                    ephemeral=True,
+                )
 
 class RoleSelectView(discord.ui.View):
     def __init__(self):
