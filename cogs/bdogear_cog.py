@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from data.gear_store import load_gear, save_gear
+from data.mongo_store import get_database
+from pymongo.errors import DuplicateKeyError
 
 # ─── Cog ──────────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,70 @@ class BdoGear(commands.Cog):
         self.collect_owner_id = None
         self.last_scrape_error: str | None = None
         self.browser_install_lock = asyncio.Lock()
+
+    async def _claim_interaction(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ) -> bool:
+        """Один Discord interaction виконується лише одним інстансом бота."""
+        interaction_id = str(interaction.id)
+
+        def claim() -> bool:
+            try:
+                get_database()["gear_interaction_claims"].insert_one({
+                    "_id": interaction_id,
+                    "action": action,
+                    "user_id": interaction.user.id,
+                    "guild_id": getattr(interaction.guild, "id", None),
+                    "created_at": datetime.now(timezone.utc),
+                })
+                return True
+            except DuplicateKeyError:
+                return False
+
+        try:
+            claimed = await asyncio.to_thread(claim)
+        except Exception as error:
+            print(
+                "[GEAR][CLAIM][WARN] "
+                f"{type(error).__name__}: {error}"
+            )
+            return True
+
+        if not claimed:
+            print(
+                f"[GEAR][CLAIM] duplicate skipped "
+                f"interaction={interaction_id} action={action}"
+            )
+        return claimed
+
+    async def _safe_private_result(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        *,
+        interaction_alive: bool,
+    ) -> None:
+        """Ephemeral якщо interaction живий, інакше DM."""
+        if interaction_alive:
+            try:
+                await interaction.followup.send(
+                    content,
+                    ephemeral=True,
+                )
+                return
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+        try:
+            await interaction.user.send(content)
+        except (discord.Forbidden, discord.HTTPException):
+            channel = interaction.channel
+            if channel is not None:
+                await channel.send(
+                    f"{interaction.user.mention}\n{content}"
+                )
 
     @staticmethod
     def _release_process_memory() -> None:
@@ -1052,6 +1118,9 @@ class BdoGear(commands.Cog):
 
     @app_commands.command(name="collect", description="Масовий збір статсів гільдії")
     async def collect(self, interaction: discord.Interaction):
+        if not await self._claim_interaction(interaction, "collect"):
+            return
+
         if self.collect_running:
             await interaction.response.send_message(
                 "⚠️ Збір уже працює. Для зупинки використай "
@@ -1190,14 +1259,31 @@ class BdoGear(commands.Cog):
     @app_commands.command(name="gear_update", description="Оновити дані одного гравця за посиланням")
     @app_commands.describe(посилання="Посилання на Garmoth профіль")
     async def gear_update(self, interaction: discord.Interaction, посилання: str):
-        await interaction.response.defer(ephemeral=True)
+        if not await self._claim_interaction(interaction, "gear_update"):
+            return
+
+        interaction_alive = True
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            interaction_alive = False
+            print(
+                f"[GEAR][CMD] interaction expired before defer "
+                f"id={interaction.id}; continuing via DM"
+            )
+
         print(
             f"[GEAR][CMD] gear_update parser={self.PARSER_VERSION} "
-            f"user={interaction.user.id} url={посилання}"
+            f"user={interaction.user.id} url={посилання} "
+            f"interaction_alive={interaction_alive}"
         )
 
         if "garmoth.com/character/" not in посилання:
-            await interaction.followup.send("❌ Невірне посилання. Потрібно garmoth.com/character/...", ephemeral=True)
+            await self._safe_private_result(
+                interaction,
+                "❌ Невірне посилання. Потрібно garmoth.com/character/...",
+                interaction_alive=interaction_alive,
+            )
             return
 
         stats = await self.update_member_gear(
@@ -1209,19 +1295,27 @@ class BdoGear(commands.Cog):
                 "невідома помилка; перевір Render log "
                 f"[GEAR][CMD] parser={self.PARSER_VERSION}"
             )
-            await interaction.followup.send(
-                "❌ Не вдалося зчитати Garmoth.\n"
-                f"Парсер: **{self.PARSER_VERSION}**\n"
-                f"Причина: {detail[:1200]}",
-                ephemeral=True,
+            await self._safe_private_result(
+                interaction,
+                (
+                    "❌ Не вдалося зчитати Garmoth.\n"
+                    f"Парсер: **{self.PARSER_VERSION}**\n"
+                    f"Причина: {detail[:1200]}"
+                ),
+                interaction_alive=interaction_alive,
             )
             return
 
-        await interaction.followup.send(
-            f"✅ Твої дані оновлено!\n"
-            f"⚔️ AP/AAP: {stats['ap']}/{stats['aap']} | 🛡️ DP: {stats['dp']} | 🌟 GS: **{stats['gs']}**",
-            ephemeral=True,
+        await self._safe_private_result(
+            interaction,
+            (
+                "✅ Твої дані оновлено!\n"
+                f"⚔️ AP/AAP: {stats['ap']}/{stats['aap']} | "
+                f"🛡️ DP: {stats['dp']} | 🌟 GS: **{stats['gs']}**"
+            ),
+            interaction_alive=interaction_alive,
         )
+
 
 
 async def setup(bot):
