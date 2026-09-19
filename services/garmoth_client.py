@@ -38,7 +38,7 @@ class GarmothResult:
 
 
 class GarmothClient:
-    VERSION = "garmoth-client-v1"
+    VERSION = "garmoth-client-v2"
 
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -670,11 +670,12 @@ class GarmothClient:
             TimeoutException,
             WebDriverException,
         )
-        from selenium.webdriver.common.by import By
-
         driver = None
         seen_api_urls: list[str] = []
+        seen_network: list[str] = []
         last_error = None
+        last_ready_state = None
+        body_seen = False
 
         try:
             driver = self._open_driver()
@@ -760,6 +761,18 @@ class GarmothClient:
                             if not interesting:
                                 continue
 
+                            if response_url:
+                                network_line = (
+                                    f"{int(response.get('status', 0) or 0)} "
+                                    f"{mime_type or '?'} "
+                                    f"{response_url}"
+                                )
+                                if (
+                                    network_line not in seen_network
+                                    and len(seen_network) < 40
+                                ):
+                                    seen_network.append(network_line)
+
                             if (
                                 response_url
                                 and response_url
@@ -825,40 +838,96 @@ class GarmothClient:
                         except Exception:
                             continue
 
-                    legacy_values = [
-                        element.text.strip()
-                        for element
-                        in driver.find_elements(
-                            By.CSS_SELECTOR,
-                            ".grid-cols-4 .text-2xl",
-                        )
-                        if element.text.strip()
-                    ]
+                    # Nuxt може знищувати execution context під час
+                    # внутрішньої навігації. Не шукаємо <body> locator-ом.
+                    # Читаємо DOM тільки якщо document.body вже існує.
+                    dom_state = driver.execute_script(
+                        """
+                        return {
+                            ready: document.readyState || null,
+                            hasBody: !!document.body,
+                            text: document.body
+                                ? (document.body.innerText || '')
+                                : '',
+                            html: document.documentElement
+                                ? (document.documentElement.outerHTML || '')
+                                : ''
+                        };
+                        """
+                    ) or {}
 
-                    stats = self.stats_from_sequence(
-                        legacy_values
+                    last_ready_state = dom_state.get("ready")
+                    body_text = dom_state.get("text") or ""
+                    page_html = dom_state.get("html") or ""
+                    body_seen = body_seen or bool(
+                        dom_state.get("hasBody")
                     )
-                    if stats:
-                        return GarmothResult(
-                            ok=True,
-                            stats=stats,
-                            source="selenium-dom-old",
+
+                    if body_text:
+                        stats = self.stats_from_labelled_text(
+                            body_text
+                        )
+                        if stats:
+                            return GarmothResult(
+                                ok=True,
+                                stats=stats,
+                                source="selenium-dom-text",
+                            )
+
+                    if page_html:
+                        # Старий selector та SSR/Nuxt HTML без Selenium locators.
+                        soup = BeautifulSoup(
+                            page_html,
+                            "html.parser",
                         )
 
-                    body_text = driver.find_element(
-                        By.TAG_NAME,
-                        "body",
-                    ).text
-
-                    stats = self.stats_from_labelled_text(
-                        body_text
-                    )
-                    if stats:
-                        return GarmothResult(
-                            ok=True,
-                            stats=stats,
-                            source="selenium-dom-text",
+                        legacy_values = [
+                            element.get_text(
+                                " ",
+                                strip=True,
+                            )
+                            for element in soup.select(
+                                ".grid-cols-4 .text-2xl"
+                            )
+                        ]
+                        stats = self.stats_from_sequence(
+                            legacy_values
                         )
+                        if stats:
+                            return GarmothResult(
+                                ok=True,
+                                stats=stats,
+                                source="selenium-html-old",
+                            )
+
+                        html_text = soup.get_text(
+                            "\n",
+                            strip=True,
+                        )
+                        stats = self.stats_from_labelled_text(
+                            html_text
+                        )
+                        if stats:
+                            return GarmothResult(
+                                ok=True,
+                                stats=stats,
+                                source="selenium-html-text",
+                            )
+
+                        for script in soup.find_all("script"):
+                            raw = (
+                                script.string
+                                or script.get_text()
+                            )
+                            if not raw:
+                                continue
+                            stats = self.stats_from_json(raw)
+                            if stats:
+                                return GarmothResult(
+                                    ok=True,
+                                    stats=stats,
+                                    source="selenium-html-json",
+                                )
 
                     if any(
                         marker in body_text.casefold()
@@ -868,18 +937,17 @@ class GarmothClient:
                             "checking your browser",
                         )
                     ):
-                        last_error = (
-                            "Cloudflare verification"
-                        )
+                        last_error = "Cloudflare verification"
 
                 except (
                     StaleElementReferenceException,
                     JavascriptException,
                     WebDriverException,
                 ) as error:
+                    # Не тягнемо величезний Selenium stacktrace у Discord.
+                    message = str(error).splitlines()[0][:300]
                     last_error = (
-                        f"{type(error).__name__}: "
-                        f"{error}"
+                        f"{type(error).__name__}: {message}"
                     )
 
                 time.sleep(1)
@@ -901,8 +969,11 @@ class GarmothClient:
                 diagnostics={
                     "title": title,
                     "final_url": final_url,
+                    "ready_state": last_ready_state,
+                    "body_seen": body_seen,
                     "last_error": last_error,
                     "network_urls": seen_api_urls[-8:],
+                    "network": seen_network[-12:],
                 },
             )
 
@@ -914,8 +985,10 @@ class GarmothClient:
                 ),
                 source="selenium",
                 diagnostics={
-                    "network_urls":
-                    seen_api_urls[-8:]
+                    "ready_state": last_ready_state,
+                    "body_seen": body_seen,
+                    "network_urls": seen_api_urls[-8:],
+                    "network": seen_network[-12:],
                 },
             )
 
