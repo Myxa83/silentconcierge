@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# MASTER SPEC: /BDOGEAR_MAIN.md
+# Read BDOGEAR_MAIN.md before changing this cog.
 # _bdogear_cog.py — MongoDB версія
 
 import discord
