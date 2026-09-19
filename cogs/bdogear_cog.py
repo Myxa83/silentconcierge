@@ -339,6 +339,7 @@ class BdoGear(commands.Cog):
         """Фонова масова обробка. Interaction тут більше не використовується."""
         count = 0
         stopped = False
+        failed = False
 
         latest_profiles = {}
         async for message in channel.history(limit=500):
@@ -448,6 +449,7 @@ class BdoGear(commands.Cog):
                     break
 
         except Exception as error:
+            failed = True
             print(
                 f"[GEAR][COLLECT][ERROR] "
                 f"{type(error).__name__}: {error}"
@@ -469,6 +471,9 @@ class BdoGear(commands.Cog):
             self._release_process_memory()
 
         players_count = await asyncio.to_thread(count_members)
+        if failed:
+            return
+
         if stopped:
             await status_channel.send(
                 f"⏹️ **Збір зупинено.** Оброблено профілів: "
