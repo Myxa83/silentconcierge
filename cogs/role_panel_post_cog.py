@@ -195,7 +195,7 @@ class RolesPanelCog(commands.Cog):
             f"{BULLET} <@&{ROLE_COOKIE_EATER}> - відкриває канал з промокодами.\n"
             f"{BULLET} <@&{ROLE_MARILYN}> - для тих, хто любить скріни, відео та костюми.\n"
             f"{BULLET} <@&{ROLE_FOREMAN}> - крафт ітемок у манор чи резиденцію.\n"
-            f"{BULLET} <@&{ROLE_SUFFERING}> - **Black Shrine (потрібно 336+ AP)**. Я перевірю твій гір перед видачею!\n"
+            f"{BULLET} <@&{ROLE_SUFFERING}> - **Black Shrine (потрібно {MIN_SUFFERING_AP}+ AP)**. Я перевірю твій гір перед видачею!\n"
         )
         
         embed = discord.Embed(description=desc_main, color=0x05B2B4)
