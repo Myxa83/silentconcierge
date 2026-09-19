@@ -595,40 +595,70 @@ class BdoGear(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="gear_find", description="Знайти ГС гравця за нікнеймом")
-    @app_commands.describe(nickname="Нікнейм гравця в Discord")
-    async def gear_find(self, interaction: discord.Interaction, nickname: str):
+    @app_commands.command(
+        name="gear_find",
+        description="Показати гір свій або вибраного користувача",
+    )
+    @app_commands.describe(
+        користувач="Користувач Discord (необов'язково)",
+    )
+    async def gear_find(
+        self,
+        interaction: discord.Interaction,
+        користувач: discord.Member | None = None,
+    ):
+        target = користувач or interaction.user
+
         gear_data = load_gear()
-        nickname_key = nickname.casefold()
-        user_info = next(
-            (
-                value
-                for value in gear_data.values()
-                if str(value.get("display_name", "")).casefold()
-                == nickname_key
-            ),
-            None,
-        )
+        user_info = gear_data.get(str(target.id))
 
         if not user_info:
             await interaction.response.send_message(
-                f"❌ Гравця **{nickname}** не знайдено. Запустіть `/collect` спочатку.",
+                (
+                    f"❌ Для **{target.display_name}** немає даних гіру. "
+                    "Спочатку використай /gear_update або залиш Garmoth "
+                    "посилання в каналі гіру."
+                ),
                 ephemeral=True,
             )
             return
 
         embed = discord.Embed(
-            title = f"🛡️ Gear Info: {user_info['display_name']}",
-            color = discord.Color.green(),
-            url   = user_info["link"],
+            title=f"🛡️ Gear Info: {user_info.get('display_name', target.display_name)}",
+            color=discord.Color.green(),
+            url=user_info.get("link"),
         )
-        embed.add_field(name="⚔️ AP/AAP",           value=f"{user_info.get('ap','??')} / {user_info.get('aap','??')}", inline=True)
-        embed.add_field(name="🛡️ DP",               value=user_info.get("dp", "??"),                                   inline=True)
-        embed.add_field(name="🌟 Gearscore",         value=f"**{user_info.get('gs','??')}**",                           inline=True)
-        embed.add_field(name="📅 Останнє оновлення", value=user_info.get("updated", "Невідомо"),                        inline=False)
-        embed.set_footer(text=f"ID: {user_info.get('user_id')}")
+        embed.add_field(
+            name="⚔️ AP/AAP",
+            value=(
+                f"{user_info.get('ap', '??')} / "
+                f"{user_info.get('aap', '??')}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="🛡️ DP",
+            value=user_info.get("dp", "??"),
+            inline=True,
+        )
+        embed.add_field(
+            name="🌟 Gearscore",
+            value=f"**{user_info.get('gs', '??')}**",
+            inline=True,
+        )
+        embed.add_field(
+            name="📅 Останнє оновлення",
+            value=user_info.get("updated", "Невідомо"),
+            inline=False,
+        )
+        embed.set_footer(
+            text=f"Discord ID: {user_info.get('user_id', target.id)}"
+        )
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True,
+        )
 
     @app_commands.command(name="gear_list", description="Показати всіх гравців у базі")
     async def gear_list(self, interaction: discord.Interaction):
