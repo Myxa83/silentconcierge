@@ -810,3 +810,32 @@ Next verification sequence:
 2. select **Страждущі** and confirm 382 AP passes the 336 AP gate;
 3. run a small `/collect` test on 2–3 profiles before a full guild collection.
 
+
+### Display names and exports
+
+For all gear records, store and preserve both:
+
+```text
+user_id
+display_name
+```
+
+Rules:
+- `user_id` is the stable technical key for Discord/Mongo logic.
+- `display_name` is the human-readable name shown to admins/users.
+- User-facing commands such as `/gear_find`, `/gear_list`, and `/collect` should display the Discord nickname/display name, not require admins to know numeric IDs.
+- Any future export must include at minimum:
+
+```text
+Discord ID
+Discord nickname/display name
+Garmoth link
+AP
+AAP
+DP
+GS
+Last updated
+```
+
+The ID may be included for technical matching, but the nickname/display name must always be present in exports intended for humans.
+
