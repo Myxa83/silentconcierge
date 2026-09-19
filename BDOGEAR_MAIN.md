@@ -786,3 +786,27 @@ If it fails, use the returned `source` and `diagnostics` to determine whether:
 - Garmoth returned Cloudflare;
 - network endpoints were observed but no stat payload matched.
 
+
+### VERIFIED IN LIVE BOT — 2026-09-19
+
+`/gear_update` successfully parsed and saved a public Garmoth profile using `garmoth-client-v2`.
+
+Observed result:
+
+```text
+AP/AAP: 382/382
+DP: 434
+GS: 816
+```
+
+This confirms:
+- the new Garmoth client works on a live public profile;
+- Nuxt navigation no longer breaks parsing;
+- the command completes successfully;
+- per-user Mongo save path completes before success is returned.
+
+Next verification sequence:
+1. `/gear_find` for the same player;
+2. select **Страждущі** and confirm 382 AP passes the 336 AP gate;
+3. run a small `/collect` test on 2–3 profiles before a full guild collection.
+
