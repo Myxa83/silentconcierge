@@ -935,10 +935,18 @@ class StreamCog(commands.Cog):
                 return "ще не було"
             return f"<t:{int(value.timestamp())}:R>"
 
+        twitch_credentials_ok = bool(TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET)
+        twitch_api_text = (
+            "Helix credentials OK"
+            if twitch_credentials_ok
+            else "Helix credentials missing - LIVE fallback через DecAPI"
+        )
+
         lines = [
             f"**Cog:** {'працює' if loop_running else 'ЗУПИНЕНИЙ'}",
             f"**Стрімерів у MongoDB:** {len(self.streamers)}",
             f"**Канал анонсів:** {channel_text}",
+            f"**Twitch API:** {twitch_api_text}",
             f"**Останній цикл стартував:** {fmt_dt(self._last_cycle_started_at)}",
             f"**Останній цикл завершився:** {fmt_dt(self._last_cycle_finished_at)}",
             f"**Перевірено в останньому циклі:** {self._last_cycle_checked}",
