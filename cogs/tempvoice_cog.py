@@ -18,6 +18,7 @@ STATE_COLLECTION = "tempvoice_state"
 STATE_DOCUMENT_ID = "main"
 STATUS_MAX_LENGTH = 500
 TEMP_VOICE_CATEGORY_ID = 1323454228261245008
+ALLOWED_TEMPVOICE_ROLE_IDS = {1383410423704846396, 1375070910138028044, 1323454517664157736}
 
 
 class CreateVoiceModal(discord.ui.Modal):
@@ -143,6 +144,9 @@ class TempVoiceCog(commands.Cog):
             channels = {}
             self._state["channels"] = channels
         return channels
+
+    def _can_create_tempvoice(self, member: discord.Member) -> bool:
+        return any(role.id in ALLOWED_TEMPVOICE_ROLE_IDS for role in member.roles)
 
     def _get_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
         channel = guild.get_channel(TEMP_VOICE_CATEGORY_ID)
@@ -396,6 +400,13 @@ class TempVoiceCog(commands.Cog):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message(
                 "Цю команду можна використовувати тільки на сервері.",
+                ephemeral=True,
+            )
+            return
+
+        if not self._can_create_tempvoice(interaction.user):
+            await interaction.response.send_message(
+                "У тебе немає доступу до створення тимчасових голосових кімнат.",
                 ephemeral=True,
             )
             return
