@@ -18,6 +18,7 @@ STATE_COLLECTION = "tempvoice_state"
 STATE_DOCUMENT_ID = "main"
 STATUS_MAX_LENGTH = 500
 TEMP_VOICE_CATEGORY_ID = 1323454228261245008
+TEMPLATE_VOICE_CHANNEL_ID = 1323462752504778793
 ALLOWED_TEMPVOICE_ROLE_IDS = {1383410423704846396, 1375070910138028044, 1323454517664157736}
 
 
@@ -148,6 +149,10 @@ class TempVoiceCog(commands.Cog):
     def _can_create_tempvoice(self, member: discord.Member) -> bool:
         return any(role.id in ALLOWED_TEMPVOICE_ROLE_IDS for role in member.roles)
 
+    def _get_template_voice(self, guild: discord.Guild) -> Optional[discord.VoiceChannel]:
+        channel = guild.get_channel(TEMPLATE_VOICE_CHANNEL_ID)
+        return channel if isinstance(channel, discord.VoiceChannel) else None
+
     def _get_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
         channel = guild.get_channel(TEMP_VOICE_CATEGORY_ID)
         return channel if isinstance(channel, discord.CategoryChannel) else None
@@ -250,6 +255,14 @@ class TempVoiceCog(commands.Cog):
             )
             return
 
+        template = self._get_template_voice(member.guild)
+        if template is None:
+            await interaction.response.send_message(
+                "Не вдалося знайти шаблонний голосовий канал.",
+                ephemeral=True,
+            )
+            return
+
         async with self._lock:
             existing = self._find_owned_channel(member.guild, member.id)
             if existing is not None:
@@ -259,9 +272,8 @@ class TempVoiceCog(commands.Cog):
                 )
                 return
 
-            # Копіюємо права категорії: ролі та боти отримують ті самі
-            # permission overwrites, що й в інших голосових цієї категорії.
-            overwrites = dict(category.overwrites)
+            # Копіюємо налаштування та права з шаблонного voice-каналу.
+            overwrites = dict(template.overwrites)
 
             # Автор отримує право зайти у власну кімнату та керувати нею.
             overwrites[member] = discord.PermissionOverwrite(
@@ -281,7 +293,10 @@ class TempVoiceCog(commands.Cog):
                     name=name[:100],
                     category=category,
                     overwrites=overwrites,
+                    bitrate=template.bitrate,
                     user_limit=user_limit,
+                    rtc_region=template.rtc_region,
+                    video_quality_mode=template.video_quality_mode,
                     reason=f"Temporary voice created by {member} ({member.id})",
                 )
             except (discord.Forbidden, discord.HTTPException) as error:
