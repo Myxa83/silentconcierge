@@ -14,7 +14,8 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from pymongo import MongoClient
+
+from data.mongo_store import get_database
 
 try:
     from PIL import Image, ImageDraw
@@ -56,17 +57,16 @@ ANNOUNCE_LINES = [
 
 # ─── MongoDB ─────────────────────────────────────────────────────────────────
 
-_mongo_client = None
-_mongo_db     = None
+_stream_db_logged = False
 
 def _get_db():
-    global _mongo_client, _mongo_db
-    if _mongo_db is None:
-        url = os.environ.get("MONGODB_URL", "")
-        _mongo_client = MongoClient(url, serverSelectionTimeoutMS=10000)
-        _mongo_db = _mongo_client["silentconcierge"]
-        print(f"[STREAM] MongoDB підключено: {_mongo_db.name}")
-    return _mongo_db
+    """Використовує те саме MongoDB-підключення і ту саму базу, що й увесь бот."""
+    global _stream_db_logged
+    db = get_database()
+    if not _stream_db_logged:
+        print(f"[STREAM] MongoDB підключено через shared store: {db.name}")
+        _stream_db_logged = True
+    return db
 
 
 def _load_streamers() -> list:
@@ -178,8 +178,14 @@ class StreamCog(commands.Cog):
         self.game_icons = _load_game_icons()
         self.last_seen  = _load_last_seen()
         self._checked_live: set[tuple[str, str]] = set()
+        self._last_cycle_started_at: Optional[datetime] = None
+        self._last_cycle_finished_at: Optional[datetime] = None
+        self._last_cycle_error: Optional[str] = None
+        self._last_cycle_checked: int = 0
         self.check_streams.start()
         print(f"[STREAM] Завантажено стрімерів: {len(self.streamers)}")
+        if not self.streamers:
+            print("[STREAM][WARN] Список стрімерів у MongoDB порожній")
 
     def cog_unload(self):
         self.check_streams.cancel()
@@ -490,10 +496,15 @@ class StreamCog(commands.Cog):
 
     @tasks.loop(minutes=2, reconnect=True)
     async def check_streams(self):
+        self._last_cycle_started_at = datetime.now(timezone.utc)
+        self._last_cycle_error = None
+        self._last_cycle_checked = 0
+
         try:
             self.streamers = _load_streamers()
             self.last_seen = _load_last_seen()
             self.game_icons = _load_game_icons()
+            self._last_cycle_checked = len(self.streamers)
 
             timeout = aiohttp.ClientTimeout(
                 total=REQUEST_TIMEOUT_SECONDS
@@ -515,10 +526,13 @@ class StreamCog(commands.Cog):
                             f"{type(e).__name__}: {e}"
                         )
         except Exception as e:
+            self._last_cycle_error = f"{type(e).__name__}: {e}"
             print(
                 f"[STREAM][ERROR] cycle survived: "
-                f"{type(e).__name__}: {e}"
+                f"{self._last_cycle_error}"
             )
+        finally:
+            self._last_cycle_finished_at = datetime.now(timezone.utc)
 
     @check_streams.before_loop
     async def before_loop(self):
@@ -753,6 +767,42 @@ class StreamCog(commands.Cog):
         )
 
     # ── Slash команди ────────────────────────────────────────────────────────
+
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    @app_commands.command(name="стрім_статус", description="Перевірити стан кога стрімерів")
+    async def stream_status(self, interaction: discord.Interaction):
+        self.streamers = _load_streamers()
+
+        channel = await self.get_announce_channel()
+        channel_text = (
+            f"{channel.mention} (`{channel.id}`)"
+            if channel is not None
+            else f"НЕ ЗНАЙДЕНО (`{STREAM_ANNOUNCE_CHANNEL_ID}`)"
+        )
+
+        loop_running = self.check_streams.is_running()
+        next_iteration = self.check_streams.next_iteration
+
+        def fmt_dt(value: Optional[datetime]) -> str:
+            if value is None:
+                return "ще не було"
+            return f"<t:{int(value.timestamp())}:R>"
+
+        lines = [
+            f"**Cog:** {'працює' if loop_running else 'ЗУПИНЕНИЙ'}",
+            f"**Стрімерів у MongoDB:** {len(self.streamers)}",
+            f"**Канал анонсів:** {channel_text}",
+            f"**Останній цикл стартував:** {fmt_dt(self._last_cycle_started_at)}",
+            f"**Останній цикл завершився:** {fmt_dt(self._last_cycle_finished_at)}",
+            f"**Перевірено в останньому циклі:** {self._last_cycle_checked}",
+            f"**Наступна перевірка:** {fmt_dt(next_iteration)}",
+            f"**Остання помилка циклу:** `{self._last_cycle_error or 'немає'}`",
+        ]
+
+        await interaction.response.send_message(
+            "\n".join(lines),
+            ephemeral=True,
+        )
 
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.describe(
