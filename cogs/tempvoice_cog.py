@@ -514,6 +514,20 @@ class TempVoiceCog(commands.Cog):
         interaction: discord.Interaction,
         category: discord.CategoryChannel,
     ) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "Цю команду можна використовувати тільки на сервері.",
+                ephemeral=True,
+            )
+            return
+
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "Цю команду може використовувати тільки адміністрація.",
+                ephemeral=True,
+            )
+            return
+
         self._state["category_id"] = category.id
         self._save_state()
 
@@ -521,26 +535,6 @@ class TempVoiceCog(commands.Cog):
             f"Категорію для тимчасових голосових встановлено: **{category.name}**.",
             ephemeral=True,
         )
-
-    @voice_setup.error
-    async def voice_setup_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            if interaction.response.is_done():
-                await interaction.followup.send(
-                    "Цю команду може використовувати тільки адміністрація.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.response.send_message(
-                    "Цю команду може використовувати тільки адміністрація.",
-                    ephemeral=True,
-                )
-            return
-        raise error
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
