@@ -239,7 +239,7 @@ def approve_member(
         {
             "_id": party_id,
             "leader_id": int(leader_id),
-            "status": "searching",
+            "status": {"$in": ACTIVE_STATUSES},
             "pending": uid,
             "members": {"$ne": uid},
             "$expr": {
@@ -291,9 +291,11 @@ def remove_member(
     return _db()[PARTY_COLLECTION].find_one_and_update(
         {
             "_id": party_id,
-            "leader_id": int(leader_id),
+            "$and": [
+                {"leader_id": int(leader_id)},
+                {"leader_id": {"$ne": uid}},
+            ],
             "members": uid,
-            "leader_id": {"$ne": uid},
         },
         {
             "$pull": {"members": uid},
@@ -320,9 +322,11 @@ def replace_member(
         {
             "_id": party_id,
             "leader_id": int(leader_id),
-            "members": old_uid,
+            "$and": [
+                {"members": old_uid},
+                {"members": {"$ne": new_uid}},
+            ],
             "pending": new_uid,
-            "members": {"$ne": new_uid},
         },
         {
             "$pull": {
