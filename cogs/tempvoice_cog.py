@@ -17,6 +17,7 @@ from data.mongo_store import load_state, save_state
 STATE_COLLECTION = "tempvoice_state"
 STATE_DOCUMENT_ID = "main"
 STATUS_MAX_LENGTH = 500
+TEMP_VOICE_CATEGORY_ID = 1323454228261245008
 
 
 class CreateVoiceModal(discord.ui.Modal):
@@ -109,20 +110,14 @@ class TempVoiceCog(commands.Cog):
     def _load_state(self) -> dict:
         raw = load_state(
             STATE_COLLECTION,
-            {"category_id": 0, "channels": {}},
+            {"channels": {}},
             document_id=STATE_DOCUMENT_ID,
         )
 
         if not isinstance(raw, dict):
             raw = {}
 
-        category_id = raw.get("category_id", 0)
         channels = raw.get("channels", {})
-
-        try:
-            category_id = int(category_id or 0)
-        except (TypeError, ValueError):
-            category_id = 0
 
         clean_channels: dict[str, int] = {}
         if isinstance(channels, dict):
@@ -132,7 +127,7 @@ class TempVoiceCog(commands.Cog):
                 except (TypeError, ValueError):
                     continue
 
-        return {"category_id": category_id, "channels": clean_channels}
+        return {"channels": clean_channels}
 
     def _save_state(self) -> None:
         save_state(
@@ -140,13 +135,6 @@ class TempVoiceCog(commands.Cog):
             self._state,
             document_id=STATE_DOCUMENT_ID,
         )
-
-    @property
-    def category_id(self) -> int:
-        try:
-            return int(self._state.get("category_id", 0) or 0)
-        except (TypeError, ValueError):
-            return 0
 
     @property
     def channels(self) -> dict[str, int]:
@@ -157,7 +145,7 @@ class TempVoiceCog(commands.Cog):
         return channels
 
     def _get_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
-        channel = guild.get_channel(self.category_id)
+        channel = guild.get_channel(TEMP_VOICE_CATEGORY_ID)
         return channel if isinstance(channel, discord.CategoryChannel) else None
 
     def _owner_id_for(self, channel_id: int) -> Optional[int]:
@@ -253,8 +241,7 @@ class TempVoiceCog(commands.Cog):
         category = self._get_category(member.guild)
         if category is None:
             await interaction.response.send_message(
-                "Категорія тимчасових голосових ще не налаштована. "
-                "Адміністратор має виконати `/voice setup`.",
+                "Не вдалося знайти категорію `☙~°·.*♬♪Голосові канали♪♬*.·°~❧`.",
                 ephemeral=True,
             )
             return
@@ -402,7 +389,7 @@ class TempVoiceCog(commands.Cog):
 
         if self._get_category(interaction.guild) is None:
             await interaction.response.send_message(
-                "Категорія тимчасових голосових ще не налаштована.",
+                "Не вдалося знайти категорію `☙~°·.*♬♪Голосові канали♪♬*.·°~❧`.",
                 ephemeral=True,
             )
             return
@@ -505,36 +492,6 @@ class TempVoiceCog(commands.Cog):
             reason=f"Temporary voice deleted by owner {interaction.user}",
         )
         await interaction.followup.send("Кімнату видалено.", ephemeral=True)
-
-    @voice.command(name="setup", description="Налаштувати категорію тимчасових голосових")
-    @app_commands.describe(category="Категорія, де створювати тимчасові кімнати")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def voice_setup(
-        self,
-        interaction: discord.Interaction,
-        category: discord.CategoryChannel,
-    ) -> None:
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message(
-                "Цю команду можна використовувати тільки на сервері.",
-                ephemeral=True,
-            )
-            return
-
-        if not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message(
-                "Цю команду може використовувати тільки адміністрація.",
-                ephemeral=True,
-            )
-            return
-
-        self._state["category_id"] = category.id
-        self._save_state()
-
-        await interaction.response.send_message(
-            f"Категорію для тимчасових голосових встановлено: **{category.name}**.",
-            ephemeral=True,
-        )
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
