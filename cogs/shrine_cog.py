@@ -1069,7 +1069,7 @@ class ShrineCog(commands.Cog):
 
         if members:
             lines = []
-            for item in members[:30]:
+            for item in members[:15]:
                 uid = int(item["user_id"])
                 gear = gear_data.get(str(uid), {})
                 lines.append(
@@ -1078,8 +1078,8 @@ class ShrineCog(commands.Cog):
                     f"DP {_stat(gear.get('dp'))} | "
                     f"GS {_stat(gear.get('gs'))}"
                 )
-            if len(members) > 30:
-                lines.append(f"… ще {len(members) - 30}")
+            if len(members) > 15:
+                lines.append(f"… ще {len(members) - 15}")
             embed.add_field(
                 name=f"Бажаючі ({len(members)})",
                 value="\n".join(lines),
@@ -1093,7 +1093,7 @@ class ShrineCog(commands.Cog):
             )
 
         active_lines = []
-        for party in parties[:15]:
+        for party in parties[:10]:
             leader = int(party.get("leader_id", 0))
             count = len(party.get("members", []))
             state = "🔎" if party.get("status") == "searching" else "🔒"
@@ -1195,11 +1195,11 @@ class ShrineCog(commands.Cog):
         )
         return embed
 
-    async def refresh_daily_panel(self, day: str | None = None):
+    async def refresh_daily_panel(self, day: str | None = None) -> bool:
         day = day or self.today()
         panel = await asyncio.to_thread(shrine_store.get_daily_panel, day)
         if not panel:
-            return
+            return False
 
         channel = self.bot.get_channel(int(panel["channel_id"]))
         if channel is None:
@@ -1208,21 +1208,23 @@ class ShrineCog(commands.Cog):
                     int(panel["channel_id"])
                 )
             except Exception:
-                return
+                return False
 
         try:
             message = await channel.fetch_message(int(panel["message_id"]))
         except Exception:
-            return
+            return False
 
         embed = await self.build_daily_embed(day)
         try:
             await message.edit(embed=embed, view=ShrineDailyView(self))
+            return True
         except Exception as error:
             print(
                 f"[SHRINE][PANEL][ERROR] "
                 f"{type(error).__name__}: {error}"
             )
+            return False
 
     async def refresh_party(self, party: dict):
         channel_id = party.get("channel_id")
@@ -1449,8 +1451,7 @@ class ShrineCog(commands.Cog):
         day = self.today()
 
         panel = await asyncio.to_thread(shrine_store.get_daily_panel, day)
-        if panel:
-            await self.refresh_daily_panel(day)
+        if panel and await self.refresh_daily_panel(day):
             await interaction.followup.send(
                 "Сьогоднішню Shrine-панель оновлено.",
                 ephemeral=True,
