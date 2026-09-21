@@ -573,7 +573,8 @@ class PartyManageView(discord.ui.View):
         if not await self._leader_guard(interaction, party):
             return
         await interaction.response.send_message(
-            "Завершити цю паті? Картка залишиться як завершена.",
+            "Завершити цю паті? Тимчасовий канал буде видалено, "
+            "а історія паті залишиться в MongoDB.",
             view=ConfirmCompleteView(self.cog, self.party_id),
             ephemeral=True,
         )
@@ -599,9 +600,30 @@ class ConfirmCompleteView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        await self.cog.refresh_party(party)
         await self.cog.refresh_daily_panel(str(party.get("date")))
-        await interaction.followup.send("Паті завершено.", ephemeral=True)
+        await interaction.followup.send(
+            "Паті завершено. Тимчасовий канал зараз буде видалено.",
+            ephemeral=True,
+        )
+
+        channel = interaction.channel
+        if (
+            isinstance(channel, discord.TextChannel)
+            and channel.category_id == SHRINE_PARTY_CATEGORY_ID
+        ):
+            await asyncio.sleep(1)
+            try:
+                await channel.delete(
+                    reason=(
+                        "Black Shrine party completed by "
+                        f"{interaction.user} ({interaction.user.id})"
+                    )
+                )
+            except Exception as error:
+                print(
+                    f"[SHRINE][DELETE][ERROR] channel={channel.id} "
+                    f"{type(error).__name__}: {error}"
+                )
 
     @discord.ui.button(label="Ні", style=discord.ButtonStyle.secondary)
     async def no(self, interaction, _button):
@@ -938,7 +960,61 @@ class ShrineCog(commands.Cog):
     async def cog_load(self):
         self.bot.add_view(ShrineDailyView(self))
         self.bot.add_view(ShrinePartyView(self))
+        self._permission_task = asyncio.create_task(
+            self.enforce_shrine_permissions()
+        )
         print("[SHRINE] persistent views registered")
+
+    def cog_unload(self):
+        task = getattr(self, "_permission_task", None)
+        if task and not task.done():
+            task.cancel()
+
+    async def enforce_shrine_permissions(self):
+        await self.bot.wait_until_ready()
+
+        guild = self.bot.get_guild(GUILD_ID)
+        if guild is None:
+            return
+
+        role = guild.get_role(ROLE_SUFFERING)
+        if role is None:
+            print("[SHRINE][PERMS] suffering role not found")
+            return
+
+        targets = []
+        for channel_id in (
+            SHRINE_SEARCH_CHANNEL_ID,
+            SHRINE_PARTY_CATEGORY_ID,
+        ):
+            channel = guild.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await guild.fetch_channel(channel_id)
+                except Exception:
+                    channel = None
+            if channel is not None:
+                targets.append(channel)
+
+        for target in targets:
+            try:
+                await target.set_permissions(
+                    guild.default_role,
+                    view_channel=False,
+                    reason="Black Shrine is only for suffering role",
+                )
+                await target.set_permissions(
+                    role,
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    reason="Allow suffering role into Black Shrine",
+                )
+            except Exception as error:
+                print(
+                    f"[SHRINE][PERMS][ERROR] target={target.id} "
+                    f"{type(error).__name__}: {error}"
+                )
 
     def today(self) -> str:
         return datetime.now(TZ).date().isoformat()
@@ -1583,6 +1659,14 @@ class ShrineCog(commands.Cog):
         ):
             await interaction.response.send_message(
                 "Команда доступна тільки на сервері.",
+                ephemeral=True,
+            )
+            return
+
+        if interaction.channel_id != SHRINE_SEARCH_CHANNEL_ID:
+            await interaction.response.send_message(
+                "Shrine-панель можна публікувати тільки в каналі "
+                f"<#{SHRINE_SEARCH_CHANNEL_ID}>.",
                 ephemeral=True,
             )
             return
