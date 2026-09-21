@@ -1010,6 +1010,18 @@ class ShrineCog(commands.Cog):
                     read_message_history=True,
                     reason="Allow suffering role into Black Shrine",
                 )
+
+                bot_member = guild.me
+                if bot_member is not None:
+                    await target.set_permissions(
+                        bot_member,
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True,
+                        manage_channels=True,
+                        manage_messages=True,
+                        reason="Silent Concierge technical access",
+                    )
             except Exception as error:
                 print(
                     f"[SHRINE][PERMS][ERROR] target={target.id} "
