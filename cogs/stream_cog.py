@@ -327,6 +327,71 @@ class StreamCog(commands.Cog):
             print(f"[STREAM] RSS error for {channel_id}: {e}")
             return None
 
+    async def _youtube_live_info(
+        self,
+        session: aiohttp.ClientSession,
+        channel_id: str,
+    ) -> Optional[dict]:
+        """Перевіряє поточний YouTube LIVE без API key через сторінку /live."""
+        url = f"https://www.youtube.com/channel/{channel_id}/live"
+        headers = {"User-Agent": "Mozilla/5.0"}
+
+        try:
+            async with session.get(url, headers=headers, allow_redirects=True) as response:
+                response.raise_for_status()
+                text = await response.text()
+                final_url = str(response.url)
+        except Exception as e:
+            print(
+                f"[STREAM][WARN] YouTube live check failed "
+                f"{channel_id}: {type(e).__name__}: {e}"
+            )
+            return None
+
+        if '"isLiveNow":true' not in text:
+            return None
+
+        video_id = None
+
+        match = re.search(r'[?&]v=([\w-]{6,})', final_url)
+        if match:
+            video_id = match.group(1)
+
+        if not video_id:
+            match = re.search(
+                r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{6,})"',
+                text,
+            )
+            if match:
+                video_id = match.group(1)
+
+        if not video_id:
+            match = re.search(r'"videoId":"([\w-]{6,})"', text)
+            if match:
+                video_id = match.group(1)
+
+        if not video_id:
+            return None
+
+        title = "🔴 LIVE"
+        title_patterns = (
+            r'<meta name="title" content="([^"]+)"',
+            r'<meta property="og:title" content="([^"]+)"',
+            r'"title":"([^"]+)"',
+        )
+        for pattern in title_patterns:
+            match = re.search(pattern, text)
+            if match:
+                title = match.group(1)
+                break
+
+        return {
+            "video_id": video_id,
+            "title": title,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "thumbnail_url": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+        }
+
     async def _twitch_user_id(self, session, login: str) -> Optional[str]:
         headers = await _get_twitch_headers(session)
         if not headers:
@@ -488,9 +553,32 @@ class StreamCog(commands.Cog):
                     )
                     return
 
+            channel_id = str(channel_id)
+            live_info = await self._youtube_live_info(session, channel_id)
+            live_key = (platform, channel_id)
+
+            if live_info is not None:
+                if live_key not in self._checked_live:
+                    print(f"[STREAM] {username} live on YouTube!")
+                    await self.announce_youtube_stream(
+                        session,
+                        username,
+                        discord_id,
+                        live_info,
+                    )
+                    self._checked_live.add(live_key)
+
+                    video_id = live_info.get("video_id")
+                    if video_id:
+                        self.last_seen.setdefault("youtube", {})[channel_id] = video_id
+                        _save_last_seen(self.last_seen)
+                return
+
+            self._checked_live.discard(live_key)
+
             await self.check_youtube_video(
                 session,
-                str(channel_id),
+                channel_id,
                 discord_id,
             )
 
@@ -667,6 +755,65 @@ class StreamCog(commands.Cog):
 
         await channel.send(
             content=f"Нове відео на каналі <@{discord_id}> - дивись [тут]({url})!",
+            embed=embed,
+            files=files,
+        )
+
+    async def announce_youtube_stream(
+        self,
+        session: aiohttp.ClientSession,
+        username: str,
+        discord_id: int,
+        live_info: dict,
+    ) -> None:
+        stream_url = str(live_info.get("url") or "").strip()
+        title = str(live_info.get("title") or "🔴 LIVE").strip()
+        preview = str(live_info.get("thumbnail_url") or "").strip()
+
+        if not stream_url:
+            return
+
+        _, plat_emoji = self.platform_assets("youtube")
+        now_utc = datetime.now(timezone.utc)
+        color = random.choice(STREAM_COLORS)
+
+        embed = discord.Embed(
+            title="Стрімери 𝗦𝗶𝗹𝗲𝗻𝘁 𝗖𝗼𝘃𝗲",
+            color=color,
+        )
+        embed.description = "\n\n".join([
+            f"**{self._discord_ts(now_utc)}**",
+            f"{plat_emoji} YouTube • [**{title}**]({stream_url})",
+            "**🔴 LIVE**",
+        ])
+        embed.set_footer(
+            text="Silent Concierge by Myxa | Спостерігаю останнім оком",
+            icon_url=self.bot.user.display_avatar.url,
+        )
+
+        avatar_url = self._get_member_avatar(discord_id)
+        channel = await self.get_announce_channel()
+        if not channel:
+            raise RuntimeError(
+                f"announce channel {STREAM_ANNOUNCE_CHANNEL_ID} unavailable"
+            )
+
+        files, ekw = await self._build_embed_files(
+            session,
+            avatar_url,
+            "youtube",
+            preview,
+        )
+        if "thumbnail" in ekw:
+            embed.set_thumbnail(url=ekw["thumbnail"])
+        if "image" in ekw:
+            embed.set_image(url=ekw["image"])
+
+        await channel.send(
+            content=random.choice(ANNOUNCE_LINES).format(
+                mention=f"<@{discord_id}>",
+                url=stream_url,
+            ),
             embed=embed,
             files=files,
         )
