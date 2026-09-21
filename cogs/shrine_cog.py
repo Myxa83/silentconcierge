@@ -29,6 +29,8 @@ from data import shrine_store
 GUILD_ID = 1323454227816906802
 ROLE_SUFFERING = 1406569206815658077
 MIN_AP = 336
+SHRINE_SEARCH_CHANNEL_ID = 1546166344662392954
+SHRINE_PARTY_CATEGORY_ID = 1494376243250987158
 GEAR_CHANNEL_URL = (
     "https://discord.com/channels/"
     "1323454227816906802/1358443998603120824"
@@ -61,6 +63,11 @@ def _gear_snapshot(gear: dict | None, display_name: str = "") -> dict:
 
 
 class CreatePartyModal(discord.ui.Modal, title="Пошук групи Black Shrine"):
+    party_name = discord.ui.TextInput(
+        label="Назва паті",
+        placeholder="Наприклад: Принц без нервів",
+        max_length=80,
+    )
     activity = discord.ui.TextInput(
         label="Активність / бос",
         placeholder="Black Shrine Hard / Принц / будь-які боси",
@@ -89,6 +96,7 @@ class CreatePartyModal(discord.ui.Modal, title="Пошук групи Black Shri
         await interaction.response.defer(ephemeral=True)
         await self.cog.create_party(
             interaction,
+            party_name=str(self.party_name.value),
             activity=str(self.activity.value),
             time_text=str(self.time_text.value),
             notes=str(self.notes.value or ""),
@@ -96,6 +104,10 @@ class CreatePartyModal(discord.ui.Modal, title="Пошук групи Black Shri
 
 
 class EditPartyModal(discord.ui.Modal, title="Редагувати пошук групи"):
+    party_name = discord.ui.TextInput(
+        label="Назва паті",
+        max_length=80,
+    )
     activity = discord.ui.TextInput(
         label="Активність / бос",
         max_length=80,
@@ -115,6 +127,7 @@ class EditPartyModal(discord.ui.Modal, title="Редагувати пошук г
         super().__init__()
         self.cog = cog
         self.party_id = str(party["_id"])
+        self.party_name.default = str(party.get("party_name") or "shrine-party")
         self.activity.default = str(party.get("activity") or "Black Shrine")
         self.time_text.default = str(party.get("time_text") or "Не вказано")
         self.notes.default = str(party.get("notes") or "")
@@ -125,6 +138,7 @@ class EditPartyModal(discord.ui.Modal, title="Редагувати пошук г
             shrine_store.edit_party,
             self.party_id,
             interaction.user.id,
+            party_name=str(self.party_name.value),
             activity=str(self.activity.value),
             time_text=str(self.time_text.value),
             notes=str(self.notes.value or ""),
@@ -136,6 +150,7 @@ class EditPartyModal(discord.ui.Modal, title="Редагувати пошук г
             )
             return
 
+        await self.cog.rename_party_channel(party)
         await self.cog.refresh_party(party)
         await self.cog.refresh_daily_panel()
         await interaction.followup.send("Пошук групи оновлено.", ephemeral=True)
@@ -231,51 +246,11 @@ class ShrineDailyView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ):
-        ok, reason, _snapshot = await self.cog.check_eligible(
-            interaction.user
+        await interaction.response.send_message(
+            "Створення паті: введи **/shrine_create** у каналі "
+            f"<#{SHRINE_SEARCH_CHANNEL_ID}>.",
+            ephemeral=True,
         )
-        if not ok:
-            await interaction.response.send_message(reason, ephemeral=True)
-            return
-
-        day = self.cog.today()
-        is_available = await asyncio.to_thread(
-            shrine_store.is_today_member,
-            day,
-            interaction.user.id,
-        )
-        if not is_available:
-            await interaction.response.send_message(
-                "Спочатку натисни Хочу Shrine сьогодні.",
-                ephemeral=True,
-            )
-            return
-
-        existing = await asyncio.to_thread(
-            shrine_store.find_active_membership,
-            day,
-            interaction.user.id,
-        )
-        if existing:
-            await interaction.response.send_message(
-                "Ти вже входиш до активної Shrine-паті.",
-                ephemeral=True,
-            )
-            return
-
-        led = await asyncio.to_thread(
-            shrine_store.find_active_party_by_leader,
-            day,
-            interaction.user.id,
-        )
-        if led:
-            await interaction.response.send_message(
-                "У тебе вже є активний пошук групи.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_modal(CreatePartyModal(self.cog))
 
     @discord.ui.button(
         label="Оновити",
@@ -1098,7 +1073,8 @@ class ShrineCog(commands.Cog):
             count = len(party.get("members", []))
             state = "🔎" if party.get("status") == "searching" else "🔒"
             active_lines.append(
-                f"{state} <@{leader}> — **{count}/5** • "
+                f"{state} **{party.get('party_name', 'Shrine party')}** • "
+                f"<@{leader}> — **{count}/5** • "
                 f"{party.get('activity', 'Black Shrine')} • "
                 f"{party.get('time_text', 'Не вказано')}"
             )
@@ -1138,8 +1114,9 @@ class ShrineCog(commands.Cog):
                 f"GS {_stat(gear.get('gs'))}"
             )
 
+        party_name = str(party.get("party_name") or "BLACK SHRINE PARTY")
         embed = discord.Embed(
-            title="⚔️ BLACK SHRINE PARTY",
+            title=f"⚔️ {party_name}",
             color=COLOR if status != "completed" else 0x808080,
         )
         embed.add_field(
@@ -1261,6 +1238,7 @@ class ShrineCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         *,
+        party_name: str,
         activity: str,
         time_text: str,
         notes: str,
@@ -1292,36 +1270,157 @@ class ShrineCog(commands.Cog):
             True,
         )
 
-        party = await asyncio.to_thread(
-            shrine_store.create_party,
-            day=day,
-            leader_id=interaction.user.id,
-            activity=activity,
-            time_text=time_text,
-            notes=notes,
-            requirement_ap=MIN_AP,
-            gear_snapshot=snapshot,
-        )
+        guild = interaction.guild
+        category = guild.get_channel(SHRINE_PARTY_CATEGORY_ID)
+        if category is None:
+            try:
+                category = await guild.fetch_channel(
+                    SHRINE_PARTY_CATEGORY_ID
+                )
+            except Exception:
+                category = None
 
-        embed = await self.build_party_embed(party)
-        message = await interaction.channel.send(
-            embed=embed,
-            view=ShrinePartyView(self),
-        )
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.followup.send(
+                "Не знайшов категорію для Shrine-паті.",
+                ephemeral=True,
+            )
+            return
 
-        party = await asyncio.to_thread(
-            shrine_store.set_party_message,
-            str(party["_id"]),
-            message.channel.id,
-            message.id,
-        )
+        suffering_role = guild.get_role(ROLE_SUFFERING)
+        bot_member = guild.me
+        if suffering_role is None:
+            await interaction.followup.send(
+                "Не знайшов роль Страждущі.",
+                ephemeral=True,
+            )
+            return
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False,
+            ),
+            suffering_role: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                add_reactions=True,
+            ),
+        }
+        if bot_member is not None:
+            overwrites[bot_member] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_channels=True,
+                manage_messages=True,
+            )
+
+        channel_name = self.party_channel_name(party_name)
+
+        try:
+            party_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=(
+                    "Temporary Black Shrine party created by "
+                    f"{interaction.user} ({interaction.user.id})"
+                ),
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "Боту бракує **Manage Channels** для створення "
+                "тимчасової Shrine-паті.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as error:
+            await interaction.followup.send(
+                f"Discord не дав створити канал: {error}",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            party = await asyncio.to_thread(
+                shrine_store.create_party,
+                day=day,
+                leader_id=interaction.user.id,
+                party_name=party_name,
+                activity=activity,
+                time_text=time_text,
+                notes=notes,
+                requirement_ap=MIN_AP,
+                gear_snapshot=snapshot,
+            )
+
+            embed = await self.build_party_embed(party)
+            message = await party_channel.send(
+                embed=embed,
+                view=ShrinePartyView(self),
+            )
+
+            party = await asyncio.to_thread(
+                shrine_store.set_party_message,
+                str(party["_id"]),
+                party_channel.id,
+                message.id,
+            )
+        except Exception:
+            try:
+                await party_channel.delete(
+                    reason="Shrine party setup failed"
+                )
+            except Exception:
+                pass
+            raise
+
         await self.refresh_daily_panel(day)
 
         await interaction.followup.send(
-            "Пошук групи відкрито. Заявки потраплятимуть на "
-            "підтвердження ПЛ.",
+            (
+                f"Паті створено: {party_channel.mention}. "
+                "Заявки потраплятимуть на підтвердження ПЛ."
+            ),
             ephemeral=True,
         )
+
+    @staticmethod
+    def party_channel_name(value: str) -> str:
+        name = str(value or "").strip().casefold()
+        name = re.sub(r"\s+", "-", name)
+        name = re.sub(r"[^\w\-]+", "-", name, flags=re.UNICODE)
+        name = re.sub(r"-{2,}", "-", name).strip("-_")
+        return (name or "shrine-party")[:90]
+
+    async def rename_party_channel(self, party: dict) -> None:
+        channel_id = party.get("channel_id")
+        if not channel_id:
+            return
+
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except Exception:
+                return
+
+        if isinstance(channel, discord.TextChannel):
+            target = self.party_channel_name(
+                str(party.get("party_name") or "shrine-party")
+            )
+            if channel.name != target:
+                try:
+                    await channel.edit(
+                        name=target,
+                        reason="Shrine PL renamed party",
+                    )
+                except Exception as error:
+                    print(
+                        f"[SHRINE][RENAME][ERROR] "
+                        f"{type(error).__name__}: {error}"
+                    )
 
     def manage_summary(self, party: dict) -> str:
         return (
@@ -1424,6 +1523,54 @@ class ShrineCog(commands.Cog):
             ),
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="shrine_create",
+        description="Створити тимчасову Black Shrine паті",
+    )
+    async def shrine_create(self, interaction: discord.Interaction):
+        if (
+            not interaction.guild
+            or not isinstance(interaction.user, discord.Member)
+        ):
+            await interaction.response.send_message(
+                "Команда доступна тільки на сервері.",
+                ephemeral=True,
+            )
+            return
+
+        if interaction.channel_id != SHRINE_SEARCH_CHANNEL_ID:
+            await interaction.response.send_message(
+                "Створювати Shrine-паті можна тільки в каналі "
+                f"<#{SHRINE_SEARCH_CHANNEL_ID}>.",
+                ephemeral=True,
+            )
+            return
+
+        ok, reason, _snapshot = await self.check_eligible(
+            interaction.user
+        )
+        if not ok:
+            await interaction.response.send_message(
+                reason,
+                ephemeral=True,
+            )
+            return
+
+        day = self.today()
+        active = await asyncio.to_thread(
+            shrine_store.find_active_membership,
+            day,
+            interaction.user.id,
+        )
+        if active:
+            await interaction.response.send_message(
+                "Ти вже входиш до активної Shrine-паті.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(CreatePartyModal(self))
 
     @app_commands.command(
         name="shrine_panel",
