@@ -214,6 +214,7 @@ def withdraw_or_decline(party_id: str, user_id: int) -> dict | None:
     return _db()[PARTY_COLLECTION].find_one_and_update(
         {
             "_id": party_id,
+            "status": {"$in": ACTIVE_STATUSES},
             "leader_id": {"$ne": uid},
         },
         {
@@ -270,6 +271,7 @@ def reject_member(
     return _db()[PARTY_COLLECTION].find_one_and_update(
         {
             "_id": party_id,
+            "status": {"$in": ACTIVE_STATUSES},
             "leader_id": int(leader_id),
             "pending": uid,
         },
@@ -291,6 +293,7 @@ def remove_member(
     return _db()[PARTY_COLLECTION].find_one_and_update(
         {
             "_id": party_id,
+            "status": {"$in": ACTIVE_STATUSES},
             "$and": [
                 {"leader_id": int(leader_id)},
                 {"leader_id": {"$ne": uid}},
@@ -321,6 +324,7 @@ def replace_member(
     return _db()[PARTY_COLLECTION].find_one_and_update(
         {
             "_id": party_id,
+            "status": {"$in": ACTIVE_STATUSES},
             "leader_id": int(leader_id),
             "$and": [
                 {"members": old_uid},
@@ -351,6 +355,7 @@ def transfer_leader(
     return _db()[PARTY_COLLECTION].find_one_and_update(
         {
             "_id": party_id,
+            "status": {"$in": ACTIVE_STATUSES},
             "leader_id": int(old_leader_id),
             "members": int(new_leader_id),
         },
@@ -375,6 +380,7 @@ def edit_party(
     return _db()[PARTY_COLLECTION].find_one_and_update(
         {
             "_id": party_id,
+            "status": {"$in": ACTIVE_STATUSES},
             "leader_id": int(leader_id),
         },
         {
