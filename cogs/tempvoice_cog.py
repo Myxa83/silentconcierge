@@ -363,6 +363,34 @@ class TempVoiceCog(commands.Cog):
 
         return channel
 
+    @voice.command(name="help", description="Показати інструкцію по тимчасових голосових кімнатах")
+    async def voice_help(self, interaction: discord.Interaction) -> None:
+        embed = discord.Embed(
+            title="Тимчасові голосові кімнати",
+            description=(
+                "Тут ти можеш створити власну тимчасову голосову кімнату.\n\n"
+                "**Як створити кімнату**\n"
+                "1. Зайди в будь-який голосовий канал.\n"
+                "2. Використай команду `/voice create`.\n"
+                "3. У формі вкажи назву кімнати, статус і кількість місць.\n"
+                "4. Бот створить кімнату в категорії голосових і перенесе тебе туди.\n\n"
+                "**Команди**\n"
+                "• `/voice create` — створити кімнату\n"
+                "• `/voice name` — змінити назву\n"
+                "• `/voice status` — змінити статус\n"
+                "• `/voice limit` — змінити кількість місць\n"
+                "• `/voice delete` — видалити кімнату вручну\n"
+                "• `/voice help` — показати цю інструкцію\n\n"
+                "**Важливо**\n"
+                "Кімната існує, поки її автор знаходиться в ній. "
+                "Як тільки автор виходить або переходить в інший голосовий канал, "
+                "тимчасова кімната автоматично видаляється."
+            ),
+            color=0x1F2427,
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @voice.command(name="create", description="Створити свою тимчасову голосову кімнату")
     async def voice_create(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
