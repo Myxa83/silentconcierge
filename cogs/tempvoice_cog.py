@@ -386,8 +386,8 @@ class TempVoiceCog(commands.Cog):
                 "• `/voice delete` — видалити кімнату вручну\n"
                 "• `/voice help` — показати цю інструкцію\n\n"
                 "**Важливо**\n"
-                "Кімната існує, поки її автор знаходиться в ній. "
-                "Як тільки автор виходить або переходить в інший голосовий канал, "
+                "Кімната існує, поки в ній є хоча б одна людина. "
+                "Коли останній учасник виходить або переходить в інший голосовий канал, "
                 "тимчасова кімната автоматично видаляється."
             ),
             color=0x1F2427,
@@ -548,18 +548,10 @@ class TempVoiceCog(commands.Cog):
                     changed = True
                     continue
 
-                owner = guild.get_member(int(owner_id))
-                owner_is_inside = (
-                    owner is not None
-                    and owner.voice is not None
-                    and owner.voice.channel is not None
-                    and owner.voice.channel.id == channel.id
-                )
-
-                if not owner_is_inside:
+                if len(channel.members) == 0:
                     await self._delete_temp_channel(
                         channel,
-                        reason="Temporary voice owner is not in channel after restart",
+                        reason="Temporary voice is empty after restart",
                     )
                     changed = True
 
@@ -583,18 +575,8 @@ class TempVoiceCog(commands.Cog):
         if not self._is_temp_channel(before_channel):
             return
 
-        owner_id = self._owner_id_for(before_channel.id)
-
-        # Автор вийшов або перейшов в інший voice — його кімната зникає,
-        # навіть якщо всередині ще залишилися гості.
-        if owner_id == member.id:
-            await self._delete_temp_channel(
-                before_channel,
-                reason=f"Temporary voice owner left ({member.id})",
-            )
-            return
-
-        # Страховка: порожня тимчасова кімната також видаляється.
+        # Кімната існує, поки в ній є хоча б одна людина.
+        # Видаляємо її лише після виходу останнього учасника.
         if len(before_channel.members) == 0:
             await self._delete_temp_channel(
                 before_channel,
