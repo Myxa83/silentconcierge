@@ -81,16 +81,37 @@ def _load_streamers() -> list:
     return []
 
 
-def _save_streamers(streamers: list) -> None:
+def _save_streamers(streamers: list) -> bool:
     try:
         db = _get_db()
-        db["streamers"].replace_one(
+        result = db["streamers"].replace_one(
             {"_id": "main"},
-            {"_id": "main", "list": streamers},
+            {
+                "_id": "main",
+                "list": streamers,
+                "updated_at": datetime.now(timezone.utc),
+            },
             upsert=True,
         )
+
+        # Перевіряємо не лише відповідь replace_one, а й фактичний запис.
+        saved = db["streamers"].find_one({"_id": "main"})
+        saved_list = saved.get("list", []) if isinstance(saved, dict) else []
+
+        ok = isinstance(saved_list, list) and saved_list == streamers
+        if not ok:
+            print(
+                "[STREAM][ERROR] save verification failed: "
+                f"matched={result.matched_count} modified={result.modified_count} "
+                f"upserted_id={result.upserted_id}"
+            )
+        return ok
     except Exception as e:
-        print(f"[STREAM][ERROR] save streamers: {e}")
+        print(
+            f"[STREAM][ERROR] save streamers: "
+            f"{type(e).__name__}: {e}"
+        )
+        return False
 
 
 def _load_last_seen() -> dict:
@@ -544,8 +565,13 @@ class StreamCog(commands.Cog):
 
                 if channel_id:
                     streamer["yt_channel_id"] = channel_id
-                    _save_streamers(self.streamers)
-                    print(f"[STREAM] Resolved: {username} → {channel_id}")
+                    if _save_streamers(self.streamers):
+                        print(f"[STREAM] Resolved: {username} → {channel_id}")
+                    else:
+                        print(
+                            f"[STREAM][WARN] Resolved YouTube channel_id for "
+                            f"{username}, but failed to persist it"
+                        )
                 else:
                     print(
                         f"[STREAM] Could not resolve "
@@ -935,6 +961,22 @@ class StreamCog(commands.Cog):
                 return "ще не було"
             return f"<t:{int(value.timestamp())}:R>"
 
+        mongo_status = "OK"
+        try:
+            db = _get_db()
+            db.command("ping")
+            probe_id = "_stream_healthcheck"
+            db["stream_health"].replace_one(
+                {"_id": probe_id},
+                {"_id": probe_id, "checked_at": datetime.now(timezone.utc)},
+                upsert=True,
+            )
+            probe = db["stream_health"].find_one({"_id": probe_id})
+            if not probe:
+                mongo_status = "READ/WRITE FAILED"
+        except Exception as e:
+            mongo_status = f"{type(e).__name__}: {e}"
+
         twitch_credentials_ok = bool(TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET)
         twitch_api_text = (
             "Helix credentials OK"
@@ -945,6 +987,7 @@ class StreamCog(commands.Cog):
         lines = [
             f"**Cog:** {'працює' if loop_running else 'ЗУПИНЕНИЙ'}",
             f"**Стрімерів у MongoDB:** {len(self.streamers)}",
+            f"**MongoDB read/write:** {mongo_status}",
             f"**Канал анонсів:** {channel_text}",
             f"**Twitch API:** {twitch_api_text}",
             f"**Останній цикл стартував:** {fmt_dt(self._last_cycle_started_at)}",
@@ -1004,8 +1047,36 @@ class StreamCog(commands.Cog):
                 print(f"[STREAM] WARNING: Could not resolve YouTube channel_id for {username}")
 
         self.streamers.append(item)
-        _save_streamers(self.streamers)
 
+        if not _save_streamers(self.streamers):
+            # Не показуємо фальшиве "Додано", якщо MongoDB не підтвердила запис.
+            self.streamers = _load_streamers()
+            await interaction.followup.send(
+                "❌ Не вдалося зберегти стрімера в MongoDB. "
+                "Запис не був доданий. Перевір `/стрім_статус` і логи Render.",
+                ephemeral=True,
+            )
+            return
+
+        # Додаткова контрольна перевірка після запису.
+        saved_streamers = _load_streamers()
+        exists = any(
+            s.get("platform") == plat
+            and s.get("username") == username
+            and s.get("discord_id") == користувач.id
+            for s in saved_streamers
+            if isinstance(s, dict)
+        )
+
+        if not exists:
+            await interaction.followup.send(
+                "❌ MongoDB не підтвердила доданий запис. "
+                "Стрімер не збережений.",
+                ephemeral=True,
+            )
+            return
+
+        self.streamers = saved_streamers
         await interaction.followup.send(
             f"✅ Додано: **{username}** ({користувач.mention}) на **{plat}**",
             ephemeral=True,
@@ -1031,10 +1102,25 @@ class StreamCog(commands.Cog):
             if not (s.get("platform") == платформа.value and s.get("username") == нік)
         ]
         if len(self.streamers) < before:
-            _save_streamers(self.streamers)
-            await interaction.response.send_message(f"✅ Стрімера **{нік}** видалено.", ephemeral=True)
+            if not _save_streamers(self.streamers):
+                self.streamers = _load_streamers()
+                await interaction.response.send_message(
+                    "❌ Не вдалося зберегти зміни в MongoDB. "
+                    "Стрімера не видалено.",
+                    ephemeral=True,
+                )
+                return
+
+            self.streamers = _load_streamers()
+            await interaction.response.send_message(
+                f"✅ Стрімера **{нік}** видалено.",
+                ephemeral=True,
+            )
         else:
-            await interaction.response.send_message(f"❌ Стрімера **{нік}** не знайдено.", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ Стрімера **{нік}** не знайдено.",
+                ephemeral=True,
+            )
 
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.command(name="список_стрімерів", description="Показати всіх стрімерів")
