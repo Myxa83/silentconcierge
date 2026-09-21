@@ -97,6 +97,7 @@ def create_party(
     *,
     day: str,
     leader_id: int,
+    party_name: str,
     activity: str,
     time_text: str,
     notes: str,
@@ -113,6 +114,7 @@ def create_party(
         "leader_id": int(leader_id),
         "requirement_ap": int(requirement_ap),
         "max_members": 5,
+        "party_name": party_name.strip() or "shrine-party",
         "activity": activity.strip() or "Black Shrine",
         "time_text": time_text.strip() or "Не вказано",
         "notes": notes.strip(),
@@ -373,6 +375,7 @@ def edit_party(
     party_id: str,
     leader_id: int,
     *,
+    party_name: str,
     activity: str,
     time_text: str,
     notes: str,
@@ -385,6 +388,7 @@ def edit_party(
         },
         {
             "$set": {
+                "party_name": party_name.strip() or "shrine-party",
                 "activity": activity.strip() or "Black Shrine",
                 "time_text": time_text.strip() or "Не вказано",
                 "notes": notes.strip(),
