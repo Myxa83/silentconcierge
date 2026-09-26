@@ -71,7 +71,9 @@ LADY_WORDS = {
     "girl", "girls", "woman", "women", "lady", "ladies",
 }
 HEDGEHOG_WORDS = {
-    "їжачок", "їжачка", "їжачку", "їжак", "їжаче", "іжачок", "іжачка",
+    "їжачок", "їжачка", "їжачку", "їжачком", "їжачки", "їжачків",
+    "їжак", "їжака", "їжаку", "їжаком", "їжаче",
+    "іжачок", "іжачка", "іжачку", "іжачком",
     "hedgehog", "yizhachok", "izhachok", "аден мор", "aden mor",
 }
 NOX_ASK_WORDS = {"запитай", "спитай", "питай", "звернись до", "ask"}
@@ -89,6 +91,14 @@ def _norm(text: str) -> str:
 def _contains_any(text: str, words: set[str]) -> bool:
     low = _norm(text)
     return any(word in low for word in words)
+
+
+def _mentions_hedgehog(text: str) -> bool:
+    low = _norm(text)
+    if _contains_any(low, HEDGEHOG_WORDS):
+        return True
+    # Українські відмінки/словоформи: їжачок, їжачком, їжачка, їжачки...
+    return bool(re.search(r"\\b[ії]жач[а-яіїєґ']*\\b", low))
 
 
 def _parse_id_set(env_name: str) -> set[int]:
@@ -574,7 +584,7 @@ Write one fresh contextual reply."""
                 return
 
             # Lore exception requested by the Captain.
-            if _contains_any(text, HEDGEHOG_WORDS):
+            if _mentions_hedgehog(text):
                 now = time.monotonic()
                 last = self.last_hedgehog_identity.get(message.channel.id, 0.0)
                 if now - last >= HEDGEHOG_IDENTITY_COOLDOWN_SECONDS:
