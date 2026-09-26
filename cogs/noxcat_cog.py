@@ -37,7 +37,7 @@ BOT_MIN_GAP_SECONDS = 70
 BOT_WINDOW_SECONDS = 12 * 60
 BOT_MAX_REPLIES_BEFORE_CLOSING = 4
 BOT_LOCK_SECONDS = 25 * 60
-HEDGEHOG_IDENTITY_COOLDOWN_SECONDS = 10 * 60
+HEDGEHOG_IDENTITY_COOLDOWN_SECONDS = 60
 SLEEP_REMINDER_GAP_SECONDS = 60 * 60
 FEED_WINDOW_SECONDS = 20 * 60
 FEED_WARNING_THRESHOLD = 3
@@ -98,7 +98,7 @@ def _mentions_hedgehog(text: str) -> bool:
     if _contains_any(low, HEDGEHOG_WORDS):
         return True
     # Українські відмінки/словоформи: їжачок, їжачком, їжачка, їжачки...
-    return bool(re.search(r"\\b[ії]жач[а-яіїєґ']*\\b", low))
+    return bool(re.search(r"\b[ії]жач[а-яіїєґ']*\b", low))
 
 
 def _parse_id_set(env_name: str) -> set[int]:
@@ -300,12 +300,37 @@ class NoxCatCog(commands.Cog):
         content = (message.clean_content or "").strip()
         if content:
             parts.append(content)
+
         for embed in message.embeds[:2]:
-            embed_bits = [embed.title or "", embed.description or ""]
-            embed_text = " | ".join(x for x in embed_bits if x).strip()
+            embed_bits = [
+                embed.title or "",
+                embed.description or "",
+            ]
+
+            author = getattr(embed, "author", None)
+            if author and getattr(author, "name", None):
+                embed_bits.append(author.name)
+
+            for field in list(getattr(embed, "fields", []) or [])[:8]:
+                if getattr(field, "name", None):
+                    embed_bits.append(field.name)
+                if getattr(field, "value", None):
+                    embed_bits.append(field.value)
+
+            footer = getattr(embed, "footer", None)
+            if footer and getattr(footer, "text", None):
+                embed_bits.append(footer.text)
+
+            embed_text = " | ".join(
+                str(x).strip()
+                for x in embed_bits
+                if str(x or "").strip()
+            ).strip()
+
             if embed_text:
                 parts.append(embed_text)
-        return " | ".join(parts)[:1600]
+
+        return " | ".join(parts)[:3000]
 
     def _remember(self, message: discord.Message) -> None:
         text = self._message_text(message)
@@ -586,10 +611,37 @@ Write one fresh contextual reply."""
             # Lore exception requested by the Captain.
             if _mentions_hedgehog(text):
                 now = time.monotonic()
-                last = self.last_hedgehog_identity.get(message.channel.id, 0.0)
-                if now - last >= HEDGEHOG_IDENTITY_COOLDOWN_SECONDS:
-                    self.last_hedgehog_identity[message.channel.id] = now
-                    await self._reply_ai(message, "hedgehog", to_nox=True)
+                last = self.last_hedgehog_identity.get(
+                    message.channel.id,
+                    0.0,
+                )
+                elapsed = now - last
+                print(
+                    f"[NOXCAT][HEDGEHOG] detected "
+                    f"author={message.author} channel={message.channel.id} "
+                    f"elapsed={elapsed:.1f}s text={text[:300]!r}"
+                )
+
+                if elapsed >= HEDGEHOG_IDENTITY_COOLDOWN_SECONDS:
+                    sent = await self._reply_ai(
+                        message,
+                        "hedgehog",
+                        to_nox=True,
+                    )
+                    print(
+                        f"[NOXCAT][HEDGEHOG] sent={sent} "
+                        f"channel={message.channel.id}"
+                    )
+                    if sent:
+                        self.last_hedgehog_identity[
+                            message.channel.id
+                        ] = time.monotonic()
+                else:
+                    print(
+                        f"[NOXCAT][HEDGEHOG] skipped cooldown "
+                        f"remaining="
+                        f"{HEDGEHOG_IDENTITY_COOLDOWN_SECONDS - elapsed:.1f}s"
+                    )
                 return
 
             # HARD SOCIAL GATE.
