@@ -12,6 +12,8 @@ import asyncio
 import discord
 from discord.ext import commands
 
+from cogs.noxcat_cog import _calls_concierge
+
 
 TARGET_GUILD_ID = 1540407360198156429
 WAIT_SECONDS = 6.0
@@ -60,6 +62,9 @@ class NoxDirectRescueCog(commands.Cog):
         uid = self.bot.user.id
         raw = message.content or ""
         if f"<@{uid}>" in raw or f"<@!{uid}>" in raw:
+            return True
+
+        if _calls_concierge(message.clean_content or raw):
             return True
 
         return (
