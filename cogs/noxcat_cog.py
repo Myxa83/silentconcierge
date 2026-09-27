@@ -77,7 +77,9 @@ HEDGEHOG_WORDS = {
     "їжачок", "їжачка", "їжачку", "їжачком", "їжачки", "їжачків",
     "їжак", "їжака", "їжаку", "їжаком", "їжаче",
     "іжачок", "іжачка", "іжачку", "іжачком",
-    "hedgehog", "yizhachok", "izhachok", "аден мор", "aden mor",
+    "hedgehog", "yizhachok", "izhachok",
+    "аден", "адене", "адена", "адену", "аденом", "аден мор",
+    "aden", "adene", "aden mor",
 }
 CONCIERGE_WORDS = {
     "silent concierge", "concierge",
@@ -109,7 +111,12 @@ def _mentions_hedgehog(text: str) -> bool:
     if _contains_any(low, HEDGEHOG_WORDS):
         return True
     # Українські відмінки/словоформи: їжачок, їжачком, їжачка, їжачки...
-    return bool(re.search(r"\b[ії]жач[а-яіїєґ']*\b", low))
+    if re.search(r"\b[ії]жач[а-яіїєґ']*\b", low):
+        return True
+    # Aden / Аден, у тому числі звичайні відмінки та звертання.
+    if re.search(r"\bаден(?:е|а|у|ом)?\b", low):
+        return True
+    return bool(re.search(r"\baden(?:e)?\b", low))
 
 
 def _mentions_concierge(text: str) -> bool:
