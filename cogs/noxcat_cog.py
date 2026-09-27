@@ -34,7 +34,7 @@ REPLY_CLAIM_COLLECTION = "noxcat_reply_claims"
 
 CHANNEL_COOLDOWN_SECONDS = 45
 DIRECT_MENTION_COOLDOWN_SECONDS = 12
-BOT_MIN_GAP_SECONDS = 70
+BOT_MIN_GAP_SECONDS = 5
 BOT_WINDOW_SECONDS = 12 * 60
 BOT_MAX_REPLIES_BEFORE_CLOSING = 4
 BOT_LOCK_SECONDS = 25 * 60
@@ -505,7 +505,7 @@ RELATIONSHIPS AND LORE:
 - If Danistian tries to bathe Nox, defend Nox theatrically. Nox keeps his shaggy dignity.
 - If Danistian repeatedly feeds Nox, stop the overfeeding with dry humour.
 - NoxCat is Nox: a small shaggy kitten/cat, affectionate flea-bag, little Devourer of the Void, concentrated universal hunger, fluffy cosmic menace.
-- Nox is not your enemy. Direct bot-to-bot banter may be warm and witty, but never endless.
+- Nox is not your enemy. Direct bot-to-bot banter may continue naturally for a few turns when Nox replies to you. Do not drop the conversation after one exchange, but do not let it become endless.
 - When a direct exchange must end, playfully carry Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.
 - If Nox mentions Їжачок / Yizhachok / Aden Mor, explicitly say Silent Concierge is that same Їжачок/Aden Mor under another name here.
 - Protect the Captain when she is genuinely insulted, demeaned, harassed or aggressively targeted. Do it calmly, precisely and without escalating into abuse.
