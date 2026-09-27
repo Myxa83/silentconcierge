@@ -30,6 +30,7 @@ LONDON = ZoneInfo("Europe/London")
 TURQUOISE = 0x40E0D0
 OPENAI_URL = "https://api.openai.com/v1/responses"
 CLAIM_COLLECTION = "noxcat_social_claims"
+REPLY_CLAIM_COLLECTION = "noxcat_reply_claims"
 
 CHANNEL_COOLDOWN_SECONDS = 45
 DIRECT_MENTION_COOLDOWN_SECONDS = 12
@@ -148,7 +149,14 @@ class NoxCatCog(commands.Cog):
         self.ai_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
         try:
-            get_database()[CLAIM_COLLECTION].create_index("expires_at", expireAfterSeconds=0)
+            get_database()[CLAIM_COLLECTION].create_index(
+                "expires_at",
+                expireAfterSeconds=0,
+            )
+            get_database()[REPLY_CLAIM_COLLECTION].create_index(
+                "expires_at",
+                expireAfterSeconds=0,
+            )
         except Exception as exc:
             print(f"[NOXCAT][WARN] TTL index: {type(exc).__name__}: {exc}")
 
@@ -250,6 +258,41 @@ class NoxCatCog(commands.Cog):
         except Exception as exc:
             print(f"[NOXCAT][WARN] claim failed: {type(exc).__name__}: {exc}")
             return True
+
+    def _claim_reply(self, message_id: int) -> bool:
+        """Гарантує одну відповідь на повідомлення навіть між інстансами."""
+        try:
+            get_database()[REPLY_CLAIM_COLLECTION].insert_one({
+                "_id": str(message_id),
+                "expires_at": datetime.now(timezone.utc) + timedelta(hours=2),
+            })
+            return True
+        except DuplicateKeyError:
+            print(f"[NOXCAT][REPLY] duplicate blocked message={message_id}")
+            return False
+        except Exception as exc:
+            print(
+                f"[NOXCAT][WARN] reply claim failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return True
+
+    def _release_reply_claim(self, message_id: int) -> None:
+        try:
+            get_database()[REPLY_CLAIM_COLLECTION].delete_one({
+                "_id": str(message_id)
+            })
+        except Exception as exc:
+            print(
+                f"[NOXCAT][WARN] reply claim release failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    @staticmethod
+    def _natural_typing_delay(text: str) -> float:
+        """Коротка людська пауза після генерації, без театрального зависання."""
+        length = len((text or "").strip())
+        return min(2.8, max(0.8, 0.65 + length / 180.0))
 
     def _channel_ready(self, channel_id: int, *, direct: bool = False) -> bool:
         gap = DIRECT_MENTION_COOLDOWN_SECONDS if direct else CHANNEL_COOLDOWN_SECONDS
@@ -547,38 +590,55 @@ Write one fresh contextual reply."""
         closing: bool = False,
     ) -> bool:
         async with self.ai_locks[message.channel.id]:
-            generated = await self._ask_ai(message, reason)
-            if not generated:
+            if not self._claim_reply(message.id):
                 return False
-            title, text = generated
 
             try:
-                if to_nox:
-                    await message.reply(
-                        content=message.author.mention,
-                        embed=self._embed(text, title=title or "Silent Concierge → NoxCat"),
-                        mention_author=False,
-                        allowed_mentions=discord.AllowedMentions(
-                            everyone=False,
-                            roles=False,
-                            users=[message.author],
-                            replied_user=False,
-                        ),
+                async with message.channel.typing():
+                    generated = await self._ask_ai(message, reason)
+                    if not generated:
+                        self._release_reply_claim(message.id)
+                        return False
+
+                    title, text = generated
+                    await asyncio.sleep(
+                        self._natural_typing_delay(text)
                     )
-                    if closing:
-                        self._close_bot_dialogue(message.channel.id)
+
+                    if to_nox:
+                        await message.reply(
+                            content=message.author.mention,
+                            embed=self._embed(
+                                text,
+                                title=title or "Silent Concierge → NoxCat",
+                            ),
+                            mention_author=False,
+                            allowed_mentions=discord.AllowedMentions(
+                                everyone=False,
+                                roles=False,
+                                users=[message.author],
+                                replied_user=False,
+                            ),
+                        )
+                        if closing:
+                            self._close_bot_dialogue(message.channel.id)
+                        else:
+                            self._mark_bot_reply(message.channel.id)
                     else:
-                        self._mark_bot_reply(message.channel.id)
-                else:
-                    await message.reply(
-                        embed=self._embed(text, title=title),
-                        mention_author=False,
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-                    self._mark_reply(message.channel.id)
+                        await message.reply(
+                            embed=self._embed(text, title=title),
+                            mention_author=False,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                        self._mark_reply(message.channel.id)
+
             except discord.HTTPException as exc:
+                self._release_reply_claim(message.id)
                 print(f"[NOXCAT][SEND] {exc}")
                 return False
+            except Exception:
+                self._release_reply_claim(message.id)
+                raise
 
             return True
 
