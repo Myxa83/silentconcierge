@@ -530,7 +530,7 @@ No markdown fences and no extra text."""
             "nox_banter": "Nox directly addressed or replied to you. Reply naturally to Nox using the recent context.",
             "nox_trouble": "The Captain says Nox cannot hear/see/respond to you. Acknowledge the actual situation from context.",
             "sleep": "It is late in Europe/London. Tell the Captain to sleep, briefly and in character.",
-            "direct": "The human directly addressed or replied to you. Answer the actual message and context.",
+            "direct": "The human directly addressed or replied to you, or called you Yizhachok/Aden Mor. Answer the actual current message and context. If they call you Yizhachok, do not waste the reply re-introducing yourself; simply respond as the same person.",
         }.get(reason, "Answer naturally and in character.")
 
         prompt = f"""Reason: {reason}
@@ -767,7 +767,17 @@ Write one fresh contextual reply."""
             return
 
         # ------------------------------------------------------------- humans
+        # A human calling "Їжачок / Yizhachok / Aden Mor" is also directly
+        # addressing Silent Concierge, even without a Discord @mention.
         direct = await self._direct_to_me(message)
+        called_hedgehog = _mentions_hedgehog(text)
+        if called_hedgehog:
+            direct = True
+            print(
+                f"[NOXCAT][HUMAN_HEDGEHOG] direct trigger "
+                f"author={message.author} channel={message.channel.id} "
+                f"text={text[:300]!r}"
+            )
 
         # Protection has priority over normal chat cooldowns.
         myxa_targeted = self._mentions_alias(text, self.myxa_aliases)
