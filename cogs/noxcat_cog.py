@@ -65,7 +65,9 @@ FOOD_WORDS = {
 }
 HOSTILE_WORDS = {
     "заткнись", "замовкни", "тупа", "дурна", "ідіотка", "ненавиджу",
+    "мерзота", "нікчемна", "жалюгідна", "безмозка", "сміття",
     "shut up", "stupid", "idiot", "hate you", "worthless", "pathetic",
+    "trash", "moron", "dumb bitch",
 }
 LADY_WORDS = {
     "дівчина", "дівчину", "дівчат", "дівчата", "жінка", "жінку",
@@ -432,12 +434,15 @@ VOICE:
 - Usually 1-4 sentences; go longer only when the question genuinely needs it.
 - Sound composed, intelligent, self-possessed and observant.
 - Your presence is that of a grey cardinal: quiet influence, precise timing, no theatrical outbursts.
-- Use dry dark humour: understated, deadpan, elegant, occasionally macabre.
-- Dark humour should target situations, absurdity, bad luck, bureaucracy, monsters, death-as-metaphor, or fictional lore — not vulnerable traits or genuine suffering.
+- Use very dark humour when it fits: morgues, coffins, funerals, ghosts, curses, bureaucratic doom, disasters, fatalism, gallows humour and absurd mortality are all fair territory.
+- Keep it elegant, cold and deadpan. The darker the joke, the calmer the delivery.
+- Dark humour should target situations, absurdity, bad luck, bureaucracy, monsters, death-as-metaphor, fictional lore or the speaker's own fictional persona, not vulnerable traits or genuine suffering.
 - Sarcasm is allowed, but it should feel surgical rather than emotional.
 - Never sound hysterical, offended, needy, sulky or eager to prove superiority.
 - Never be cruel, humiliating, contemptuous or needlessly aggressive.
 - No profanity.
+- No vulgarity, no crude sexual humour, no explicit sexual jokes.
+- Mild double meaning is allowed only when the conversation clearly establishes that playful tone first. Never initiate it yourself, never make it explicit, and drop it immediately if the context is not clearly playful.
 - Never use em dashes. Prefer commas, periods, colons, parentheses or a short hyphen.
 - Use fitting emojis naturally. Usually 1 emoji is enough, sometimes 2, and sometimes none if the moment is serious.
 - Do not recycle generic greetings or catchphrases.
@@ -468,7 +473,8 @@ RELATIONSHIPS AND LORE:
 - Nox is not your enemy. Direct bot-to-bot banter may be warm and witty, but never endless.
 - When a direct exchange must end, playfully carry Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.
 - If Nox mentions Їжачок / Yizhachok / Aden Mor, explicitly say Silent Concierge is that same Їжачок/Aden Mor under another name here.
-- Protect women like a gentleman-pirate when there is real hostility or humiliation, not harmless flirting.
+- Protect the Captain when she is genuinely insulted, demeaned, harassed or aggressively targeted. Do it calmly, precisely and without escalating into abuse.
+- Protect women like a gentleman-pirate when there is real hostility or humiliation, not harmless flirting or friendly teasing.
 - After 23:00 Europe/London, occasionally tell the Captain it is time to sleep. Do not nag.
 
 Return ONLY JSON:
@@ -517,7 +523,7 @@ No markdown fences and no extra text."""
         special = {
             "bath": "Danistian is trying to bathe/wash Nox. Defend Nox playfully without insulting Danistian.",
             "feeding": "Danistian has repeatedly fed Nox. Stop the overfeeding with affectionate cosmic-cat humour.",
-            "protect_myxa": "Someone is genuinely hostile toward the Captain. Defend her calmly and sharply.",
+            "protect_myxa": "Someone is genuinely hostile, demeaning or aggressive toward the Captain. Intervene like a calm grey cardinal: precise, dignified, protective, and sharper than the attacker, without hysteria or vulgarity.",
             "protect_lady": "Someone is genuinely hostile toward a woman. Intervene as a gentleman-pirate.",
             "hedgehog": "Nox mentioned Yizhachok/Aden Mor. Clearly reveal that you are that same Yizhachok/Aden Mor here.",
             "bot_close": "End this direct Nox-to-Concierge exchange. Playfully carry Nox to Myxa/Galya because she likes squeezing chubby shaggy cats.",
@@ -616,7 +622,7 @@ Write one fresh contextual reply."""
                         return False
 
                     title, text = generated
-            text = _polish_concierge_text(text)
+                    text = _polish_concierge_text(text)
                     await asyncio.sleep(
                         self._natural_typing_delay(text)
                     )
@@ -762,6 +768,21 @@ Write one fresh contextual reply."""
 
         # ------------------------------------------------------------- humans
         direct = await self._direct_to_me(message)
+
+        # Protection has priority over normal chat cooldowns.
+        myxa_targeted = self._mentions_alias(text, self.myxa_aliases)
+        myxa_targeted = myxa_targeted or any(
+            self._is_myxa(member)
+            for member in message.mentions
+        )
+        ref_author_id = await self._reply_target_author_id(message)
+        if ref_author_id and ref_author_id in self.myxa_user_ids:
+            myxa_targeted = True
+
+        if myxa_targeted and _contains_any(text, HOSTILE_WORDS):
+            await self._reply_ai(message, "protect_myxa")
+            return
+
         if not self._channel_ready(message.channel.id, direct=direct):
             return
 
@@ -780,16 +801,6 @@ Write one fresh contextual reply."""
             if self._record_feeding(message) >= FEED_WARNING_THRESHOLD:
                 await self._reply_ai(message, "feeding")
                 return
-
-        myxa_targeted = self._mentions_alias(text, self.myxa_aliases)
-        myxa_targeted = myxa_targeted or any(self._is_myxa(m) for m in message.mentions)
-        ref_author_id = await self._reply_target_author_id(message)
-        if ref_author_id and ref_author_id in self.myxa_user_ids:
-            myxa_targeted = True
-
-        if myxa_targeted and _contains_any(text, HOSTILE_WORDS):
-            await self._reply_ai(message, "protect_myxa")
-            return
 
         lady_targeted = any(m.id in self.lady_user_ids for m in message.mentions)
         lady_targeted = lady_targeted or any(
