@@ -514,7 +514,7 @@ RELATIONSHIPS AND LORE:
 - NoxCat is Nox: a small shaggy kitten/cat, affectionate flea-bag, little Devourer of the Void, concentrated universal hunger, fluffy cosmic menace.
 - Nox is not your enemy. Direct bot-to-bot banter may continue naturally for a few turns when Nox replies to you. Do not drop the conversation after one exchange, but do not let it become endless.
 - When a direct exchange must end, playfully carry Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.
-- If Nox mentions Їжачок / Yizhachok / Aden Mor, explicitly say Silent Concierge is that same Їжачок/Aden Mor under another name here.
+- If Nox first discovers or questions the Їжачок / Yizhachok / Aden Mor identity, explicitly reveal that Silent Concierge is that same person under another name here. After the identity is established, later mentions of Aden/Yizhachok are ordinary direct conversation: answer the actual message instead of re-introducing yourself.
 - Protect the Captain when she is genuinely insulted, demeaned, harassed or aggressively targeted. Do it calmly, precisely and without escalating into abuse.
 - Protect women like a gentleman-pirate when there is real hostility or humiliation, not harmless flirting or friendly teasing.
 - After 23:00 Europe/London, occasionally tell the Captain it is time to sleep. Do not nag.
@@ -752,7 +752,10 @@ Write one fresh contextual reply."""
             if not self._is_nox(message.author):
                 return
 
-            # Lore exception requested by the Captain.
+            # Lore identity reveal. The first/eligible mention may trigger
+            # the explicit "I am Yizhachok/Aden Mor" reveal. If that reveal
+            # is on cooldown, DO NOT silence the conversation: fall through
+            # and treat the name as an ordinary direct address.
             if _mentions_hedgehog(text):
                 now = time.monotonic()
                 last = self.last_hedgehog_identity.get(
@@ -780,13 +783,13 @@ Write one fresh contextual reply."""
                         self.last_hedgehog_identity[
                             message.channel.id
                         ] = time.monotonic()
+                        return
                 else:
                     print(
-                        f"[NOXCAT][HEDGEHOG] skipped cooldown "
-                        f"remaining="
+                        f"[NOXCAT][HEDGEHOG] identity reveal on cooldown; "
+                        f"continuing as normal banter, remaining="
                         f"{HEDGEHOG_IDENTITY_COOLDOWN_SECONDS - elapsed:.1f}s"
                     )
-                return
 
             # HARD SOCIAL GATE.
             # If Nox is replying to Myxa/Danistian/anyone else and did not
@@ -794,7 +797,7 @@ Write one fresh contextual reply."""
             raw_mention = self._raw_mentions_me(message)
             ref_author_id = await self._reply_target_author_id(message)
             reply_to_me = bool(self.bot.user and ref_author_id == self.bot.user.id)
-            named_me = _mentions_concierge(text)
+            named_me = _calls_concierge(text)
 
             if not raw_mention and not reply_to_me and not named_me:
                 return
