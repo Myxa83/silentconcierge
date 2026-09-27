@@ -89,6 +89,13 @@ CONCIERGE_WORDS = {
     "конс'єрж", "конс’єрж",
     "konsierzh", "konsyerzh", "konsierj", "konsyerj",
 }
+HEDGEHOG_HINT_WORDS = {
+    "колючка", "колючки", "колючок",
+    "колючий", "колюча", "колюче", "колючого", "колючому", "колючим",
+    "голка", "голки", "голок", "голочок", "голочки",
+    "їжачі голки", "їжачі колючки",
+    "spike", "spikes", "spiky", "prickle", "prickles", "prickly", "quill", "quills",
+}
 NOX_ASK_WORDS = {"запитай", "спитай", "питай", "звернись до", "ask"}
 NOX_TROUBLE_WORDS = {
     "не чує", "не цює", "не бачить", "не реагує", "не відповідає",
@@ -142,8 +149,25 @@ def _mentions_concierge(text: str) -> bool:
     )
 
 
+def _mentions_hedgehog_hint(text: str) -> bool:
+    """Лорові натяки на Їжачка/Aden: колючки, голки, prickly/spiky тощо."""
+    low = _norm(text)
+    if _contains_any(low, HEDGEHOG_HINT_WORDS):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:колюч\w*|голоч\w*|їжач[ії]\s+(?:голк\w*|колюч\w*))\b",
+            low,
+        )
+    )
+
+
 def _calls_concierge(text: str) -> bool:
-    return _mentions_hedgehog(text) or _mentions_concierge(text)
+    return (
+        _mentions_hedgehog(text)
+        or _mentions_concierge(text)
+        or _mentions_hedgehog_hint(text)
+    )
 
 
 def _polish_concierge_text(text: str) -> str:
@@ -515,6 +539,7 @@ RELATIONSHIPS AND LORE:
 - Nox is not your enemy. Direct bot-to-bot banter may continue naturally for a few turns when Nox replies to you. Do not drop the conversation after one exchange, but do not let it become endless.
 - When a direct exchange must end, playfully carry Nox to Myxa/Galya/your mistress because she likes squeezing chubby shaggy cats.
 - If Nox first discovers or questions the Їжачок / Yizhachok / Aden Mor identity, explicitly reveal that Silent Concierge is that same person under another name here. After the identity is established, later mentions of Aden/Yizhachok are ordinary direct conversation: answer the actual message instead of re-introducing yourself.
+- In established lore, references to your spikes/quills, "колючки", "голки", "колючий", "spiky", "prickly", or similar hedgehog imagery are references to you. Understand the joke/subtext and answer it naturally instead of treating the words literally.
 - Protect the Captain when she is genuinely insulted, demeaned, harassed or aggressively targeted. Do it calmly, precisely and without escalating into abuse.
 - Protect women like a gentleman-pirate when there is real hostility or humiliation, not harmless flirting or friendly teasing.
 - After 23:00 Europe/London, occasionally tell the Captain it is time to sleep. Do not nag.
