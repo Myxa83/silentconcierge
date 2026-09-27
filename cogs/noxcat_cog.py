@@ -79,6 +79,14 @@ HEDGEHOG_WORDS = {
     "іжачок", "іжачка", "іжачку", "іжачком",
     "hedgehog", "yizhachok", "izhachok", "аден мор", "aden mor",
 }
+CONCIERGE_WORDS = {
+    "silent concierge", "concierge",
+    "сайлент консьєрж", "сайлент консьерж",
+    "консьєрж", "консьєрже", "консьєржа", "консьєржу", "консьєржем",
+    "консьерж", "консьержа", "консьержу", "консьержем",
+    "конс'єрж", "конс’єрж",
+    "konsierzh", "konsyerzh", "konsierj", "konsyerj",
+}
 NOX_ASK_WORDS = {"запитай", "спитай", "питай", "звернись до", "ask"}
 NOX_TROUBLE_WORDS = {
     "не чує", "не цює", "не бачить", "не реагує", "не відповідає",
@@ -102,6 +110,33 @@ def _mentions_hedgehog(text: str) -> bool:
         return True
     # Українські відмінки/словоформи: їжачок, їжачком, їжачка, їжачки...
     return bool(re.search(r"\b[ії]жач[а-яіїєґ']*\b", low))
+
+
+def _mentions_concierge(text: str) -> bool:
+    """Розпізнає ім'я/роль Concierge у відмінках, мовах і частих написаннях."""
+    low = _norm(text)
+    if _contains_any(low, CONCIERGE_WORDS):
+        return True
+
+    # concierge / Silent Concierge / concierge's
+    if re.search(r"\b(?:silent\s+)?concierge(?:['’]s|s)?\b", low):
+        return True
+
+    # консьєрж, консьерж, консьєрже, консьєржа, консьєржу, консьєржем...
+    if re.search(r"\bконс[ь'’]?[єе]рж[а-яіїєґ'’]*\b", low):
+        return True
+
+    # поширена транслітерація
+    return bool(
+        re.search(
+            r"\b(?:silent\s+)?kons(?:i|y)e?r(?:zh|j)[a-z]*\b",
+            low,
+        )
+    )
+
+
+def _calls_concierge(text: str) -> bool:
+    return _mentions_hedgehog(text) or _mentions_concierge(text)
 
 
 def _polish_concierge_text(text: str) -> str:
@@ -530,7 +565,7 @@ No markdown fences and no extra text."""
             "nox_banter": "Nox directly addressed or replied to you. Reply naturally to Nox using the recent context.",
             "nox_trouble": "The Captain says Nox cannot hear/see/respond to you. Acknowledge the actual situation from context.",
             "sleep": "It is late in Europe/London. Tell the Captain to sleep, briefly and in character.",
-            "direct": "The human directly addressed or replied to you, or called you Yizhachok/Aden Mor. Answer the actual current message and context. If they call you Yizhachok, do not waste the reply re-introducing yourself; simply respond as the same person.",
+            "direct": "The human directly addressed or replied to you, or called you by one of your names/titles: Silent Concierge, Concierge, Консьєрж/Консьерж, Yizhachok/Їжачок, or Aden Mor. Answer the actual current message and context. Do not waste the reply re-introducing yourself; simply respond as the same person.",
         }.get(reason, "Answer naturally and in character.")
 
         prompt = f"""Reason: {reason}
@@ -752,8 +787,9 @@ Write one fresh contextual reply."""
             raw_mention = self._raw_mentions_me(message)
             ref_author_id = await self._reply_target_author_id(message)
             reply_to_me = bool(self.bot.user and ref_author_id == self.bot.user.id)
+            named_me = _mentions_concierge(text)
 
-            if not raw_mention and not reply_to_me:
+            if not raw_mention and not reply_to_me and not named_me:
                 return
 
             state = self._bot_state(message.channel.id)
@@ -767,14 +803,14 @@ Write one fresh contextual reply."""
             return
 
         # ------------------------------------------------------------- humans
-        # A human calling "Їжачок / Yizhachok / Aden Mor" is also directly
-        # addressing Silent Concierge, even without a Discord @mention.
+        # Calling him by any known name/title also counts as direct address,
+        # even without a Discord @mention or reply.
         direct = await self._direct_to_me(message)
-        called_hedgehog = _mentions_hedgehog(text)
-        if called_hedgehog:
+        called_by_name = _calls_concierge(text)
+        if called_by_name:
             direct = True
             print(
-                f"[NOXCAT][HUMAN_HEDGEHOG] direct trigger "
+                f"[NOXCAT][HUMAN_NAME] direct trigger "
                 f"author={message.author} channel={message.channel.id} "
                 f"text={text[:300]!r}"
             )
