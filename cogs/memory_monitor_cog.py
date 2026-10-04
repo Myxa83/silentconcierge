@@ -1,21 +1,27 @@
 # -*- coding: utf-8 -*-
-"""Lightweight memory telemetry for Render/Linux.
+"""Runtime memory telemetry and conservative memory cleanup for Render/Linux.
 
-No third-party dependency is required. The cog prints current RSS, Discord
-message cache size and persistent-view count so future memory growth is visible
-in Render logs before the worker is killed.
+The cog logs current RSS every few minutes, runs a soft cleanup when RSS gets
+high, and performs one deeper cleanup every night in Europe/London time.
+No third-party dependency is required.
 """
 
 from __future__ import annotations
 
+import ctypes
 import gc
 import os
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 from discord.ext import commands, tasks
 
 
 CHECK_MINUTES = max(5, int(os.getenv("MEMORY_LOG_INTERVAL_MINUTES", "15") or 15))
-GC_SOFT_LIMIT_MB = max(0, int(os.getenv("MEMORY_GC_SOFT_LIMIT_MB", "0") or 0))
+# Render worker is 512 MB. Start reclaiming well before the hard limit.
+GC_SOFT_LIMIT_MB = max(0, int(os.getenv("MEMORY_GC_SOFT_LIMIT_MB", "360") or 360))
+LONDON_TZ = ZoneInfo("Europe/London")
+DAILY_CLEAN_TIME = time(hour=3, minute=30, tzinfo=LONDON_TZ)
 
 
 def _rss_mb() -> float | None:
@@ -28,6 +34,21 @@ def _rss_mb() -> float | None:
         return None
 
 
+def _trim_process_memory() -> tuple[int, float | None, float | None]:
+    """Collect Python garbage and ask glibc to return free heap pages to Linux."""
+    before = _rss_mb()
+    collected = gc.collect()
+
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
+    after = _rss_mb()
+    return collected, before, after
+
+
 class MemoryMonitorCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -35,10 +56,13 @@ class MemoryMonitorCog(commands.Cog):
     async def cog_load(self) -> None:
         self.memory_report.change_interval(minutes=CHECK_MINUTES)
         self.memory_report.start()
+        self.daily_memory_cleanup.start()
 
     def cog_unload(self) -> None:
         if self.memory_report.is_running():
             self.memory_report.cancel()
+        if self.daily_memory_cleanup.is_running():
+            self.daily_memory_cleanup.cancel()
 
     @tasks.loop(minutes=15)
     async def memory_report(self) -> None:
@@ -54,17 +78,33 @@ class MemoryMonitorCog(commands.Cog):
         )
 
         if GC_SOFT_LIMIT_MB and rss is not None and rss >= GC_SOFT_LIMIT_MB:
-            collected = gc.collect()
-            after = _rss_mb()
+            collected, before, after = _trim_process_memory()
+            before_text = f"{before:.1f}MB" if before is not None else "unknown"
             after_text = f"{after:.1f}MB" if after is not None else "unknown"
             print(
                 "[MEMORY][GC] "
                 f"threshold={GC_SOFT_LIMIT_MB}MB collected={collected} "
-                f"rss_after={after_text}"
+                f"rss_before={before_text} rss_after={after_text}"
             )
+
+    @tasks.loop(time=DAILY_CLEAN_TIME)
+    async def daily_memory_cleanup(self) -> None:
+        collected, before, after = _trim_process_memory()
+        before_text = f"{before:.1f}MB" if before is not None else "unknown"
+        after_text = f"{after:.1f}MB" if after is not None else "unknown"
+        now = datetime.now(LONDON_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+        print(
+            "[MEMORY][DAILY_CLEAN] "
+            f"time={now} collected={collected} "
+            f"rss_before={before_text} rss_after={after_text}"
+        )
 
     @memory_report.before_loop
     async def before_memory_report(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @daily_memory_cleanup.before_loop
+    async def before_daily_memory_cleanup(self) -> None:
         await self.bot.wait_until_ready()
 
 
