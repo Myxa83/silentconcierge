@@ -8,6 +8,7 @@ No third-party dependency is required.
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import gc
 import os
@@ -34,10 +35,16 @@ def _rss_mb() -> float | None:
         return None
 
 
-def _trim_process_memory() -> tuple[int, float | None, float | None]:
-    """Collect Python garbage and ask glibc to return free heap pages to Linux."""
+async def _trim_process_memory() -> tuple[int, float | None, float | None]:
+    """Collect garbage generation-by-generation, yielding between each pass."""
     before = _rss_mb()
-    collected = gc.collect()
+    collected = 0
+
+    # Split the full GC into smaller passes so the Discord event loop gets time
+    # to breathe between generations instead of one long blocking collection.
+    for generation in (0, 1, 2):
+        collected += gc.collect(generation)
+        await asyncio.sleep(0.15)
 
     try:
         libc = ctypes.CDLL("libc.so.6")
@@ -45,6 +52,7 @@ def _trim_process_memory() -> tuple[int, float | None, float | None]:
     except Exception:
         pass
 
+    await asyncio.sleep(0)
     after = _rss_mb()
     return collected, before, after
 
@@ -78,7 +86,7 @@ class MemoryMonitorCog(commands.Cog):
         )
 
         if GC_SOFT_LIMIT_MB and rss is not None and rss >= GC_SOFT_LIMIT_MB:
-            collected, before, after = _trim_process_memory()
+            collected, before, after = await _trim_process_memory()
             before_text = f"{before:.1f}MB" if before is not None else "unknown"
             after_text = f"{after:.1f}MB" if after is not None else "unknown"
             print(
@@ -89,7 +97,7 @@ class MemoryMonitorCog(commands.Cog):
 
     @tasks.loop(time=DAILY_CLEAN_TIME)
     async def daily_memory_cleanup(self) -> None:
-        collected, before, after = _trim_process_memory()
+        collected, before, after = await _trim_process_memory()
         before_text = f"{before:.1f}MB" if before is not None else "unknown"
         after_text = f"{after:.1f}MB" if after is not None else "unknown"
         now = datetime.now(LONDON_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
