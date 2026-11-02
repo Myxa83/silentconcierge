@@ -38,12 +38,27 @@ BBF_CATEGORY_ID          = 1486067160555065425
 VOICE_CHANNEL_ID         = 1506463961984274462
 BBF_ROLE_ID              = 1470790564718055434
 
-REMINDER_HOUR_UTC    = 17
-REMINDER_MINUTE_UTC  = 30
-INVITE_HOUR_UTC      = 17
-INVITE_MINUTE_UTC    = 45
-BBF_START_HOUR_UTC   = 18
-BBF_START_MINUTE_UTC = 0
+# BBF season changes take effect on Thursday after the UK DST Sunday.
+# Standard time: 19:00 UTC; summer time: 18:00 UTC (19:00 BST).
+REMINDER_MINUTE_UTC = 30
+INVITE_MINUTE_UTC = 45
+
+def _last_sunday(year: int, month: int):
+    import calendar
+    from datetime import date
+    last = date(year, month, calendar.monthrange(year, month)[1])
+    return last - timedelta(days=(last.weekday() + 1) % 7)
+
+def _bbf_start_hour_utc(day_date: datetime) -> int:
+    day = day_date.date()
+    spring_thursday = _last_sunday(day.year, 3) + timedelta(days=4)
+    autumn_thursday = _last_sunday(day.year, 10) + timedelta(days=4)
+    return 18 if spring_thursday <= day < autumn_thursday else 19
+
+def _bbf_start_datetime(day_date: datetime) -> datetime:
+    return day_date.astimezone(timezone.utc).replace(
+        hour=_bbf_start_hour_utc(day_date), minute=0, second=0, microsecond=0
+    )
 
 # Неділя після цього часу UTC = старт на наступний тиждень
 SUNDAY_RESET_HOUR_UTC = 21
@@ -87,11 +102,7 @@ def _get_week_dates() -> dict[int, datetime]:
 
 
 def _bbf_timestamp(day_date: datetime) -> int:
-    target = day_date.replace(
-        hour=BBF_START_HOUR_UTC,
-        minute=BBF_START_MINUTE_UTC,
-        second=0, microsecond=0,
-    )
+    target = _bbf_start_datetime(day_date)
     return int(target.timestamp())
 
 # ─── Збереження / завантаження ───────────────────────────────────────────────
@@ -1043,8 +1054,9 @@ class BBFCog(commands.Cog, name="BBF"):
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         active_uids = [uid for uid in main_uids if not _is_on_vacation(uid, data, today)]
 
+        start_hour = _bbf_start_hour_utc(now)
         if (
-            now.hour == REMINDER_HOUR_UTC
+            now.hour == (start_hour - 1)
             and now.minute == REMINDER_MINUTE_UTC
             and not data.get("reminded", {}).get(day_key)
         ):
@@ -1062,7 +1074,7 @@ class BBFCog(commands.Cog, name="BBF"):
             _save_data(data)
 
         if (
-            now.hour == INVITE_HOUR_UTC
+            now.hour == (start_hour - 1)
             and now.minute == INVITE_MINUTE_UTC
             and not data.get("invited", {}).get(day_key)
         ):
