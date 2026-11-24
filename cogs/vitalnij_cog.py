@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import logging
 import asyncio
 import re
 from pathlib import Path
@@ -8,6 +9,8 @@ from datetime import datetime
 import discord
 from discord.ext import commands
 from discord import app_commands
+
+logger = logging.getLogger(__name__)
 
 # ============================ IDs / CONFIG ============================
 WELCOME_CHAN = 1420430254375178280
@@ -112,12 +115,20 @@ class TicketModeratorView(discord.ui.View):
         await itx.response.defer(ephemeral=True)
         await self.cog.ban_member(itx)
 
+    @discord.ui.button(label="🗑️ Закрити", style=discord.ButtonStyle.secondary, custom_id="mod_close")
+    async def close(self, itx: discord.Interaction, _):
+        if not await self.cog.is_moderator(itx.user):
+            await itx.response.send_message("⛔ Недостатньо прав.", ephemeral=True)
+            return
+        await self.cog.close_ticket(itx)
+
 # ============================== MAIN COG ==============================
 
 class VitalnijCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._persistent_views_registered = False
+        self._ticket_refresh_task = None
 
     async def cog_load(self):
         # Persistent views must be registered once per cog lifetime. on_ready can
@@ -127,6 +138,33 @@ class VitalnijCog(commands.Cog):
         self.bot.add_view(WelcomeView(self))
         self.bot.add_view(TicketModeratorView(self))
         self._persistent_views_registered = True
+        self._ticket_refresh_task = asyncio.create_task(self.refresh_open_ticket_views())
+
+    def cog_unload(self):
+        if self._ticket_refresh_task is not None:
+            self._ticket_refresh_task.cancel()
+
+    async def refresh_open_ticket_views(self):
+        # Existing messages do not gain a new button just by registering a view.
+        await self.bot.wait_until_ready()
+        category = self.bot.get_channel(CATEGORY_TICKETS)
+        if not isinstance(category, discord.CategoryChannel) or self.bot.user is None:
+            return
+        for channel in category.text_channels:
+            if not (channel.topic or "").startswith("SC_DATA:"):
+                continue
+            try:
+                async for message in channel.history(limit=50, oldest_first=True):
+                    if message.author.id != self.bot.user.id:
+                        continue
+                    ids = {getattr(component, "custom_id", None)
+                           for row in message.components for component in row.children}
+                    if {"mod_accept", "mod_ban"}.issubset(ids):
+                        if "mod_close" not in ids:
+                            await message.edit(view=TicketModeratorView(self))
+                        break
+            except discord.HTTPException:
+                logger.warning("Could not refresh ticket %s", channel.id, exc_info=True)
 
     async def is_moderator(self, user: discord.Member) -> bool:
         return any(r.id in {ROLE_MODERATOR, ROLE_LEADER} for r in user.roles)
@@ -212,6 +250,39 @@ class VitalnijCog(commands.Cog):
         await itx.channel.send("✅ Виконано. Канал закриється через 5 секунд.")
         await asyncio.sleep(5)
         await itx.channel.delete()
+
+    async def close_ticket(self, itx):
+        channel = itx.channel
+        if (not isinstance(channel, discord.TextChannel)
+                or channel.category_id != CATEGORY_TICKETS
+                or not (channel.topic or "").startswith("SC_DATA:")):
+            await itx.response.send_message("Це не канал тікета.", ephemeral=True)
+            return
+        try:
+            data = json.loads(channel.topic.split("SC_DATA:", 1)[1])
+            user_id = int(data["user_id"])
+        except (ValueError, KeyError, TypeError):
+            await itx.response.send_message("Не вдалося прочитати дані тікета.", ephemeral=True)
+            return
+
+        await itx.response.defer(ephemeral=True)
+        try:
+            await channel.delete(reason=f"Тікет закрито без бану модератором {itx.user.id}")
+        except discord.NotFound:
+            return
+        except discord.HTTPException:
+            await itx.followup.send("❌ Не вдалося видалити тікет. Перевір права бота.", ephemeral=True)
+            return
+
+        # No ban, kick, nickname or role changes. The applicant can apply again.
+        try:
+            await self.log_action(
+                "Тікет закрито без бану",
+                f"Модератор: {itx.user.mention}\nУчасник: <@{user_id}>\nРежим: {data.get('type', '—')}",
+                discord.Color.light_grey(),
+            )
+        except discord.HTTPException:
+            logger.warning("Could not log closed ticket %s", channel.id, exc_info=True)
 
     async def ban_member(self, itx):
         data = json.loads(itx.channel.topic.split("SC_DATA:")[1])
