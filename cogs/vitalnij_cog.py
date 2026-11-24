@@ -4,7 +4,6 @@ import logging
 import asyncio
 import re
 from pathlib import Path
-from datetime import datetime
 
 import discord
 from discord.ext import commands
@@ -245,7 +244,7 @@ class VitalnijCog(commands.Cog):
         newbie = g.get_role(ROLE_NEWBIE)
         if newbie in member.roles: await member.remove_roles(newbie)
 
-        await self.log_action("Тікет прийнято", f"Учасник: {member.mention}\nРежим: {mode}\nТег: {tag or '—'}", discord.Color.green())
+        await self.log_action("Тікет прийнято", f"Учасник: {member.mention}\nРежим: {mode}\nТег: {tag or '—'}", discord.Color.green(), moderator=itx.user)
         
         await itx.channel.send("✅ Виконано. Канал закриється через 5 секунд.")
         await asyncio.sleep(5)
@@ -278,8 +277,9 @@ class VitalnijCog(commands.Cog):
         try:
             await self.log_action(
                 "Тікет закрито без бану",
-                f"Модератор: {itx.user.mention}\nУчасник: <@{user_id}>\nРежим: {data.get('type', '—')}",
+                f"Учасник: <@{user_id}>\nРежим: {data.get('type', '—')}",
                 discord.Color.light_grey(),
+                moderator=itx.user,
             )
         except discord.HTTPException:
             logger.warning("Could not log closed ticket %s", channel.id, exc_info=True)
@@ -288,14 +288,20 @@ class VitalnijCog(commands.Cog):
         data = json.loads(itx.channel.topic.split("SC_DATA:")[1])
         member = await itx.guild.fetch_member(data["user_id"])
         await itx.guild.ban(member, reason="Бан через систему тікетів")
-        await self.log_action("Бан", f"Модератор: {itx.user.mention}\nЗабанено: {member.mention}", discord.Color.red())
+        await self.log_action("Бан", f"Забанено: {member.mention}\nРежим: {data.get('type', '—')}", discord.Color.red(), moderator=itx.user)
         await itx.channel.delete()
 
-    async def log_action(self, title, desc, color):
+    async def log_action(self, title, desc, color, *, moderator):
         log_ch = self.bot.get_channel(MODLOG_CHAN)
-        if log_ch:
-            e = discord.Embed(title=title, description=desc, color=color, timestamp=datetime.utcnow())
-            await log_ch.send(embed=e)
+        if log_ch is None:
+            log_ch = await self.bot.fetch_channel(MODLOG_CHAN)
+        e = discord.Embed(
+            title=title,
+            description=f"Модератор: {moderator.mention}\n{desc}",
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+        await log_ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VitalnijCog(bot))
